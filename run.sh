@@ -19,7 +19,7 @@ sleep 2
 # 프론트엔드 실행
 echo "🌐 프론트엔드 서버 시작..."
 cd frontend
-python -m http.server 3000 &
+npm run dev &
 FRONTEND_PID=$!
 cd ..
 

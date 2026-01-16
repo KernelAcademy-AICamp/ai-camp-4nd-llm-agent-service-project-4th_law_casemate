@@ -1,50 +1,13 @@
-<!DOCTYPE html>
-<html lang="ko">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>CaseMate - LLM Chat Interface</title>
-    <link rel="stylesheet" href="static/css/style.css">
-</head>
-<body>
-    <div class="container">
-        <header>
-            <h1>🤖 CaseMate</h1>
-            <p class="subtitle">AI 기반 대화 시스템</p>
-        </header>
-
-        <div class="chat-container">
-            <div class="chat-header">
-                <button id="newChatBtn" class="btn btn-secondary">새 대화</button>
-                <button id="clearChatBtn" class="btn btn-danger">대화 삭제</button>
-            </div>
-
-            <div id="chatMessages" class="chat-messages">
-                <!-- 메시지가 여기에 표시됩니다 -->
-                <div class="message system">
-                    <div class="message-content">
-                        안녕하세요! 무엇을 도와드릴까요?
-                    </div>
-                </div>
-            </div>
-
-            <div class="chat-input-container">
-                <textarea
-                    id="messageInput"
-                    placeholder="메시지를 입력하세요..."
-                    rows="1"
-                ></textarea>
-                <button id="sendBtn" class="btn btn-primary">
-                    <span>전송</span>
-                </button>
-            </div>
-        </div>
-
-        <footer>
-            <p>Powered by FastAPI & JavaScript</p>
-        </footer>
-    </div>
-
-    <script src="static/js/app.js"></script>
-</body>
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>frontend</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
 </html>
