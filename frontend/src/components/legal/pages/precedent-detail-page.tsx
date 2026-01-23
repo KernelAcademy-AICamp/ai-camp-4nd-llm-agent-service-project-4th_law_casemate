@@ -25,7 +25,6 @@ export function PrecedentDetailPage({
   const { id } = useParams<{ id: string }>();
   const precedent = propPrecedent || samplePrecedents.find(p => p.id.toString() === id) || samplePrecedents[0];
 
-  const [showAiSummary, setShowAiSummary] = useState(false);
 
   return (
     <div className="space-y-6">
@@ -43,20 +42,6 @@ export function PrecedentDetailPage({
           <Badge variant="secondary" className="text-xs font-normal">
             유사도 {precedent.similarity}%
           </Badge>
-          <Button
-            variant={showAiSummary ? "default" : "outline"}
-            size="sm"
-            onClick={() => setShowAiSummary(!showAiSummary)}
-            className="gap-2 h-8"
-          >
-            <Sparkles className="h-3.5 w-3.5" />
-            AI 요약
-            {showAiSummary ? (
-              <PanelRightClose className="h-3.5 w-3.5" />
-            ) : (
-              <PanelRightOpen className="h-3.5 w-3.5" />
-            )}
-          </Button>
         </div>
       </div>
 
@@ -74,90 +59,88 @@ export function PrecedentDetailPage({
       <div className="flex gap-6">
         {/* Full Text Section */}
         <div
-          className={`prose prose-sm max-w-none transition-all duration-300 ${showAiSummary ? "flex-1" : "w-full"}`}
+          className="prose prose-base max-w-none flex-[6]"
         >
-          <div className="whitespace-pre-wrap text-sm leading-relaxed font-sans text-foreground/80">
+          <div className="whitespace-pre-wrap text-[1.05rem] leading-loose font-sans text-foreground/80">
             {precedent.fullText}
           </div>
         </div>
 
         {/* AI Summary Panel */}
-        {showAiSummary && (
-          <div className="w-[380px] flex-shrink-0">
-            <Card className="sticky top-4 border-border/60">
-              <CardHeader className="pb-3">
-                <CardTitle className="text-sm font-medium flex items-center gap-2">
-                  <Sparkles className="h-4 w-4 text-muted-foreground" />
-                  AI 요약
-                </CardTitle>
-              </CardHeader>
+        <div className="flex-[4] min-w-[320px] flex-shrink-0 self-start sticky top-20">
+          <Card className="border-border/60 max-h-[calc(100vh-8rem)] flex flex-col shadow-sm">
+            <CardHeader className="pb-3 shrink-0">
+              <CardTitle className="text-base font-bold flex items-center gap-2">
+                <Sparkles className="h-4 w-4 text-primary" />
+                AI 요약
+              </CardTitle>
+            </CardHeader>
 
-              <CardContent className="space-y-5">
-                <h3 className="font-medium text-sm leading-snug">
-                  {precedent.similarityReport.title}
-                </h3>
+            <CardContent className="space-y-6 overflow-y-auto py-4 pt-0">
+              <h3 className="font-semibold text-base leading-snug text-primary/90">
+                {precedent.similarityReport.title}
+              </h3>
 
-                {/* Result Summary */}
-                <div>
-                  <h4 className="text-xs font-medium text-muted-foreground mb-2">
-                    결과 요약
-                  </h4>
-                  <ul className="space-y-1.5">
-                    {precedent.similarityReport.resultSummary.map(
-                      (item, index) => (
-                        <li
-                          key={index}
-                          className="flex items-start gap-2 text-xs text-foreground/80"
-                        >
-                          <span className="text-muted-foreground mt-1">•</span>
-                          <span>{item}</span>
-                        </li>
-                      )
-                    )}
-                  </ul>
-                </div>
-
-                {/* Facts */}
-                <div>
-                  <h4 className="text-xs font-medium text-muted-foreground mb-2">
-                    사실관계
-                  </h4>
-                  <ul className="space-y-1.5">
-                    {precedent.similarityReport.facts.map((item, index) => (
+              {/* Result Summary */}
+              <div>
+                <h4 className="text-[13px] font-bold text-muted-foreground uppercase tracking-wider mb-2">
+                  결과 요약
+                </h4>
+                <ul className="space-y-2">
+                  {precedent.similarityReport.resultSummary.map(
+                    (item, index) => (
                       <li
                         key={index}
-                        className="flex items-start gap-2 text-xs text-foreground/80"
+                        className="flex items-start gap-2 text-[14px] leading-6 text-foreground/80"
                       >
-                        <span className="text-muted-foreground mt-1">•</span>
+                        <span className="text-primary/60 mt-1">•</span>
                         <span>{item}</span>
                       </li>
-                    ))}
-                  </ul>
-                </div>
+                    )
+                  )}
+                </ul>
+              </div>
 
-                {/* Legal Analysis */}
-                <div>
-                  <h4 className="text-xs font-medium text-muted-foreground mb-2">
-                    법리 분석
-                  </h4>
-                  <p className="text-xs text-foreground/80 leading-relaxed">
-                    {precedent.similarityReport.legalAnalysis}
-                  </p>
-                </div>
+              {/* Facts */}
+              <div>
+                <h4 className="text-[13px] font-bold text-muted-foreground uppercase tracking-wider mb-2">
+                  사실관계
+                </h4>
+                <ul className="space-y-2">
+                  {precedent.similarityReport.facts.map((item, index) => (
+                    <li
+                      key={index}
+                      className="flex items-start gap-2 text-[14px] leading-6 text-foreground/80"
+                    >
+                      <span className="text-primary/60 mt-1">•</span>
+                      <span>{item}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
 
-                {/* Implications */}
-                <div>
-                  <h4 className="text-xs font-medium text-muted-foreground mb-2">
-                    본 사건 시사점
-                  </h4>
-                  <p className="text-xs text-foreground/80 leading-relaxed">
-                    {precedent.similarityReport.implications}
-                  </p>
-                </div>
-              </CardContent>
-            </Card>
-          </div>
-        )}
+              {/* Legal Analysis */}
+              <div>
+                <h4 className="text-[13px] font-bold text-muted-foreground uppercase tracking-wider mb-2">
+                  법리 분석
+                </h4>
+                <p className="text-[14px] leading-6 text-foreground/80">
+                  {precedent.similarityReport.legalAnalysis}
+                </p>
+              </div>
+
+              {/* Implications */}
+              <div>
+                <h4 className="text-[13px] font-bold text-muted-foreground uppercase tracking-wider mb-2">
+                  본 사건 시사점
+                </h4>
+                <p className="text-[14px] leading-6 text-foreground/80">
+                  {precedent.similarityReport.implications}
+                </p>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
       </div>
     </div>
   );
