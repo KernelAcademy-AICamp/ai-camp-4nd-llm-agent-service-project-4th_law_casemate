@@ -2,6 +2,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from app.api import routes
+from tool.database import SessionLocal
+from sqlalchemy import text
 
 app = FastAPI(
     title="CaseMate LLM API",
@@ -28,3 +30,15 @@ async def root():
 @app.get("/health")
 async def health_check():
     return {"status": "healthy"}
+
+@app.get("/db-init")
+async def db_init():
+    try:
+        # 데이터베이스 연결 테스트
+        db = SessionLocal()
+        db.execute(text("SELECT 1"))
+        db.close()
+        return {"message": "Database initialized successfully"}
+    except Exception as e:
+        print(str(e))
+        return {"message": f"Database initialization failed: {str(e)}"}

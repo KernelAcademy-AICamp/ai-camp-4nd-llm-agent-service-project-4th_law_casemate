@@ -33,9 +33,23 @@ export function AuthPage({ onLogin }: AuthPageProps) {
   const [name, setName] = useState("");
   const [role, setRole] = useState("");
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    onLogin();
+
+    try {
+      // 백엔드 API 호출
+      const response = await fetch('http://localhost:8000/db-init');
+      const data = await response.json();
+
+      console.log('DB 초기화 결과:', data);
+      alert(data.message); // 사용자에게 성공 메시지 표시
+
+      // 로그인 처리
+      onLogin();
+    } catch (error) {
+      console.error('DB 초기화 실패:', error);
+      alert('로그인 중 오류가 발생했습니다.');
+    }
   };
 
   return (
