@@ -91,7 +91,7 @@ export function MainLayout({ onLogout }: MainLayoutProps) {
         </header>
 
         {/* Page Content */}
-        <main className="flex-1 p-4 lg:p-8 overflow-auto">
+        <main className="flex-1 p-4 lg:p-8 lg:px-[4.5rem]">
           <Outlet />
         </main>
       </div>

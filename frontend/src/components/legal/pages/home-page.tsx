@@ -39,7 +39,7 @@ export function HomePage({ cases: propCases }: HomePageProps) {
   };
 
   return (
-    <div className="max-w-6xl mx-auto py-8 px-4">
+    <div className="max-w-6xl mx-auto py-8">
       {/* Page Header */}
       <div className="mb-10">
         <h1 className="text-2xl font-semibold text-foreground tracking-tight">
