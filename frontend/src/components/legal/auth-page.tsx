@@ -56,9 +56,6 @@ export function AuthPage({ onLogin }: AuthPageProps) {
 
         // JWT 토큰 저장
         localStorage.setItem('access_token', data.access_token);
-
-        alert('로그인 성공!');
-
         // 로그인 처리
         onLogin();
       } else {
@@ -82,9 +79,6 @@ export function AuthPage({ onLogin }: AuthPageProps) {
         localStorage.setItem('access_token', data.access_token);
         localStorage.setItem('user_email', data.email);
         localStorage.setItem('user_id', data.user_id);
-
-        alert(data.message || '회원가입 성공!');
-
         // 자동 로그인 처리 - 바로 화면 이동
         onLogin();
       }

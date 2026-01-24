@@ -46,6 +46,7 @@ class UserOut(BaseModel):
     name: str
     email: str
     role: str | None = None
+    firm_id: int | None = None  # 사무실 ID
 
     class Config:
         from_attributes = True

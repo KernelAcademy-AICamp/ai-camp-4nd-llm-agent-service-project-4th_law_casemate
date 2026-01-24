@@ -224,43 +224,113 @@ export function EvidenceUploadPage({
   }, []);
 
   const handleDrop = useCallback(
-    (e: React.DragEvent) => {
+    async (e: React.DragEvent) => {
       e.preventDefault();
       setDragOver(false);
 
       const droppedFiles = Array.from(e.dataTransfer.files);
+      const token = localStorage.getItem('access_token');
       const today = new Date().toISOString().split("T")[0];
-      const newFiles: ManagedFile[] = droppedFiles.map((file) => ({
-        id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
-        name: file.name,
-        type: file.type,
-        size: file.size,
-        folder: selectedFolder,
-        uploadedAt: today,
-        modifiedAt: today,
-      }));
+      const uploadedFiles: ManagedFile[] = [];
 
-      setFiles((prev) => [...prev, ...newFiles]);
+      // 각 파일을 순차적으로 업로드
+      for (const file of droppedFiles) {
+        try {
+          // FormData 생성
+          const formData = new FormData();
+          formData.append('file', file);
+
+          // 백엔드 API 호출
+          const response = await fetch('http://localhost:8000/api/v1/evidence/upload', {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${token}`
+            },
+            body: formData
+          });
+
+          if (!response.ok) {
+            throw new Error(`업로드 실패: ${response.statusText}`);
+          }
+
+          const data = await response.json();
+          console.log('업로드 API 응답:', data);
+
+          // 성공한 파일만 목록에 추가
+          uploadedFiles.push({
+            id: data.evidence_id.toString(),
+            name: file.name,
+            type: file.type,
+            size: file.size,
+            folder: selectedFolder,
+            uploadedAt: today,
+            modifiedAt: today,
+          });
+        } catch (error) {
+          console.error(`파일 업로드 실패 (${file.name}):`, error);
+          alert(`파일 업로드 실패: ${file.name}`);
+        }
+      }
+
+      // 업로드 성공한 파일들을 목록에 추가
+      if (uploadedFiles.length > 0) {
+        setFiles((prev) => [...prev, ...uploadedFiles]);
+      }
     },
     [selectedFolder]
   );
 
-  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFilesInput = e.target.files;
     if (!selectedFilesInput) return;
 
+    const token = localStorage.getItem('access_token');
     const today = new Date().toISOString().split("T")[0];
-    const newFiles: ManagedFile[] = Array.from(selectedFilesInput).map((file) => ({
-      id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
-      name: file.name,
-      type: file.type,
-      size: file.size,
-      folder: selectedFolder,
-      uploadedAt: today,
-      modifiedAt: today,
-    }));
+    const uploadedFiles: ManagedFile[] = [];
 
-    setFiles((prev) => [...prev, ...newFiles]);
+    // 각 파일을 순차적으로 업로드
+    for (const file of Array.from(selectedFilesInput)) {
+      try {
+        // FormData 생성
+        const formData = new FormData();
+        formData.append('file', file);
+
+        // 백엔드 API 호출
+        const response = await fetch('http://localhost:8000/api/v1/evidence/upload', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${token}`
+          },
+          body: formData
+        });
+
+        if (!response.ok) {
+          throw new Error(`업로드 실패: ${response.statusText}`);
+        }
+
+        const data = await response.json();
+        console.log('업로드 API 응답:', data);
+
+        // 성공한 파일만 목록에 추가
+        uploadedFiles.push({
+          id: data.evidence_id.toString(),
+          name: file.name,
+          type: file.type,
+          size: file.size,
+          folder: selectedFolder,
+          uploadedAt: today,
+          modifiedAt: today,
+        });
+      } catch (error) {
+        console.error(`파일 업로드 실패 (${file.name}):`, error);
+        alert(`파일 업로드 실패: ${file.name}`);
+      }
+    }
+
+    // 업로드 성공한 파일들을 목록에 추가
+    if (uploadedFiles.length > 0) {
+      setFiles((prev) => [...prev, ...uploadedFiles]);
+    }
   };
 
   const deleteFile = (fileId: string) => {
