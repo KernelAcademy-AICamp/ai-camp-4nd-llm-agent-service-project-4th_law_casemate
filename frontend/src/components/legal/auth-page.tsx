@@ -39,7 +39,7 @@ export function AuthPage({ onLogin }: AuthPageProps) {
     try {
       if (mode === "login") {
         // 로그인 API 호출
-        const response = await fetch('http://localhost:8000/api/login', {
+        const response = await fetch('http://localhost:8000/api/v1/login', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -48,8 +48,16 @@ export function AuthPage({ onLogin }: AuthPageProps) {
         });
         const data = await response.json();
 
+        if (!response.ok) {
+          throw new Error(data.detail || '로그인에 실패했습니다');
+        }
+
         console.log('로그인 결과:', data);
-        alert(data.message || '로그인 성공!');
+
+        // JWT 토큰 저장
+        localStorage.setItem('access_token', data.access_token);
+
+        alert('로그인 성공!');
 
         // 로그인 처리
         onLogin();
@@ -78,7 +86,10 @@ export function AuthPage({ onLogin }: AuthPageProps) {
       }
     } catch (error) {
       console.error('요청 실패:', error);
-      alert(mode === "login" ? '로그인 중 오류가 발생했습니다.' : '회원가입 중 오류가 발생했습니다.');
+      // Error 객체의 message를 사용하여 백엔드에서 받은 에러 메시지 표시
+      const errorMessage = error instanceof Error ? error.message :
+        (mode === "login" ? '로그인 중 오류가 발생했습니다.' : '회원가입 중 오류가 발생했습니다.');
+      alert(errorMessage);
     }
   };
 

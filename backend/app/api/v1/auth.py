@@ -3,7 +3,9 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from app.models.user import User
 from tool.database import SessionLocal
-from tool.security import get_password_hash
+from tool.security import get_password_hash, verify_password, create_access_token
+import schemas, models
+from security import get_current_user
 
 router = APIRouter(
     tags=["Authentication"]
@@ -24,12 +26,22 @@ class SignupRequest(BaseModel):
     password: str
     role: str | None = None
 
-class AuthResponse(BaseModel):
+class SignupResponse(BaseModel):
     message: str
     user_id: int | None = None
     email: str | None = None
 
-@router.post("/signup", response_model=AuthResponse)
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+class LoginResponse(BaseModel):
+    access_token: str
+    token_type: str
+    user_id: int
+    email: str
+
+@router.post("/signup", response_model=SignupResponse)
 def signup(request: SignupRequest, db: Session = Depends(get_db)):
     """
     회원가입 엔드포인트 - DB에 사용자 정보 저장
@@ -68,7 +80,7 @@ def signup(request: SignupRequest, db: Session = Depends(get_db)):
 
         print(f"✅ User created with ID: {new_user.id}")
 
-        return AuthResponse(
+        return SignupResponse(
             message="회원가입이 완료되었습니다",
             user_id=new_user.id,
             email=new_user.email
@@ -79,3 +91,55 @@ def signup(request: SignupRequest, db: Session = Depends(get_db)):
         db.rollback()
         print(f"❌ Error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/login", response_model=LoginResponse)
+def login(request: LoginRequest, db: Session = Depends(get_db)):
+    """
+    로그인 엔드포인트 - 이메일과 비밀번호 검증 후 JWT 토큰 발급
+    """
+
+    print("=" * 50)
+    print(f"🔐 Login endpoint called!")
+    print(f"Email: {request.email}")
+    print("=" * 50)
+
+    try:
+        # 사용자 찾기
+        user = db.query(User).filter(User.email == request.email).first()
+        if not user:
+            raise HTTPException(
+                status_code=401,
+                detail="이메일 또는 비밀번호가 올바르지 않습니다"
+            )
+
+        # 비밀번호 검증
+        if not verify_password(request.password, user.password):
+            raise HTTPException(
+                status_code=401,
+                detail="이메일 또는 비밀번호가 올바르지 않습니다"
+            )
+
+        # JWT 토큰 생성
+        access_token = create_access_token(data={"sub": user.email, "user_id": user.id})
+
+        print(f"✅ Login successful for user ID: {user.id}")
+
+        return LoginResponse(
+            access_token=access_token,
+            token_type="bearer",
+            user_id=user.id,
+            email=user.email
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Login Error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/me", response_model=schemas.UserOut)
+def get_user_info(current_user: models.User = Depends(get_current_user)):
+    """
+    현재 로그인한 사용자의 정보를 반환합니다.
+    헤더에 유효한 JWT 토큰이 있어야 작동합니다.
+    """
+    return current_user
