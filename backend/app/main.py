@@ -2,8 +2,9 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from app.api import routes
-from tool.database import SessionLocal
+from tool.database import SessionLocal, init_db
 from sqlalchemy import text
+from app.models.user import User  # User 모델 import
 
 app = FastAPI(
     title="CaseMate LLM API",
@@ -23,6 +24,10 @@ app.add_middleware(
 # API 라우터 포함
 app.include_router(routes.router, prefix="/api")
 
+# v1 API 라우터 포함
+from app.api.v1 import router as v1_router
+app.include_router(v1_router, prefix="/api/v1")
+
 @app.get("/")
 async def root():
     return {"message": "CaseMate LLM API에 오신 것을 환영합니다"}
@@ -32,12 +37,16 @@ async def health_check():
     return {"status": "healthy"}
 
 @app.get("/db-init")
-async def db_init():
+async def db_init_endpoint():
     try:
-        # 데이터베이스 연결 테스트
+        # 데이터베이스 테이블 생성
+        init_db()
+
+        # 연결 테스트
         db = SessionLocal()
         db.execute(text("SELECT 1"))
         db.close()
+
         return {"message": "Database initialized successfully"}
     except Exception as e:
         print(str(e))

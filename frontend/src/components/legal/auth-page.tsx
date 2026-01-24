@@ -37,18 +37,48 @@ export function AuthPage({ onLogin }: AuthPageProps) {
     e.preventDefault();
 
     try {
-      // 백엔드 API 호출
-      const response = await fetch('http://localhost:8000/db-init');
-      const data = await response.json();
+      if (mode === "login") {
+        // 로그인 API 호출
+        const response = await fetch('http://localhost:8000/api/login', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ email, password }),
+        });
+        const data = await response.json();
 
-      console.log('DB 초기화 결과:', data);
-      alert(data.message); // 사용자에게 성공 메시지 표시
+        console.log('로그인 결과:', data);
+        alert(data.message || '로그인 성공!');
 
-      // 로그인 처리
-      onLogin();
+        // 로그인 처리
+        onLogin();
+      } else {
+        // 회원가입 API 호출
+        const response = await fetch('http://localhost:8000/api/v1/signup', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ name, email, password, role }),
+        });
+        const data = await response.json();
+
+        console.log('회원가입 결과:', data);
+        alert(data.message || '회원가입 성공! 로그인해주세요.');
+
+        // 입력 필드 초기화
+        setName("");
+        setEmail("");
+        setPassword("");
+        setRole("");
+
+        // 회원가입 성공 후 로그인 모드로 전환
+        setMode("login");
+      }
     } catch (error) {
-      console.error('DB 초기화 실패:', error);
-      alert('로그인 중 오류가 발생했습니다.');
+      console.error('요청 실패:', error);
+      alert(mode === "login" ? '로그인 중 오류가 발생했습니다.' : '회원가입 중 오류가 발생했습니다.');
     }
   };
 
