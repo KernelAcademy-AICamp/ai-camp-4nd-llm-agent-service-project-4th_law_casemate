@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from supabase import create_client, Client
 from dotenv import load_dotenv
 from datetime import datetime
+from pydantic import BaseModel
 import os
 import uuid
 
@@ -10,6 +11,12 @@ from tool.database import get_db
 from tool.security import get_current_user
 from app.models.user import User
 from app.models import evidence as models
+
+# 요청 스키마
+class FolderCreateRequest(BaseModel):
+    name: str
+    case_id: int | None = None
+    parent_id: int | None = None
 
 # 환경변수 로드
 load_dotenv()
@@ -117,6 +124,161 @@ async def upload_file(
         db.rollback()
         raise HTTPException(status_code=500, detail=f"업로드 실패: {str(e)}")
 
+@router.post("/folders")
+async def create_folder(
+    request: FolderCreateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    증거 폴더 생성
+
+    - name: 폴더명 (필수)
+    - case_id: (선택) 사건 ID - 특정 사건에 연결할 경우
+    - parent_id: (선택) 부모 폴더 ID - 하위 폴더 생성 시
+    - firm_id는 현재 사용자의 firm_id로 자동 설정
+    """
+    print(f"📁 폴더 생성: name={request.name}, case_id={request.case_id}, parent_id={request.parent_id}")
+
+    try:
+        # parent_id가 제공된 경우, 해당 폴더가 같은 firm에 속하는지 검증
+        if request.parent_id is not None:
+            parent_folder = db.query(models.EvidenceFolder).filter(
+                models.EvidenceFolder.id == request.parent_id
+            ).first()
+
+            if not parent_folder:
+                raise HTTPException(status_code=404, detail="부모 폴더를 찾을 수 없습니다")
+
+            if parent_folder.firm_id != current_user.firm_id:
+                raise HTTPException(status_code=403, detail="부모 폴더에 접근할 권한이 없습니다")
+
+        # 새 폴더 생성
+        new_folder = models.EvidenceFolder(
+            firm_id=current_user.firm_id,
+            case_id=request.case_id,
+            parent_id=request.parent_id,
+            name=request.name
+        )
+
+        db.add(new_folder)
+        db.commit()
+        db.refresh(new_folder)
+
+        print(f"✅ 폴더 생성 완료: folder_id={new_folder.id}")
+
+        return {
+            "message": "폴더 생성 완료",
+            "folder_id": new_folder.id,
+            "name": new_folder.name,
+            "firm_id": new_folder.firm_id,
+            "case_id": new_folder.case_id,
+            "parent_id": new_folder.parent_id,
+            "created_at": new_folder.created_at.isoformat() if new_folder.created_at else None
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        print(f"❌ 폴더 생성 실패: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"폴더 생성 실패: {str(e)}")
+
+@router.get("/folders")
+async def get_folder_list(
+    case_id: int | None = None,  # 선택적: 특정 사건의 폴더만 조회
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    증거 폴더 목록 조회
+
+    - 현재 사용자의 firm_id에 해당하는 폴더만 반환
+    - case_id: (선택) 특정 사건의 폴더만 필터링
+    - 계층 구조 포함 (parent_id)
+    """
+    print(f"📁 폴더 목록 조회: user_id={current_user.id}, firm_id={current_user.firm_id}, case_id={case_id}")
+
+    try:
+        # 쿼리 시작: 현재 사용자의 firm_id로 필터링
+        query = db.query(models.EvidenceFolder).filter(
+            models.EvidenceFolder.firm_id == current_user.firm_id
+        )
+
+        # case_id가 제공되면 추가 필터링
+        if case_id is not None:
+            query = query.filter(models.EvidenceFolder.case_id == case_id)
+
+        # 생성일시 기준 정렬
+        folders = query.order_by(models.EvidenceFolder.created_at.desc()).all()
+
+        print(f"✅ 조회된 폴더 수: {len(folders)}")
+
+        # 응답 데이터 구성
+        folder_list = []
+        for folder in folders:
+            folder_list.append({
+                "folder_id": folder.id,
+                "name": folder.name,
+                "firm_id": folder.firm_id,
+                "case_id": folder.case_id,
+                "parent_id": folder.parent_id,
+                "created_at": folder.created_at.isoformat() if folder.created_at else None
+            })
+
+        return {
+            "total": len(folder_list),
+            "folders": folder_list
+        }
+
+    except Exception as e:
+        print(f"❌ 폴더 목록 조회 실패: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"폴더 목록 조회 실패: {str(e)}")
+
+@router.get("/list")
+async def get_evidence_list(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    증거파일 목록 조회
+
+    - 현재 사용자의 law_firm_id에 해당하는 증거 파일만 반환
+    - 최신순 정렬 (created_at DESC)
+    """
+    print(f"📋 증거 목록 조회: user_id={current_user.id}, firm_id={current_user.firm_id}")
+
+    try:
+        # 현재 사용자의 law_firm_id로 필터링하여 증거 목록 조회
+        evidences = db.query(models.Evidence).filter(
+            models.Evidence.law_firm_id == current_user.firm_id
+        ).order_by(
+            models.Evidence.created_at.desc()
+        ).all()
+
+        print(f"✅ 조회된 증거 파일 수: {len(evidences)}")
+
+        # 응답 데이터 구성
+        evidence_list = []
+        for evidence in evidences:
+            evidence_list.append({
+                "evidence_id": evidence.id,
+                "file_name": evidence.file_name,
+                "file_type": evidence.file_type,
+                "file_path": evidence.file_path,
+                "created_at": evidence.created_at.isoformat() if evidence.created_at else None,
+                "uploader_id": evidence.uploader_id
+            })
+
+        return {
+            "total": len(evidence_list),
+            "files": evidence_list
+        }
+
+    except Exception as e:
+        print(f"❌ 증거 목록 조회 실패: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"목록 조회 실패: {str(e)}")
+
 @router.get("/{evidence_id}/url")
 async def get_signed_url(
     evidence_id: int,
@@ -165,3 +327,4 @@ async def get_signed_url(
     except Exception as e:
         print(f"❌ Signed URL 생성 실패: {str(e)}")
         raise HTTPException(status_code=500, detail=f"URL 생성 실패: {str(e)}")
+

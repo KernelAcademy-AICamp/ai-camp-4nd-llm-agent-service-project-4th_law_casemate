@@ -20,7 +20,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Scale, FileText, Search, BarChart3 } from "lucide-react";
+import { Scale, FileText, Search, BarChart3, Loader2 } from "lucide-react";
 
 interface AuthPageProps {
   onLogin: () => void;
@@ -32,9 +32,11 @@ export function AuthPage({ onLogin }: AuthPageProps) {
   const [password, setPassword] = useState("");
   const [name, setName] = useState("");
   const [role, setRole] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setIsLoading(true);
 
     try {
       if (mode === "login") {
@@ -88,6 +90,8 @@ export function AuthPage({ onLogin }: AuthPageProps) {
       const errorMessage = error instanceof Error ? error.message :
         (mode === "login" ? '로그인 중 오류가 발생했습니다.' : '회원가입 중 오류가 발생했습니다.');
       alert(errorMessage);
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -209,6 +213,7 @@ export function AuthPage({ onLogin }: AuthPageProps) {
                   placeholder="홍길동"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
+                  disabled={isLoading}
                   className="h-11"
                 />
               </div>
@@ -223,6 +228,7 @@ export function AuthPage({ onLogin }: AuthPageProps) {
                 placeholder="example@email.com"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
+                disabled={isLoading}
                 className="h-11"
               />
             </div>
@@ -236,6 +242,7 @@ export function AuthPage({ onLogin }: AuthPageProps) {
                 placeholder="••••••••"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
+                disabled={isLoading}
                 className="h-11"
               />
             </div>
@@ -244,7 +251,7 @@ export function AuthPage({ onLogin }: AuthPageProps) {
                 <Label htmlFor="role" className="text-sm font-medium">
                   직업
                 </Label>
-                <Select value={role} onValueChange={setRole}>
+                <Select value={role} onValueChange={setRole} disabled={isLoading}>
                   <SelectTrigger className="h-11">
                     <SelectValue placeholder="직업을 선택하세요" />
                   </SelectTrigger>
@@ -256,8 +263,19 @@ export function AuthPage({ onLogin }: AuthPageProps) {
                 </Select>
               </div>
             )}
-            <Button type="submit" className="w-full h-11 mt-2 font-medium">
-              {mode === "login" ? "로그인" : "회원가입"}
+            <Button
+              type="submit"
+              className="w-full h-11 mt-2 font-medium"
+              disabled={isLoading}
+            >
+              {isLoading ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  {mode === "login" ? "로그인 중..." : "회원가입 중..."}
+                </>
+              ) : (
+                mode === "login" ? "로그인" : "회원가입"
+              )}
             </Button>
           </form>
 
@@ -268,7 +286,8 @@ export function AuthPage({ onLogin }: AuthPageProps) {
                 <button
                   type="button"
                   onClick={() => setMode("signup")}
-                  className="text-foreground font-medium hover:underline underline-offset-4"
+                  disabled={isLoading}
+                  className="text-foreground font-medium hover:underline underline-offset-4 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   회원가입
                 </button>
@@ -279,7 +298,8 @@ export function AuthPage({ onLogin }: AuthPageProps) {
                 <button
                   type="button"
                   onClick={() => setMode("login")}
-                  className="text-foreground font-medium hover:underline underline-offset-4"
+                  disabled={isLoading}
+                  className="text-foreground font-medium hover:underline underline-offset-4 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   로그인
                 </button>
