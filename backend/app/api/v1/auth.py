@@ -3,9 +3,7 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from app.models.user import User
 from tool.database import SessionLocal
-from tool.security import get_password_hash, verify_password, create_access_token
-import schemas, models
-from security import get_current_user
+from tool.security import get_password_hash, verify_password, create_access_token, get_current_user
 
 router = APIRouter(
     tags=["Authentication"]
@@ -30,6 +28,8 @@ class SignupResponse(BaseModel):
     message: str
     user_id: int | None = None
     email: str | None = None
+    access_token: str  # 자동 로그인을 위한 JWT 토큰
+    token_type: str
 
 class LoginRequest(BaseModel):
     email: str
@@ -40,6 +40,15 @@ class LoginResponse(BaseModel):
     token_type: str
     user_id: int
     email: str
+
+class UserOut(BaseModel):
+    id: int
+    name: str
+    email: str
+    role: str | None = None
+
+    class Config:
+        from_attributes = True
 
 @router.post("/signup", response_model=SignupResponse)
 def signup(request: SignupRequest, db: Session = Depends(get_db)):
@@ -80,10 +89,17 @@ def signup(request: SignupRequest, db: Session = Depends(get_db)):
 
         print(f"✅ User created with ID: {new_user.id}")
 
+        # 자동 로그인을 위한 JWT 토큰 생성
+        access_token = create_access_token(data={"sub": new_user.email, "user_id": new_user.id})
+
+        print(f"✅ JWT token created for auto-login")
+
         return SignupResponse(
             message="회원가입이 완료되었습니다",
             user_id=new_user.id,
-            email=new_user.email
+            email=new_user.email,
+            access_token=access_token,
+            token_type="bearer"
         )
     except HTTPException:
         raise
@@ -136,8 +152,8 @@ def login(request: LoginRequest, db: Session = Depends(get_db)):
         print(f"❌ Login Error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/me", response_model=schemas.UserOut)
-def get_user_info(current_user: models.User = Depends(get_current_user)):
+@router.get("/me", response_model=UserOut)
+def get_user_info(current_user: User = Depends(get_current_user)):
     """
     현재 로그인한 사용자의 정보를 반환합니다.
     헤더에 유효한 JWT 토큰이 있어야 작동합니다.

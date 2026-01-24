@@ -72,17 +72,21 @@ export function AuthPage({ onLogin }: AuthPageProps) {
         });
         const data = await response.json();
 
+        if (!response.ok) {
+          throw new Error(data.detail || '회원가입에 실패했습니다');
+        }
+
         console.log('회원가입 결과:', data);
-        alert(data.message || '회원가입 성공! 로그인해주세요.');
 
-        // 입력 필드 초기화
-        setName("");
-        setEmail("");
-        setPassword("");
-        setRole("");
+        // JWT 토큰 저장 (자동 로그인)
+        localStorage.setItem('access_token', data.access_token);
+        localStorage.setItem('user_email', data.email);
+        localStorage.setItem('user_id', data.user_id);
 
-        // 회원가입 성공 후 로그인 모드로 전환
-        setMode("login");
+        alert(data.message || '회원가입 성공!');
+
+        // 자동 로그인 처리 - 바로 화면 이동
+        onLogin();
       }
     } catch (error) {
       console.error('요청 실패:', error);
