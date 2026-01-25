@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Text, UniqueConstraint
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Text, UniqueConstraint, Boolean, BigInteger
 from sqlalchemy.sql import func
 from tool.database import Base
 
@@ -7,14 +7,16 @@ class Evidence(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     file_name = Column(String(255), nullable=False)
-    file_url = Column(Text, nullable=False)  # 임시로 유지 (signed URL용)
-    file_path = Column(Text, nullable=True)  # Storage 내부 경로 (signed URL 생성용)
+    file_url = Column(Text, nullable=False)  # Signed URL (임시 접근용)
+    file_path = Column(String, nullable=True)  # Storage 내부 경로 (signed URL 재생성용)
     file_type = Column(String(50), nullable=True)
+    size = Column(BigInteger, nullable=True)  # 파일 크기 (바이트)
+    starred = Column(Boolean, nullable=True, server_default="false")  # 중요 표시
     created_at = Column(DateTime, server_default=func.now())
     uploader_id = Column(Integer, nullable=True)
-    law_firm_id = Column(Integer, nullable=True)  # 사무실 ID
-    case_id = Column(Integer, ForeignKey('cases.id'), nullable=True)  # 사건 ID
-    category_id = Column(Integer, ForeignKey('evidence_categories.id'), nullable=True)  # 카테고리 ID
+    law_firm_id = Column(Integer, ForeignKey('law_firms.id', ondelete='SET NULL'), nullable=True)  # 사무실 ID
+    case_id = Column(Integer, ForeignKey('cases.id', ondelete='CASCADE'), nullable=True)  # 사건 ID
+    category_id = Column(Integer, ForeignKey('evidence_categories.id', ondelete='SET NULL'), nullable=True)  # 카테고리 ID
 
 
 class Case(Base):

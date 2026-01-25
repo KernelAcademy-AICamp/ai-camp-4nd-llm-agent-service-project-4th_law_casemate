@@ -195,6 +195,12 @@ npm run dev
 - `GET /api/v1/evidence/list` - 증거 목록 조회 (인증 필요)
   - Query Parameters: `case_id` (optional), `category_id` (optional)
   - Response: `{ "total": int, "files": [...] }`
+- `DELETE /api/v1/evidence/delete/{evidence_id}` - 증거 파일 삭제 (인증 필요)
+  - Response: `{ "message": "string", "evidence_id": int }`
+- `POST /api/v1/evidence/{evidence_id}/link-case/{case_id}` - 증거를 사건에 연결 (인증 필요)
+  - Response: `{ "message": "string", "mapping_id": int }`
+- `PATCH /api/v1/evidence/{evidence_id}/starred` - 즐겨찾기 토글 (인증 필요)
+  - Response: `{ "message": "string", "starred": boolean }`
 - `GET /api/v1/evidence/{evidence_id}/url` - Signed URL 생성 (인증 필요)
   - Response: `{ "signed_url": "string", "expires_in": 3600 }`
 
@@ -357,16 +363,18 @@ CREATE TABLE cases (
 
 ```sql
 CREATE TABLE evidences (
-    id SERIAL PRIMARY KEY,           -- 자동 증가 ID
-    file_name VARCHAR(255) NOT NULL, -- 원본 파일명 (한글 지원)
-    file_url TEXT NOT NULL,          -- Signed URL (임시 접근용)
-    file_path TEXT,                  -- Supabase Storage 내부 경로
-    file_type VARCHAR(50),           -- 파일 타입 (MIME type)
-    created_at TIMESTAMP DEFAULT NOW(),
-    uploader_id INTEGER,             -- 업로더 ID
-    law_firm_id INTEGER,             -- 소속 법무법인 ID (데이터 격리)
-    case_id INTEGER REFERENCES cases(id),  -- 연결된 사건 ID
-    category_id INTEGER REFERENCES evidence_categories(id)  -- 카테고리 ID
+    id SERIAL PRIMARY KEY,                    -- 자동 증가 ID
+    file_name VARCHAR(255) NOT NULL,          -- 원본 파일명 (한글 지원)
+    file_url TEXT NOT NULL,                   -- Signed URL (임시 접근용)
+    file_path VARCHAR,                        -- Supabase Storage 내부 경로
+    file_type VARCHAR(50),                    -- 파일 타입 (MIME type)
+    size BIGINT,                              -- 파일 크기 (바이트)
+    starred BOOLEAN DEFAULT false,            -- 중요 표시 (즐겨찾기)
+    created_at TIMESTAMP DEFAULT NOW(),       -- 생성 시간
+    uploader_id INTEGER,                      -- 업로더 ID
+    law_firm_id INTEGER REFERENCES law_firms(id) ON DELETE SET NULL,  -- 소속 법무법인 ID
+    case_id INTEGER REFERENCES cases(id) ON DELETE CASCADE,           -- 연결된 사건 ID
+    category_id INTEGER REFERENCES evidence_categories(id) ON DELETE SET NULL  -- 카테고리 ID
 );
 ```
 

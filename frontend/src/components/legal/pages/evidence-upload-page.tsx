@@ -95,107 +95,6 @@ interface FileFolder {
 //   { id: "f5", name: "진술서", parentId: "root" },
 // ];
 
-// Sample files
-const sampleFiles: ManagedFile[] = [
-  {
-    id: "mf1",
-    name: "계약서_원본.pdf",
-    type: "application/pdf",
-    size: 2450000,
-    folder: "f1",
-    uploadedAt: "2024-01-15",
-    modifiedAt: "2024-01-15",
-    linkedCases: ["CASE-001"],
-    starred: true,
-  },
-  {
-    id: "mf2",
-    name: "임대차계약서_스캔.pdf",
-    type: "application/pdf",
-    size: 1820000,
-    folder: "f1-1",
-    uploadedAt: "2024-01-15",
-    modifiedAt: "2024-01-16",
-    linkedCases: ["CASE-001"],
-  },
-  {
-    id: "mf3",
-    name: "현장사진_001.jpg",
-    type: "image/jpeg",
-    size: 3200000,
-    folder: "f2-1",
-    uploadedAt: "2024-01-18",
-    modifiedAt: "2024-01-18",
-    linkedCases: ["CASE-001", "CASE-002"],
-    starred: true,
-  },
-  {
-    id: "mf4",
-    name: "현장사진_002.jpg",
-    type: "image/jpeg",
-    size: 2980000,
-    folder: "f2-1",
-    uploadedAt: "2024-01-18",
-    modifiedAt: "2024-01-18",
-  },
-  {
-    id: "mf5",
-    name: "녹취록_20240120.mp3",
-    type: "audio/mpeg",
-    size: 15600000,
-    folder: "f2-2",
-    uploadedAt: "2024-01-20",
-    modifiedAt: "2024-01-20",
-    linkedCases: ["CASE-002"],
-  },
-  {
-    id: "mf6",
-    name: "내용증명_발송본.pdf",
-    type: "application/pdf",
-    size: 890000,
-    folder: "f3",
-    uploadedAt: "2024-01-22",
-    modifiedAt: "2024-01-22",
-  },
-  {
-    id: "mf7",
-    name: "카카오톡_대화내역.pdf",
-    type: "application/pdf",
-    size: 5400000,
-    folder: "f2-3",
-    uploadedAt: "2024-01-25",
-    modifiedAt: "2024-01-25",
-    linkedCases: ["CASE-001"],
-  },
-  {
-    id: "mf8",
-    name: "영수증_모음.pdf",
-    type: "application/pdf",
-    size: 1250000,
-    folder: "f4",
-    uploadedAt: "2024-01-28",
-    modifiedAt: "2024-01-28",
-  },
-  {
-    id: "mf9",
-    name: "현장사진_003.jpg",
-    type: "image/jpeg",
-    size: 2750000,
-    folder: "f2-1",
-    uploadedAt: "2024-01-30",
-    modifiedAt: "2024-01-30",
-  },
-  {
-    id: "mf10",
-    name: "통장거래내역.pdf",
-    type: "application/pdf",
-    size: 980000,
-    folder: "f4",
-    uploadedAt: "2024-02-01",
-    modifiedAt: "2024-02-01",
-  },
-];
-
 export function EvidenceUploadPage({
   cases: propCases,
 }: EvidenceUploadPageProps) {
@@ -205,7 +104,7 @@ export function EvidenceUploadPage({
   const [selectedFolder, setSelectedFolder] = useState<string>("root");
   const [searchQuery, setSearchQuery] = useState("");
   const [viewMode, setViewMode] = useState<"grid" | "list">("list");
-  const [files, setFiles] = useState<ManagedFile[]>(sampleFiles);
+  const [files, setFiles] = useState<ManagedFile[]>([]);
   const [folders, setFolders] = useState<FileFolder[]>([
     { id: "root", name: "전체", parentId: null, expanded: true }
   ]);
@@ -220,6 +119,10 @@ export function EvidenceUploadPage({
   const [showAddCategoryDialog, setShowAddCategoryDialog] = useState(false);
   const [categoryName, setCategoryName] = useState("");
   const [selectedParentFolder, setSelectedParentFolder] = useState<string>("root");
+
+  // 삭제 확인 Dialog 상태
+  const [showDeleteConfirmDialog, setShowDeleteConfirmDialog] = useState(false);
+  const [fileToDelete, setFileToDelete] = useState<ManagedFile | null>(null);
 
   // 카테고리 목록 가져오기
   useEffect(() => {
@@ -262,6 +165,47 @@ export function EvidenceUploadPage({
     fetchCategories();
   }, []);
 
+  // 증거 파일 목록 가져오기 함수
+  const fetchEvidences = useCallback(async () => {
+    const token = localStorage.getItem('access_token');
+    if (!token) return;
+
+    try {
+      const response = await fetch('http://localhost:8000/api/v1/evidence/list', {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        console.log('증거 목록:', data);
+
+        // API 응답을 ManagedFile 형식으로 변환
+        const evidenceFiles: ManagedFile[] = data.files.map((evidence: any) => ({
+          id: evidence.evidence_id.toString(),
+          name: evidence.file_name,
+          type: evidence.file_type || 'application/octet-stream',
+          size: evidence.file_size || 0,
+          folder: evidence.category_id ? `cat-${evidence.category_id}` : 'root',
+          uploadedAt: evidence.created_at ? evidence.created_at.split('T')[0] : '',
+          modifiedAt: evidence.created_at ? evidence.created_at.split('T')[0] : '',
+          linkedCases: evidence.linked_case_ids ? evidence.linked_case_ids.map((id: number) => id.toString()) : [],
+          starred: evidence.starred || false,
+        }));
+
+        setFiles(evidenceFiles);
+      }
+    } catch (error) {
+      console.error('증거 목록 조회 실패:', error);
+    }
+  }, []);
+
+  // 초기 로드 시 증거 파일 목록 가져오기
+  useEffect(() => {
+    fetchEvidences();
+  }, [fetchEvidences]);
+
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     setDragOver(true);
@@ -278,8 +222,7 @@ export function EvidenceUploadPage({
 
       const droppedFiles = Array.from(e.dataTransfer.files);
       const token = localStorage.getItem('access_token');
-      const today = new Date().toISOString().split("T")[0];
-      const uploadedFiles: ManagedFile[] = [];
+      let uploadSuccessCount = 0;
 
       // 각 파일을 순차적으로 업로드
       for (const file of droppedFiles) {
@@ -287,6 +230,12 @@ export function EvidenceUploadPage({
           // FormData 생성
           const formData = new FormData();
           formData.append('file', file);
+
+          // 선택된 폴더가 카테고리면 category_id 추가
+          if (selectedFolder !== 'root') {
+            const categoryId = parseInt(selectedFolder.replace('cat-', ''));
+            formData.append('category_id', categoryId.toString());
+          }
 
           // 백엔드 API 호출
           const response = await fetch('http://localhost:8000/api/v1/evidence/upload', {
@@ -303,29 +252,19 @@ export function EvidenceUploadPage({
 
           const data = await response.json();
           console.log('업로드 API 응답:', data);
-
-          // 성공한 파일만 목록에 추가
-          uploadedFiles.push({
-            id: data.evidence_id.toString(),
-            name: file.name,
-            type: file.type,
-            size: file.size,
-            folder: selectedFolder,
-            uploadedAt: today,
-            modifiedAt: today,
-          });
+          uploadSuccessCount++;
         } catch (error) {
           console.error(`파일 업로드 실패 (${file.name}):`, error);
           alert(`파일 업로드 실패: ${file.name}`);
         }
       }
 
-      // 업로드 성공한 파일들을 목록에 추가
-      if (uploadedFiles.length > 0) {
-        setFiles((prev) => [...prev, ...uploadedFiles]);
+      // 업로드 성공한 파일이 있으면 목록 새로고침
+      if (uploadSuccessCount > 0) {
+        await fetchEvidences();
       }
     },
-    [selectedFolder]
+    [selectedFolder, fetchEvidences]
   );
 
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -333,8 +272,7 @@ export function EvidenceUploadPage({
     if (!selectedFilesInput) return;
 
     const token = localStorage.getItem('access_token');
-    const today = new Date().toISOString().split("T")[0];
-    const uploadedFiles: ManagedFile[] = [];
+    let uploadSuccessCount = 0;
 
     // 각 파일을 순차적으로 업로드
     for (const file of Array.from(selectedFilesInput)) {
@@ -342,6 +280,12 @@ export function EvidenceUploadPage({
         // FormData 생성
         const formData = new FormData();
         formData.append('file', file);
+
+        // 선택된 폴더가 카테고리면 category_id 추가
+        if (selectedFolder !== 'root') {
+          const categoryId = parseInt(selectedFolder.replace('cat-', ''));
+          formData.append('category_id', categoryId.toString());
+        }
 
         // 백엔드 API 호출
         const response = await fetch('http://localhost:8000/api/v1/evidence/upload', {
@@ -358,42 +302,106 @@ export function EvidenceUploadPage({
 
         const data = await response.json();
         console.log('업로드 API 응답:', data);
-
-        // 성공한 파일만 목록에 추가
-        uploadedFiles.push({
-          id: data.evidence_id.toString(),
-          name: file.name,
-          type: file.type,
-          size: file.size,
-          folder: selectedFolder,
-          uploadedAt: today,
-          modifiedAt: today,
-        });
+        uploadSuccessCount++;
       } catch (error) {
         console.error(`파일 업로드 실패 (${file.name}):`, error);
         alert(`파일 업로드 실패: ${file.name}`);
       }
     }
 
-    // 업로드 성공한 파일들을 목록에 추가
-    if (uploadedFiles.length > 0) {
-      setFiles((prev) => [...prev, ...uploadedFiles]);
+    // 업로드 성공한 파일이 있으면 목록 새로고침
+    if (uploadSuccessCount > 0) {
+      await fetchEvidences();
     }
   };
 
   const deleteFile = (fileId: string) => {
-    setFiles((prev) => prev.filter((f) => f.id !== fileId));
-    setSelectedFiles((prev) => {
-      const next = new Set(prev);
-      next.delete(fileId);
-      return next;
-    });
+    // 파일 찾기
+    const file = files.find(f => f.id === fileId);
+    if (!file) return;
+
+    // 삭제 확인 다이얼로그 표시
+    setFileToDelete(file);
+    setShowDeleteConfirmDialog(true);
   };
 
-  const toggleStar = (fileId: string) => {
-    setFiles((prev) =>
-      prev.map((f) => (f.id === fileId ? { ...f, starred: !f.starred } : f))
-    );
+  const confirmDeleteFile = async () => {
+    if (!fileToDelete) return;
+
+    const token = localStorage.getItem('access_token');
+    if (!token) {
+      alert('로그인이 필요합니다.');
+      return;
+    }
+
+    try {
+      const evidenceId = fileToDelete.id;
+
+      // 백엔드 API 호출하여 파일 삭제
+      const response = await fetch(`http://localhost:8000/api/v1/evidence/delete/${evidenceId}`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+
+      if (!response.ok) {
+        throw new Error(`삭제 실패: ${response.statusText}`);
+      }
+
+      const data = await response.json();
+      console.log('증거 삭제 성공:', data);
+
+      // 증거 목록 새로고침
+      await fetchEvidences();
+
+      // 다이얼로그 닫기
+      setShowDeleteConfirmDialog(false);
+      setFileToDelete(null);
+
+      // 선택된 파일 목록에서도 제거
+      setSelectedFiles((prev) => {
+        const next = new Set(prev);
+        next.delete(evidenceId);
+        return next;
+      });
+    } catch (error) {
+      console.error('증거 삭제 실패:', error);
+      alert(`증거 삭제 실패: ${error}`);
+    }
+  };
+
+  const toggleStar = async (fileId: string) => {
+    const token = localStorage.getItem('access_token');
+    if (!token) {
+      alert('로그인이 필요합니다.');
+      return;
+    }
+
+    try {
+      // 백엔드 API 호출하여 starred 토글
+      const response = await fetch(`http://localhost:8000/api/v1/evidence/${fileId}/starred`, {
+        method: 'PATCH',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+
+      if (!response.ok) {
+        throw new Error(`즐겨찾기 토글 실패: ${response.statusText}`);
+      }
+
+      const data = await response.json();
+      console.log('즐겨찾기 토글 성공:', data);
+
+      // 로컬 상태 업데이트
+      setFiles((prev) =>
+        prev.map((f) => (f.id === fileId ? { ...f, starred: data.starred } : f))
+      );
+    } catch (error) {
+      console.error('즐겨찾기 토글 실패:', error);
+      alert(`즐겨찾기 토글 실패: ${error}`);
+    }
   };
 
   const formatFileSize = (bytes: number) => {
@@ -472,25 +480,44 @@ export function EvidenceUploadPage({
     setShowLinkModal(true);
   };
 
-  const linkFileToCase = () => {
+  const linkFileToCase = async () => {
     if (!selectedFileForLink || !selectedCaseForLink) return;
 
-    setFiles((prev) =>
-      prev.map((f) =>
-        f.id === selectedFileForLink.id
-          ? {
-            ...f,
-            linkedCases: [
-              ...(f.linkedCases || []),
-              selectedCaseForLink,
-            ].filter((v, i, a) => a.indexOf(v) === i),
-          }
-          : f
-      )
-    );
-    setShowLinkModal(false);
-    setSelectedFileForLink(null);
-    setSelectedCaseForLink("");
+    const token = localStorage.getItem('access_token');
+    if (!token) {
+      alert('로그인이 필요합니다.');
+      return;
+    }
+
+    try {
+      const evidenceId = selectedFileForLink.id;
+      const caseId = selectedCaseForLink;
+
+      // 백엔드 API 호출
+      const response = await fetch(`http://localhost:8000/api/v1/evidence/${evidenceId}/link-case/${caseId}`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+
+      if (!response.ok) {
+        throw new Error(`연결 실패: ${response.statusText}`);
+      }
+
+      const data = await response.json();
+      console.log('사건 연결 성공:', data);
+
+      // 증거 목록 새로고침
+      await fetchEvidences();
+
+      setShowLinkModal(false);
+      setSelectedFileForLink(null);
+      setSelectedCaseForLink("");
+    } catch (error) {
+      console.error('사건 연결 실패:', error);
+      alert(`사건 연결 실패: ${error}`);
+    }
   };
 
   const getCaseName = (caseId: string) => {
@@ -1172,6 +1199,56 @@ export function EvidenceUploadPage({
                   disabled={!categoryName.trim()}
                 >
                   만들기
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* Delete Confirmation Dialog */}
+      {showDeleteConfirmDialog && fileToDelete && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <Card className="w-full max-w-md">
+            <CardHeader>
+              <CardTitle className="text-base text-destructive">증거 파일 삭제</CardTitle>
+              <CardDescription className="text-sm">
+                이 작업은 되돌릴 수 없습니다
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="space-y-2">
+                <p className="text-sm">다음 파일을 삭제하시겠습니까?</p>
+                <div className="p-3 bg-muted rounded-md">
+                  <p className="font-medium text-sm">{fileToDelete.name}</p>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    크기: {(fileToDelete.size / 1024).toFixed(2)} KB
+                  </p>
+                  {fileToDelete.linkedCases && fileToDelete.linkedCases.length > 0 && (
+                    <p className="text-xs text-muted-foreground mt-1">
+                      연결된 사건: {fileToDelete.linkedCases.length}건
+                    </p>
+                  )}
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  ※ 스토리지에서도 영구적으로 삭제되며, 연결된 사건 매핑도 함께 삭제됩니다.
+                </p>
+              </div>
+              <div className="flex justify-end gap-2">
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setShowDeleteConfirmDialog(false);
+                    setFileToDelete(null);
+                  }}
+                >
+                  취소
+                </Button>
+                <Button
+                  variant="destructive"
+                  onClick={confirmDeleteFile}
+                >
+                  삭제
                 </Button>
               </div>
             </CardContent>
