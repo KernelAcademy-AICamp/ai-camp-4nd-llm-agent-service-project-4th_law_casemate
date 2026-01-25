@@ -80,20 +80,20 @@ interface FileFolder {
   expanded?: boolean;
 }
 
-// Sample folder tree structure
-const sampleFolders: FileFolder[] = [
-  { id: "root", name: "내 드라이브", parentId: null, expanded: true },
-  { id: "f1", name: "계약서류", parentId: "root", expanded: false },
-  { id: "f1-1", name: "임대차계약", parentId: "f1" },
-  { id: "f1-2", name: "용역계약", parentId: "f1" },
-  { id: "f2", name: "증거자료", parentId: "root", expanded: true },
-  { id: "f2-1", name: "사진", parentId: "f2" },
-  { id: "f2-2", name: "녹취록", parentId: "f2" },
-  { id: "f2-3", name: "채팅기록", parentId: "f2" },
-  { id: "f3", name: "서신/통지", parentId: "root" },
-  { id: "f4", name: "금융/거래", parentId: "root" },
-  { id: "f5", name: "진술서", parentId: "root" },
-];
+// // Sample folder tree structure
+// const sampleFolders: FileFolder[] = [
+//   { id: "root", name: "내 드라이브", parentId: null, expanded: true },
+//   { id: "f1", name: "계약서류", parentId: "root", expanded: false },
+//   { id: "f1-1", name: "임대차계약", parentId: "f1" },
+//   { id: "f1-2", name: "용역계약", parentId: "f1" },
+//   { id: "f2", name: "증거자료", parentId: "root", expanded: true },
+//   { id: "f2-1", name: "사진", parentId: "f2" },
+//   { id: "f2-2", name: "녹취록", parentId: "f2" },
+//   { id: "f2-3", name: "채팅기록", parentId: "f2" },
+//   { id: "f3", name: "서신/통지", parentId: "root" },
+//   { id: "f4", name: "금융/거래", parentId: "root" },
+//   { id: "f5", name: "진술서", parentId: "root" },
+// ];
 
 // Sample files
 const sampleFiles: ManagedFile[] = [
@@ -206,7 +206,9 @@ export function EvidenceUploadPage({
   const [searchQuery, setSearchQuery] = useState("");
   const [viewMode, setViewMode] = useState<"grid" | "list">("list");
   const [files, setFiles] = useState<ManagedFile[]>(sampleFiles);
-  const [folders, setFolders] = useState<FileFolder[]>(sampleFolders);
+  const [folders, setFolders] = useState<FileFolder[]>([
+    { id: "root", name: "전체", parentId: null, expanded: true }
+  ]);
   const [dragOver, setDragOver] = useState(false);
   const [showLinkModal, setShowLinkModal] = useState(false);
   const [selectedFileForLink, setSelectedFileForLink] = useState<ManagedFile | null>(null);
