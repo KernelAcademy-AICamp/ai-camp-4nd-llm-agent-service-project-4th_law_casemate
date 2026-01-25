@@ -1,7 +1,7 @@
 "use client";
 
 import React from "react";
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -213,6 +213,47 @@ export function EvidenceUploadPage({
   const [selectedCaseForLink, setSelectedCaseForLink] = useState("");
   const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set());
   const [sidebarView, setSidebarView] = useState<"folders" | "recent" | "starred">("folders");
+
+  // 카테고리 목록 가져오기
+  useEffect(() => {
+    const fetchCategories = async () => {
+      const token = localStorage.getItem('access_token');
+      if (!token) return;
+
+      try {
+        const response = await fetch('http://localhost:8000/api/v1/evidence/categories', {
+          headers: {
+            'Authorization': `Bearer ${token}`
+          }
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          console.log('카테고리 목록:', data);
+
+          // API 응답을 FileFolder 형식으로 변환
+          const categoryFolders: FileFolder[] = data.categories.map((cat: any) => ({
+            id: `cat-${cat.category_id}`,
+            name: cat.name,
+            parentId: cat.parent_id ? `cat-${cat.parent_id}` : 'root',
+            expanded: false
+          }));
+
+          // root 폴더 추가
+          const allFolders: FileFolder[] = [
+            { id: "root", name: "전체", parentId: null, expanded: true },
+            ...categoryFolders
+          ];
+
+          setFolders(allFolders);
+        }
+      } catch (error) {
+        console.error('카테고리 목록 조회 실패:', error);
+      }
+    };
+
+    fetchCategories();
+  }, []);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();

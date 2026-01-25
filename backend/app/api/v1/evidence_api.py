@@ -13,10 +13,10 @@ from app.models.user import User
 from app.models import evidence as models
 
 # 요청 스키마
-class FolderCreateRequest(BaseModel):
+class CategoryCreateRequest(BaseModel):
     name: str
-    case_id: int | None = None
     parent_id: int | None = None
+    order_index: int | None = 0
 
 # 환경변수 로드
 load_dotenv()
@@ -35,7 +35,8 @@ router = APIRouter()
 @router.post("/upload")
 async def upload_file(
     file: UploadFile = File(...),
-    case_id: int | None = None,  # 선택적 파라미터: 사건에 연결할 경우에만 제공
+    case_id: int | None = None,  # 선택적: 사건 ID
+    category_id: int | None = None,  # 선택적: 카테고리 ID
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)  # 로그인 확인
 ):
@@ -43,19 +44,20 @@ async def upload_file(
     증거파일 업로드
 
     - file: 업로드할 파일 (한글 파일명 지원)
-    - case_id: (선택) 사건 ID - 특정 사건에 연결할 경우에만 제공
+    - case_id: (선택) 사건 ID
+    - category_id: (선택) 카테고리 ID
     - 인증된 사용자만 업로드 가능
 
     **응답:**
     - evidence_id: 생성된 증거 ID
     - file_name: 원본 파일명 (한글 포함)
-    - url: Supabase Storage 공개 URL
-    - case_linked: 사건 연결 여부
+    - url: Signed URL (60분 유효)
     """
     print("=" * 50)
     print(f"🎉 Upload Evidence endpoint called!")
     print(f"📁 파일명: {file.filename}")
     print(f"📋 사건 ID: {case_id if case_id else '미연결'}")
+    print(f"📂 카테고리 ID: {category_id if category_id else '미분류'}")
     print("=" * 50)
 
     # 1. 파일 이름 중복 방지를 위한 고유 식별자 생성
@@ -88,155 +90,140 @@ async def upload_file(
         print(f"🔗 Signed URL: {signed_url}")
 
         # 5. DB 저장
-        # (1) evidences 테이블에 기록
         new_evidence = models.Evidence(
             uploader_id=current_user.id,
             law_firm_id=current_user.firm_id,  # 사용자의 사무실 ID 저장
             file_name=file.filename,  # 원본 파일명 저장 (한글 지원)
             file_url=signed_url,  # Signed URL 저장
             file_path=file_path,  # Storage 내부 경로 저장 (재생성용)
-            file_type=file.content_type
+            file_type=file.content_type,
+            case_id=case_id,  # 사건 ID (선택적)
+            category_id=category_id  # 카테고리 ID (선택적)
         )
         db.add(new_evidence)
         db.commit()
         db.refresh(new_evidence)
-
-        # (2) 사건과의 매핑 테이블 기록 (case_id가 제공된 경우에만)
-        case_linked = False
-        if case_id is not None:
-            new_mapping = models.CaseEvidenceMapping(
-                case_id=case_id,
-                evidence_id=new_evidence.id
-            )
-            db.add(new_mapping)
-            db.commit()
-            case_linked = True
 
         return {
             "message": "업로드 성공",
             "evidence_id": new_evidence.id,
             "file_name": file.filename,
             "url": signed_url,
-            "case_linked": case_linked
+            "case_id": new_evidence.case_id,
+            "category_id": new_evidence.category_id
         }
 
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"업로드 실패: {str(e)}")
 
-@router.post("/folders")
-async def create_folder(
-    request: FolderCreateRequest,
+@router.post("/categories")
+async def create_category(
+    request: CategoryCreateRequest,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     """
-    증거 폴더 생성
+    증거 카테고리 생성
 
-    - name: 폴더명 (필수)
-    - case_id: (선택) 사건 ID - 특정 사건에 연결할 경우
-    - parent_id: (선택) 부모 폴더 ID - 하위 폴더 생성 시
+    - name: 카테고리명 (필수)
+    - parent_id: (선택) 부모 카테고리 ID - 하위 카테고리 생성 시
+    - order_index: (선택) 정렬 순서 (기본값: 0)
     - firm_id는 현재 사용자의 firm_id로 자동 설정
     """
-    print(f"📁 폴더 생성: name={request.name}, case_id={request.case_id}, parent_id={request.parent_id}")
+    print(f"📂 카테고리 생성: name={request.name}, parent_id={request.parent_id}, order_index={request.order_index}")
 
     try:
-        # parent_id가 제공된 경우, 해당 폴더가 같은 firm에 속하는지 검증
+        # parent_id가 제공된 경우, 해당 카테고리가 같은 firm에 속하는지 검증
         if request.parent_id is not None:
-            parent_folder = db.query(models.EvidenceFolder).filter(
-                models.EvidenceFolder.id == request.parent_id
+            parent_category = db.query(models.EvidenceCategory).filter(
+                models.EvidenceCategory.id == request.parent_id
             ).first()
 
-            if not parent_folder:
-                raise HTTPException(status_code=404, detail="부모 폴더를 찾을 수 없습니다")
+            if not parent_category:
+                raise HTTPException(status_code=404, detail="부모 카테고리를 찾을 수 없습니다")
 
-            if parent_folder.firm_id != current_user.firm_id:
-                raise HTTPException(status_code=403, detail="부모 폴더에 접근할 권한이 없습니다")
+            if parent_category.firm_id != current_user.firm_id:
+                raise HTTPException(status_code=403, detail="부모 카테고리에 접근할 권한이 없습니다")
 
-        # 새 폴더 생성
-        new_folder = models.EvidenceFolder(
+        # 새 카테고리 생성
+        new_category = models.EvidenceCategory(
             firm_id=current_user.firm_id,
-            case_id=request.case_id,
             parent_id=request.parent_id,
-            name=request.name
+            name=request.name,
+            order_index=request.order_index if request.order_index is not None else 0
         )
 
-        db.add(new_folder)
+        db.add(new_category)
         db.commit()
-        db.refresh(new_folder)
+        db.refresh(new_category)
 
-        print(f"✅ 폴더 생성 완료: folder_id={new_folder.id}")
+        print(f"✅ 카테고리 생성 완료: category_id={new_category.id}")
 
         return {
-            "message": "폴더 생성 완료",
-            "folder_id": new_folder.id,
-            "name": new_folder.name,
-            "firm_id": new_folder.firm_id,
-            "case_id": new_folder.case_id,
-            "parent_id": new_folder.parent_id,
-            "created_at": new_folder.created_at.isoformat() if new_folder.created_at else None
+            "message": "카테고리 생성 완료",
+            "category_id": new_category.id,
+            "name": new_category.name,
+            "firm_id": new_category.firm_id,
+            "parent_id": new_category.parent_id,
+            "order_index": new_category.order_index
         }
 
     except HTTPException:
         raise
     except Exception as e:
         db.rollback()
-        print(f"❌ 폴더 생성 실패: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"폴더 생성 실패: {str(e)}")
+        print(f"❌ 카테고리 생성 실패: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"카테고리 생성 실패: {str(e)}")
 
-@router.get("/folders")
-async def get_folder_list(
-    case_id: int | None = None,  # 선택적: 특정 사건의 폴더만 조회
+@router.get("/categories")
+async def get_category_list(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     """
-    증거 폴더 목록 조회
+    증거 카테고리 목록 조회
 
-    - 현재 사용자의 firm_id에 해당하는 폴더만 반환
-    - case_id: (선택) 특정 사건의 폴더만 필터링
+    - 현재 사용자의 firm_id에 해당하는 카테고리만 반환
     - 계층 구조 포함 (parent_id)
+    - order_index 기준 정렬
     """
-    print(f"📁 폴더 목록 조회: user_id={current_user.id}, firm_id={current_user.firm_id}, case_id={case_id}")
+    print(f"📂 카테고리 목록 조회: user_id={current_user.id}, firm_id={current_user.firm_id}")
 
     try:
-        # 쿼리 시작: 현재 사용자의 firm_id로 필터링
-        query = db.query(models.EvidenceFolder).filter(
-            models.EvidenceFolder.firm_id == current_user.firm_id
-        )
+        # 쿼리: 현재 사용자의 firm_id로 필터링, order_index로 정렬
+        categories = db.query(models.EvidenceCategory).filter(
+            models.EvidenceCategory.firm_id == current_user.firm_id
+        ).order_by(
+            models.EvidenceCategory.order_index.asc()
+        ).all()
 
-        # case_id가 제공되면 추가 필터링
-        if case_id is not None:
-            query = query.filter(models.EvidenceFolder.case_id == case_id)
-
-        # 생성일시 기준 정렬
-        folders = query.order_by(models.EvidenceFolder.created_at.desc()).all()
-
-        print(f"✅ 조회된 폴더 수: {len(folders)}")
+        print(f"✅ 조회된 카테고리 수: {len(categories)}")
 
         # 응답 데이터 구성
-        folder_list = []
-        for folder in folders:
-            folder_list.append({
-                "folder_id": folder.id,
-                "name": folder.name,
-                "firm_id": folder.firm_id,
-                "case_id": folder.case_id,
-                "parent_id": folder.parent_id,
-                "created_at": folder.created_at.isoformat() if folder.created_at else None
+        category_list = []
+        for category in categories:
+            category_list.append({
+                "category_id": category.id,
+                "name": category.name,
+                "firm_id": category.firm_id,
+                "parent_id": category.parent_id,
+                "order_index": category.order_index
             })
 
         return {
-            "total": len(folder_list),
-            "folders": folder_list
+            "total": len(category_list),
+            "categories": category_list
         }
 
     except Exception as e:
-        print(f"❌ 폴더 목록 조회 실패: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"폴더 목록 조회 실패: {str(e)}")
+        print(f"❌ 카테고리 목록 조회 실패: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"카테고리 목록 조회 실패: {str(e)}")
 
 @router.get("/list")
 async def get_evidence_list(
+    case_id: int | None = None,  # 선택적: 특정 사건의 파일만 조회
+    category_id: int | None = None,  # 선택적: 특정 카테고리의 파일만 조회
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -244,17 +231,28 @@ async def get_evidence_list(
     증거파일 목록 조회
 
     - 현재 사용자의 law_firm_id에 해당하는 증거 파일만 반환
+    - case_id: (선택) 특정 사건의 파일만 필터링
+    - category_id: (선택) 특정 카테고리의 파일만 필터링
     - 최신순 정렬 (created_at DESC)
     """
-    print(f"📋 증거 목록 조회: user_id={current_user.id}, firm_id={current_user.firm_id}")
+    print(f"📋 증거 목록 조회: user_id={current_user.id}, firm_id={current_user.firm_id}, case_id={case_id}, category_id={category_id}")
 
     try:
-        # 현재 사용자의 law_firm_id로 필터링하여 증거 목록 조회
-        evidences = db.query(models.Evidence).filter(
+        # 쿼리 시작: 현재 사용자의 law_firm_id로 필터링
+        query = db.query(models.Evidence).filter(
             models.Evidence.law_firm_id == current_user.firm_id
-        ).order_by(
-            models.Evidence.created_at.desc()
-        ).all()
+        )
+
+        # case_id가 제공되면 추가 필터링
+        if case_id is not None:
+            query = query.filter(models.Evidence.case_id == case_id)
+
+        # category_id가 제공되면 추가 필터링
+        if category_id is not None:
+            query = query.filter(models.Evidence.category_id == category_id)
+
+        # 최신순 정렬
+        evidences = query.order_by(models.Evidence.created_at.desc()).all()
 
         print(f"✅ 조회된 증거 파일 수: {len(evidences)}")
 
@@ -266,6 +264,8 @@ async def get_evidence_list(
                 "file_name": evidence.file_name,
                 "file_type": evidence.file_type,
                 "file_path": evidence.file_path,
+                "case_id": evidence.case_id,
+                "category_id": evidence.category_id,
                 "created_at": evidence.created_at.isoformat() if evidence.created_at else None,
                 "uploader_id": evidence.uploader_id
             })

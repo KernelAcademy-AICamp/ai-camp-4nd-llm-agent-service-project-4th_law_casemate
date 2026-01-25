@@ -13,6 +13,8 @@ class Evidence(Base):
     created_at = Column(DateTime, server_default=func.now())
     uploader_id = Column(Integer, nullable=True)
     law_firm_id = Column(Integer, nullable=True)  # 사무실 ID
+    case_id = Column(Integer, ForeignKey('cases.id'), nullable=True)  # 사건 ID
+    category_id = Column(Integer, ForeignKey('evidence_categories.id'), nullable=True)  # 카테고리 ID
 
 
 class Case(Base):
@@ -41,12 +43,11 @@ class CaseEvidenceMapping(Base):
     )
 
 
-class EvidenceFolder(Base):
-    __tablename__ = "evidence_folders"
+class EvidenceCategory(Base):
+    __tablename__ = "evidence_categories"
 
     id = Column(Integer, primary_key=True, index=True)
     firm_id = Column(Integer, nullable=True)  # 회사(사무실) ID
-    case_id = Column(Integer, nullable=True)  # 사건 ID
-    parent_id = Column(Integer, ForeignKey('evidence_folders.id'), nullable=True)  # 부모 폴더
+    parent_id = Column(Integer, ForeignKey('evidence_categories.id'), nullable=True)  # 부모 카테고리
     name = Column(String(100), nullable=False)
-    created_at = Column(DateTime, server_default=func.now())
+    order_index = Column(Integer, server_default="0", nullable=True)  # 정렬 순서
