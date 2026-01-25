@@ -117,6 +117,48 @@ async def upload_file(
         db.rollback()
         raise HTTPException(status_code=500, detail=f"업로드 실패: {str(e)}")
 
+@router.delete("/delete/{category_id}")
+async def delete_category(
+    category_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    증거 카테고리 삭제
+
+    - category_id: 삭제할 카테고리 ID
+    - 해당 카테고리가 현재 사용자의 firm_id에 속하는지 검증 후 삭제
+    """
+    print(f"🗑️ 카테고리 삭제 요청: category_id={category_id}, user_id={current_user.id}, firm_id={current_user.firm_id}")
+
+    try:
+        # 1. 카테고리 조회
+        category = db.query(models.EvidenceCategory).filter(
+            models.EvidenceCategory.id == category_id
+        ).first()
+
+        if not category:
+            raise HTTPException(status_code=404, detail="카테고리를 찾을 수 없습니다")
+
+        # 2. 소유권 검증
+        if category.firm_id != current_user.firm_id:
+            raise HTTPException(status_code=403, detail="해당 카테고리를 삭제할 권한이 없습니다")
+
+        # 3. 카테고리 삭제
+        db.delete(category)
+        db.commit()
+
+        print(f"✅ 카테고리 삭제 완료: category_id={category_id}")
+
+        return {"message": "카테고리 삭제 완료"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        print(f"❌ 카테고리 삭제 실패: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"카테고리 삭제 실패: {str(e)}")
+
 @router.post("/categories")
 async def create_category(
     request: CategoryCreateRequest,

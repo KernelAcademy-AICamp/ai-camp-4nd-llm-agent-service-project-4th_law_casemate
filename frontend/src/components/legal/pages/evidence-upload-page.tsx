@@ -214,6 +214,11 @@ export function EvidenceUploadPage({
   const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set());
   const [sidebarView, setSidebarView] = useState<"folders" | "recent" | "starred">("folders");
 
+  // 카테고리 추가 Dialog 상태
+  const [showAddCategoryDialog, setShowAddCategoryDialog] = useState(false);
+  const [categoryName, setCategoryName] = useState("");
+  const [selectedParentFolder, setSelectedParentFolder] = useState<string>("root");
+
   // 카테고리 목록 가져오기
   useEffect(() => {
     const fetchCategories = async () => {
@@ -516,6 +521,73 @@ export function EvidenceUploadPage({
     setSelectedFiles(new Set());
   };
 
+  const addCategory = () => {
+    setShowAddCategoryDialog(true);
+  };
+
+  const handleCreateCategory = async () => {
+    const token = localStorage.getItem('access_token');
+
+    if (!token) {
+      alert('로그인이 필요합니다.');
+      return;
+    }
+
+    try {
+      const response = await fetch('http://localhost:8000/api/v1/evidence/categories', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          name: categoryName,
+          parent_id: selectedParentFolder === 'root' ? null : parseInt(selectedParentFolder.replace('cat-', '')),
+          order_index: 0
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(`카테고리 생성 실패: ${response.statusText}`);
+      }
+
+      const data = await response.json();
+      console.log('카테고리 생성 성공:', data);
+
+      // 카테고리 목록 새로고침
+      const categoriesResponse = await fetch('http://localhost:8000/api/v1/evidence/categories', {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+
+      if (categoriesResponse.ok) {
+        const categoriesData = await categoriesResponse.json();
+        const categoryFolders: FileFolder[] = categoriesData.categories.map((cat: any) => ({
+          id: `cat-${cat.category_id}`,
+          name: cat.name,
+          parentId: cat.parent_id ? `cat-${cat.parent_id}` : 'root',
+          expanded: false
+        }));
+
+        const allFolders: FileFolder[] = [
+          { id: "root", name: "전체", parentId: null, expanded: true },
+          ...categoryFolders
+        ];
+
+        setFolders(allFolders);
+      }
+
+      // Dialog 닫기 및 초기화
+      setShowAddCategoryDialog(false);
+      setCategoryName("");
+      setSelectedParentFolder("root");
+    } catch (error) {
+      console.error('카테고리 생성 실패:', error);
+      alert(`카테고리 생성 실패: ${error}`);
+    }
+  };
+
   const renderFolderTree = (parentId: string | null, depth: number = 0) => {
     const childFolders = getChildFolders(parentId);
     if (childFolders.length === 0) return null;
@@ -739,7 +811,7 @@ export function EvidenceUploadPage({
           <div className="mt-4 pt-4 border-t border-border/60">
             <div className="flex items-center justify-between px-2 mb-2">
               <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">폴더</span>
-              <Button variant="ghost" size="icon" className="h-6 w-6">
+              <Button variant="ghost" size="icon" className="h-6 w-6" onClick={addCategory}>
                 <FolderPlus className="h-3.5 w-3.5" />
               </Button>
             </div>
@@ -1029,6 +1101,75 @@ export function EvidenceUploadPage({
                 </Button>
                 <Button onClick={linkFileToCase} disabled={!selectedCaseForLink}>
                   연결하기
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* Add Category Dialog */}
+      {showAddCategoryDialog && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <Card className="w-full max-w-md">
+            <CardHeader>
+              <CardTitle className="text-base">카테고리 추가</CardTitle>
+              <CardDescription className="text-sm">
+                새로운 증거 카테고리를 생성합니다
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="space-y-2">
+                <label htmlFor="category-name" className="text-sm font-medium">
+                  카테고리명 <span className="text-destructive">*</span>
+                </label>
+                <Input
+                  id="category-name"
+                  placeholder="예: 계약서류, 증거자료..."
+                  value={categoryName}
+                  onChange={(e) => setCategoryName(e.target.value)}
+                  autoFocus
+                />
+              </div>
+              <div className="space-y-2">
+                <label htmlFor="parent-folder" className="text-sm font-medium">
+                  상위 카테고리
+                </label>
+                <Select
+                  value={selectedParentFolder}
+                  onValueChange={setSelectedParentFolder}
+                >
+                  <SelectTrigger id="parent-folder">
+                    <SelectValue placeholder="루트 (최상위)" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="root">루트 (최상위)</SelectItem>
+                    {folders
+                      .filter((f) => f.id !== "root")
+                      .map((folder) => (
+                        <SelectItem key={folder.id} value={folder.id}>
+                          {folder.name}
+                        </SelectItem>
+                      ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="flex justify-end gap-2">
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setShowAddCategoryDialog(false);
+                    setCategoryName("");
+                    setSelectedParentFolder("root");
+                  }}
+                >
+                  취소
+                </Button>
+                <Button
+                  onClick={handleCreateCategory}
+                  disabled={!categoryName.trim()}
+                >
+                  만들기
                 </Button>
               </div>
             </CardContent>
