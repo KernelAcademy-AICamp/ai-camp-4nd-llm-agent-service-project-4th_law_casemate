@@ -3,8 +3,14 @@ uvicorn[standard]==0.27.0
 pydantic==2.5.3
 python-dotenv==1.0.0
 
-# LLM 관련 라이브러리 (필요에 따라 주석 해제)
-# openai==1.10.0
-# anthropic==0.8.1
-# langchain==0.1.0
-# langchain-openai==0.0.2
+# HTTP 클라이언트
+httpx==0.27.0
+
+# LLM 관련 라이브러리
+openai==1.10.0
+
+# 벡터 DB
+qdrant-client==1.16.1
+
+# Sparse embedding (BM25)
+fastembed==0.4.2

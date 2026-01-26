@@ -11,6 +11,7 @@ import { EvidenceDetailPage } from '@/components/legal/pages/evidence-detail-pag
 import { PrecedentDetailPage } from '@/components/legal/pages/precedent-detail-page'
 import { NewCasePage } from '@/components/legal/pages/new-case-page'
 import { EvidenceUploadPage } from '@/components/legal/pages/evidence-upload-page'
+import { SearchProvider } from '@/contexts/search-context'
 import './App.css'
 
 function App() {
@@ -18,6 +19,7 @@ function App() {
 
   return (
     <BrowserRouter>
+      <SearchProvider>
       <Routes>
         {/* Public Route */}
         <Route
@@ -44,6 +46,7 @@ function App() {
         {/* Fallback */}
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
+      </SearchProvider>
     </BrowserRouter>
   )
 }

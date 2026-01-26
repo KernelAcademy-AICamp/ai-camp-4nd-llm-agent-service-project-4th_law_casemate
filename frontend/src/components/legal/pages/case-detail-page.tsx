@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
   type CaseData,
@@ -8,8 +8,21 @@ import {
   type PrecedentData,
   sampleCases,
   sampleEvidenceByDate,
-  samplePrecedents
 } from "@/lib/sample-data";
+
+// 유사 판례 API 응답 타입
+interface SimilarCaseResult {
+  case_number: string;
+  case_name: string;
+  court_name: string;
+  judgment_date: string;
+  score: number;
+}
+
+interface SimilarCasesResponse {
+  total: number;
+  results: SimilarCaseResult[];
+}
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -188,6 +201,55 @@ export function CaseDetailPage({
   });
 
   const allEvidence = Object.values(sampleEvidenceByDate).flat();
+
+  // 유사 판례 상태
+  const [similarCases, setSimilarCases] = useState<SimilarCaseResult[]>([]);
+  const [similarCasesLoading, setSimilarCasesLoading] = useState(false);
+
+  // 유사 판례 검색 (overviewData 기반)
+  const fetchSimilarCases = async () => {
+    // overviewData의 summary + facts를 쿼리로 사용
+    const query = `${overviewData.summary} ${overviewData.facts}`;
+
+    if (!query.trim()) return;
+
+    setSimilarCasesLoading(true);
+    try {
+      const response = await fetch("/api/search/cases/similar", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          query: query,
+          exclude_case_number: null  // 현재 사건은 판례가 아니므로 제외할 필요 없음
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error("유사 판례 검색 중 오류가 발생했습니다.");
+      }
+
+      const data: SimilarCasesResponse = await response.json();
+      setSimilarCases(data.results);
+    } catch (err) {
+      console.error("유사 판례 검색 실패:", err);
+      setSimilarCases([]);
+    } finally {
+      setSimilarCasesLoading(false);
+    }
+  };
+
+  // 컴포넌트 마운트 시 유사 판례 검색
+  useEffect(() => {
+    fetchSimilarCases();
+  }, []);
+
+  // 날짜 포맷 (20200515 → 2020.05.15)
+  const formatJudgmentDate = (dateStr: string) => {
+    if (!dateStr || dateStr.length !== 8) return dateStr || "";
+    return `${dateStr.slice(0, 4)}.${dateStr.slice(4, 6)}.${dateStr.slice(6, 8)}`;
+  };
 
   const handleSaveEvent = () => {
     if (editingEvent) {
@@ -536,67 +598,65 @@ export function CaseDetailPage({
             </CardContent>
           </Card>
 
-          {/* Similar Precedents with Win/Lose Indicators */}
+          {/* Similar Precedents from API */}
           <Card className="border-border/60">
             <CardHeader className="pb-4">
               <CardTitle className="text-base font-medium flex items-center gap-2">
                 <Scale className="h-4 w-4" />
                 유사 판례
+                {similarCases.length > 0 && (
+                  <Badge variant="secondary" className="text-xs font-normal">
+                    {similarCases.length}건
+                  </Badge>
+                )}
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="space-y-3">
-                {samplePrecedents.map((precedent) => {
-                  const isWin = precedent.result.includes("유죄") || precedent.result.includes("승");
-                  return (
+              {similarCasesLoading ? (
+                <div className="text-center py-8 text-muted-foreground">
+                  <div className="animate-spin h-6 w-6 border-2 border-primary border-t-transparent rounded-full mx-auto mb-2" />
+                  유사 판례 검색 중...
+                </div>
+              ) : similarCases.length === 0 ? (
+                <div className="text-center py-8 text-muted-foreground text-sm">
+                  유사 판례가 없습니다.
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {similarCases.map((caseItem, index) => (
                     <button
-                      key={precedent.id}
+                      key={`${caseItem.case_number}-${index}`}
                       type="button"
-                      onClick={() => navigate(`/precedents/${precedent.id}`)}
-                      className={`w-full p-4 rounded-lg border bg-card hover:bg-secondary/30 transition-colors text-left group overflow-hidden relative ${isWin
-                        ? "border-l-4 border-l-emerald-500 border-t-border/60 border-r-border/60 border-b-border/60"
-                        : "border-l-4 border-l-amber-500 border-t-border/60 border-r-border/60 border-b-border/60"
-                        }`}
+                      onClick={() => navigate(`/precedents/${encodeURIComponent(caseItem.case_number)}`)}
+                      className="w-full p-4 rounded-lg border border-l-4 border-l-primary border-t-border/60 border-r-border/60 border-b-border/60 bg-card hover:bg-secondary/30 transition-colors text-left group overflow-hidden relative"
                     >
                       <div className="flex items-start justify-between gap-4">
                         <div className="flex-1 min-w-0 space-y-1.5">
                           <div className="flex items-center gap-2 flex-wrap">
-                            <div className={`w-2 h-2 rounded-full shrink-0 ${isWin ? "bg-emerald-500" : "bg-amber-500"}`} />
+                            <div className="w-2 h-2 rounded-full shrink-0 bg-primary" />
                             <h4 className="text-sm font-medium">
-                              {precedent.caseNo}
+                              {caseItem.case_number}
                             </h4>
                             <Badge
                               variant="secondary"
                               className="text-xs font-normal"
                             >
-                              유사도 {precedent.similarity}%
-                            </Badge>
-                            <Badge
-                              variant="outline"
-                              className={`text-xs font-normal ${isWin
-                                ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-                                : "border-amber-200 bg-amber-50 text-amber-700"
-                                }`}
-                            >
-                              {isWin ? "승소" : "패소"}
+                              유사도 {Math.round(caseItem.score * 100)}%
                             </Badge>
                           </div>
                           <p className="text-sm text-foreground/80">
-                            {precedent.issue}
+                            {caseItem.case_name}
                           </p>
                           <p className="text-xs text-muted-foreground">
-                            {precedent.keyPoint}
-                          </p>
-                          <p className="text-xs text-muted-foreground/70 mt-1">
-                            {precedent.result}
+                            {caseItem.court_name} | {formatJudgmentDate(caseItem.judgment_date)}
                           </p>
                         </div>
                         <ArrowUpRight className="h-4 w-4 text-muted-foreground/40 group-hover:text-foreground transition-colors shrink-0" />
                       </div>
                     </button>
-                  );
-                })}
-              </div>
+                  ))}
+                </div>
+              )}
             </CardContent>
           </Card>
         </TabsContent>

@@ -1,3 +1,4 @@
+from typing import Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from app.services.llm_service import LLMService
@@ -7,7 +8,7 @@ llm_service = LLMService()
 
 class ChatRequest(BaseModel):
     message: str
-    conversation_id: str | None = None
+    conversation_id: Optional[str] = None
 
 class ChatResponse(BaseModel):
     response: str
