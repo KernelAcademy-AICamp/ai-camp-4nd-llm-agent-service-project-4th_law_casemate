@@ -13,9 +13,15 @@ import { Menu, User, LogOut, Settings, Scale } from "lucide-react";
 
 interface MainLayoutProps {
   onLogout: () => void;
+  userInfo?: {
+    id: number;
+    name: string;
+    email: string;
+    role?: string;
+  };
 }
 
-export function MainLayout({ onLogout }: MainLayoutProps) {
+export function MainLayout({ onLogout, userInfo }: MainLayoutProps) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const location = useLocation();
   const navigate = useNavigate();
@@ -72,7 +78,17 @@ export function MainLayout({ onLogout }: MainLayoutProps) {
                 <span className="sr-only">프로필</span>
               </Button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-48">
+            <DropdownMenuContent align="end" className="w-56">
+              <div className="px-2 py-1.5">
+                <p className="text-sm font-medium">{userInfo?.name || '사용자'}</p>
+                <p className="text-xs text-muted-foreground">{userInfo?.email || ''}</p>
+                {userInfo?.role && (
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    {userInfo.role === 'lawyer' ? '변호사' : userInfo.role === 'legal-officer' ? '법무사' : userInfo.role}
+                  </p>
+                )}
+              </div>
+              <DropdownMenuSeparator />
               <DropdownMenuItem>
                 <User className="h-4 w-4 mr-2" />
                 내 프로필

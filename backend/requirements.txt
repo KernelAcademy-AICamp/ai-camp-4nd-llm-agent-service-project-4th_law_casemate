@@ -1,7 +1,32 @@
+# FastAPI 웹 프레임워크 및 서버
 fastapi==0.109.0
 uvicorn[standard]==0.27.0
+python-multipart==0.0.6     # 파일 업로드 처리
+
+# 데이터 검증 및 설정
 pydantic==2.5.3
 python-dotenv==1.0.0
+
+# HTTP 클라이언트
+httpx==0.27.0
+
+# LLM 관련 라이브러리
+openai==1.10.0
+
+# 벡터 DB
+qdrant-client==1.16.1
+
+# Sparse embedding (BM25)
+fastembed==0.4.2
+# 데이터베이스 (PostgreSQL with Supabase)
+sqlalchemy==2.0.25         # ORM for database operations
+psycopg2-binary==2.9.9     # PostgreSQL adapter for Python
+supabase==2.3.4            # Supabase client for storage
+
+# 인증 및 보안
+passlib==1.7.4             # Password hashing utilities
+bcrypt==4.0.1              # Bcrypt hashing (compatible with passlib 1.7.4)
+python-jose[cryptography]==3.3.0  # JWT token creation and verification
 
 # LLM 관련 라이브러리 (필요에 따라 주석 해제)
 # openai==1.10.0
