@@ -53,3 +53,16 @@ class EvidenceCategory(Base):
     parent_id = Column(Integer, ForeignKey('evidence_categories.id'), nullable=True)  # 부모 카테고리
     name = Column(String(100), nullable=False)
     order_index = Column(Integer, server_default="0", nullable=True)  # 정렬 순서
+
+
+class EvidenceAnalysis(Base):
+    """증거 분석 결과 저장 (STT, OCR, 법적 분석 등)"""
+    __tablename__ = "evidence_analyses"
+
+    id = Column(Integer, primary_key=True, index=True)
+    evidence_id = Column(Integer, nullable=True)  # 증거 ID
+    summary = Column(Text, nullable=True)  # STT 결과 또는 요약
+    legal_relevance = Column(Text, nullable=True)  # 법적 관련성 분석
+    risk_level = Column(String(20), nullable=True)  # 위험 수준 (high, medium, low)
+    ai_model = Column(String(50), nullable=True)  # 사용한 AI 모델 (예: openai-whisper)
+    created_at = Column(DateTime, server_default=func.now())

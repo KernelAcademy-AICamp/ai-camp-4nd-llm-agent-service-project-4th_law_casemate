@@ -6,6 +6,7 @@ from datetime import datetime
 from pydantic import BaseModel
 import os
 import uuid
+from app.services.stt_service import STTService
 
 from tool.database import get_db
 from tool.security import get_current_user
@@ -104,6 +105,38 @@ async def upload_file(
         db.add(new_evidence)
         db.commit()
         db.refresh(new_evidence)
+
+        # 6. 오디오 파일인 경우 STT 처리
+        audio_types = ['audio/mpeg', 'audio/wav', 'audio/mp3', 'audio/m4a', 'audio/ogg', 'audio/webm', 'audio/x-m4a']
+        if file.content_type and file.content_type.lower() in audio_types:
+            try:
+                print(f"🎤 오디오 파일 감지: {file.content_type} - STT 처리 시작")
+
+                # STT 처리 (OpenAI API 직접 호출 - ffmpeg 불필요!)
+                from io import BytesIO
+                from fastapi import UploadFile
+
+                # 파일 내용으로 새 UploadFile 객체 생성
+                audio_file = BytesIO(file_content)
+                audio_upload = UploadFile(
+                    file=audio_file,
+                    filename=file.filename,
+                    headers={"content-type": file.content_type}
+                )
+
+                stt_service = STTService()
+                stt_result = await stt_service.run(audio_upload)
+
+                # STT 결과 로그 출력 (DB 저장은 나중에 구현 예정)
+                if stt_result:
+                    print(f"✅ STT 변환 완료 (evidence_id={new_evidence.id})")
+                    print(f"📝 변환된 텍스트: {stt_result[:200]}..." if len(stt_result) > 200 else f"📝 변환된 텍스트: {stt_result}")
+                else:
+                    print(f"⚠️ STT 결과가 비어있음 (evidence_id={new_evidence.id})")
+
+            except Exception as stt_error:
+                print(f"⚠️ STT 처리 실패 (업로드는 성공): {str(stt_error)}")
+                # STT 실패해도 업로드는 성공으로 처리
 
         return {
             "message": "업로드 성공",

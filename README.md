@@ -290,7 +290,7 @@ pip install python-multipart==0.0.6 # 파일 업로드 처리
 ```bash
 pip install sqlalchemy==2.0.25      # ORM (Object-Relational Mapping)
 pip install psycopg2-binary==2.9.9  # PostgreSQL 어댑터
-pip install supabase==2.3.4         # Supabase 클라이언트 (Storage 및 DB)
+pip install supabase==2.10.0        # Supabase 클라이언트 (Storage 및 DB)
 ```
 
 #### 인증 및 보안
@@ -308,9 +308,11 @@ pip install fastembed==0.4.2        # 고속 임베딩 라이브러리 (Sparse e
 
 #### LLM 관련 라이브러리
 ```bash
-pip install openai==1.10.0          # OpenAI API 클라이언트
+pip install openai==1.10.0          # OpenAI API 클라이언트 (STT 포함)
 pip install httpx==0.27.0           # HTTP 클라이언트
 ```
+
+**참고:** OpenAI Whisper API를 사용하여 오디오 파일을 자동으로 텍스트로 변환합니다. 추가 시스템 의존성(ffmpeg 등)이 필요하지 않습니다.
 
 #### 한 번에 설치
 ```bash
@@ -429,6 +431,25 @@ CREATE TABLE case_evidence_mappings (
     UNIQUE(case_id, evidence_id)     -- 중복 매핑 방지
 );
 ```
+
+### Evidence_Analyses 테이블 (AI 분석 결과 저장)
+
+```sql
+CREATE TABLE evidence_analyses (
+    id SERIAL PRIMARY KEY,
+    evidence_id INTEGER,                    -- 증거 ID
+    summary TEXT,                           -- STT 결과 또는 요약문
+    legal_relevance TEXT,                   -- 법적 관련성 분석
+    risk_level VARCHAR(20),                 -- 위험 수준 (high, medium, low)
+    ai_model VARCHAR(50),                   -- 사용한 AI 모델 (예: openai-whisper)
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+- **summary**: 오디오 파일의 STT(Speech-to-Text) 변환 결과 또는 문서 요약
+- **legal_relevance**: AI가 분석한 법적 관련성 및 중요 포인트
+- **risk_level**: AI가 판단한 법적 위험 수준
+- **ai_model**: 분석에 사용된 AI 모델명
 
 테이블은 `/db-init` 엔드포인트 호출 시 자동으로 생성됩니다.
 

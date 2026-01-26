@@ -18,10 +18,11 @@ qdrant-client==1.16.1
 
 # Sparse embedding (BM25)
 fastembed==0.4.2
+
 # 데이터베이스 (PostgreSQL with Supabase)
 sqlalchemy==2.0.25         # ORM for database operations
 psycopg2-binary==2.9.9     # PostgreSQL adapter for Python
-supabase==2.3.4            # Supabase client for storage
+supabase==2.10.0            # Supabase client for storage
 
 # 인증 및 보안
 passlib==1.7.4             # Password hashing utilities

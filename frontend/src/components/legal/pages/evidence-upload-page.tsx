@@ -45,6 +45,7 @@ import {
   Clock,
   HardDrive,
   Home,
+  Loader2,
 } from "lucide-react";
 import {
   DropdownMenu,
@@ -114,6 +115,10 @@ export function EvidenceUploadPage({
   const [selectedCaseForLink, setSelectedCaseForLink] = useState("");
   const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set());
   const [sidebarView, setSidebarView] = useState<"folders" | "recent" | "starred">("folders");
+
+  // 업로드 상태 관리
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState({ current: 0, total: 0 });
 
   // 카테고리 추가 Dialog 상태
   const [showAddCategoryDialog, setShowAddCategoryDialog] = useState(false);
@@ -224,8 +229,13 @@ export function EvidenceUploadPage({
       const token = localStorage.getItem('access_token');
       let uploadSuccessCount = 0;
 
+      // 업로드 시작
+      setIsUploading(true);
+      setUploadProgress({ current: 0, total: droppedFiles.length });
+
       // 각 파일을 순차적으로 업로드
-      for (const file of droppedFiles) {
+      for (let i = 0; i < droppedFiles.length; i++) {
+        const file = droppedFiles[i];
         try {
           // FormData 생성
           const formData = new FormData();
@@ -253,11 +263,17 @@ export function EvidenceUploadPage({
           const data = await response.json();
           console.log('업로드 API 응답:', data);
           uploadSuccessCount++;
+
+          // 진행률 업데이트
+          setUploadProgress({ current: i + 1, total: droppedFiles.length });
         } catch (error) {
           console.error(`파일 업로드 실패 (${file.name}):`, error);
           alert(`파일 업로드 실패: ${file.name}`);
         }
       }
+
+      // 업로드 완료
+      setIsUploading(false);
 
       // 업로드 성공한 파일이 있으면 목록 새로고침
       if (uploadSuccessCount > 0) {
@@ -272,10 +288,16 @@ export function EvidenceUploadPage({
     if (!selectedFilesInput) return;
 
     const token = localStorage.getItem('access_token');
+    const filesArray = Array.from(selectedFilesInput);
     let uploadSuccessCount = 0;
 
+    // 업로드 시작
+    setIsUploading(true);
+    setUploadProgress({ current: 0, total: filesArray.length });
+
     // 각 파일을 순차적으로 업로드
-    for (const file of Array.from(selectedFilesInput)) {
+    for (let i = 0; i < filesArray.length; i++) {
+      const file = filesArray[i];
       try {
         // FormData 생성
         const formData = new FormData();
@@ -303,16 +325,25 @@ export function EvidenceUploadPage({
         const data = await response.json();
         console.log('업로드 API 응답:', data);
         uploadSuccessCount++;
+
+        // 진행률 업데이트
+        setUploadProgress({ current: i + 1, total: filesArray.length });
       } catch (error) {
         console.error(`파일 업로드 실패 (${file.name}):`, error);
         alert(`파일 업로드 실패: ${file.name}`);
       }
     }
 
+    // 업로드 완료
+    setIsUploading(false);
+
     // 업로드 성공한 파일이 있으면 목록 새로고침
     if (uploadSuccessCount > 0) {
       await fetchEvidences();
     }
+
+    // input 초기화
+    e.target.value = '';
   };
 
   const deleteFile = (fileId: string) => {
@@ -781,13 +812,24 @@ export function EvidenceUploadPage({
             onChange={handleFileSelect}
             className="hidden"
             id="file-upload-main"
+            disabled={isUploading}
           />
           <Button
             size="sm"
             onClick={() => document.getElementById("file-upload-main")?.click()}
+            disabled={isUploading}
           >
-            <Upload className="h-4 w-4 mr-1.5" />
-            업로드
+            {isUploading ? (
+              <>
+                <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
+                업로드 중...
+              </>
+            ) : (
+              <>
+                <Upload className="h-4 w-4 mr-1.5" />
+                업로드
+              </>
+            )}
           </Button>
         </div>
       </div>
@@ -887,11 +929,12 @@ export function EvidenceUploadPage({
 
           {/* Drop Zone (when dragging) */}
           <div
-            onDragOver={handleDragOver}
-            onDragLeave={handleDragLeave}
-            onDrop={handleDrop}
-            className={`flex-1 overflow-auto transition-colors rounded-lg ${dragOver ? "bg-secondary/50 border-2 border-dashed border-foreground/30" : ""
-              }`}
+            onDragOver={isUploading ? undefined : handleDragOver}
+            onDragLeave={isUploading ? undefined : handleDragLeave}
+            onDrop={isUploading ? undefined : handleDrop}
+            className={`flex-1 overflow-auto transition-colors rounded-lg ${
+              dragOver && !isUploading ? "bg-secondary/50 border-2 border-dashed border-foreground/30" : ""
+            } ${isUploading ? "opacity-60 pointer-events-none" : ""}`}
           >
             {dragOver ? (
               <div className="h-full flex items-center justify-center">
@@ -1200,6 +1243,46 @@ export function EvidenceUploadPage({
                 >
                   만들기
                 </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* Upload Progress Modal */}
+      {isUploading && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <Card className="w-full max-w-md">
+            <CardHeader>
+              <CardTitle className="text-base flex items-center gap-2">
+                <Loader2 className="h-5 w-5 animate-spin text-primary" />
+                파일 업로드 중
+              </CardTitle>
+              <CardDescription className="text-sm">
+                파일을 업로드하는 중입니다. 잠시만 기다려 주세요.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="space-y-2">
+                <div className="flex justify-between text-sm">
+                  <span className="text-muted-foreground">진행률</span>
+                  <span className="font-medium">
+                    {uploadProgress.current} / {uploadProgress.total}
+                  </span>
+                </div>
+                <div className="h-2 bg-secondary rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-primary transition-all duration-300"
+                    style={{
+                      width: `${uploadProgress.total > 0 ? (uploadProgress.current / uploadProgress.total) * 100 : 0}%`
+                    }}
+                  />
+                </div>
+                <p className="text-xs text-muted-foreground text-center mt-2">
+                  {uploadProgress.current === uploadProgress.total && uploadProgress.total > 0
+                    ? "업로드 완료 중..."
+                    : "파일을 업로드하고 있습니다..."}
+                </p>
               </div>
             </CardContent>
           </Card>
