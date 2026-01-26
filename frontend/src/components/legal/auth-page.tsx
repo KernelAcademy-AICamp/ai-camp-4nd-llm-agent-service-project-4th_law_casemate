@@ -20,7 +20,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Scale, FileText, Search, BarChart3 } from "lucide-react";
+import { Scale, FileText, Search, BarChart3, Loader2 } from "lucide-react";
 
 interface AuthPageProps {
   onLogin: () => void;
@@ -32,10 +32,75 @@ export function AuthPage({ onLogin }: AuthPageProps) {
   const [password, setPassword] = useState("");
   const [name, setName] = useState("");
   const [role, setRole] = useState("");
+  const [firmCode, setFirmCode] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    onLogin();
+
+    // 회원가입 시 회사 코드 필수 검증
+    if (mode === "signup" && !firmCode.trim()) {
+      alert('회사 코드를 입력해주세요.');
+      return;
+    }
+
+    setIsLoading(true);
+
+    try {
+      if (mode === "login") {
+        // 로그인 API 호출
+        const response = await fetch('http://localhost:8000/api/v1/login', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ email, password }),
+        });
+        const data = await response.json();
+
+        if (!response.ok) {
+          throw new Error(data.detail || '로그인에 실패했습니다');
+        }
+
+        console.log('로그인 결과:', data);
+
+        // JWT 토큰 저장
+        localStorage.setItem('access_token', data.access_token);
+        // 로그인 처리
+        onLogin();
+      } else {
+        // 회원가입 API 호출 (회사 코드 포함)
+        const response = await fetch('http://localhost:8000/api/v1/signup', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ name, email, password, role, firm_code: firmCode }),
+        });
+        const data = await response.json();
+
+        if (!response.ok) {
+          throw new Error(data.detail || '회원가입에 실패했습니다');
+        }
+
+        console.log('회원가입 결과:', data);
+
+        // JWT 토큰 저장 (자동 로그인)
+        localStorage.setItem('access_token', data.access_token);
+        localStorage.setItem('user_email', data.email);
+        localStorage.setItem('user_id', data.user_id);
+        // 자동 로그인 처리 - 바로 화면 이동
+        onLogin();
+      }
+    } catch (error) {
+      console.error('요청 실패:', error);
+      // Error 객체의 message를 사용하여 백엔드에서 받은 에러 메시지 표시
+      const errorMessage = error instanceof Error ? error.message :
+        (mode === "login" ? '로그인 중 오류가 발생했습니다.' : '회원가입 중 오류가 발생했습니다.');
+      alert(errorMessage);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (
@@ -156,6 +221,7 @@ export function AuthPage({ onLogin }: AuthPageProps) {
                   placeholder="홍길동"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
+                  disabled={isLoading}
                   className="h-11"
                 />
               </div>
@@ -170,6 +236,7 @@ export function AuthPage({ onLogin }: AuthPageProps) {
                 placeholder="example@email.com"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
+                disabled={isLoading}
                 className="h-11"
               />
             </div>
@@ -183,28 +250,56 @@ export function AuthPage({ onLogin }: AuthPageProps) {
                 placeholder="••••••••"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
+                disabled={isLoading}
                 className="h-11"
               />
             </div>
             {mode === "signup" && (
-              <div className="space-y-2">
-                <Label htmlFor="role" className="text-sm font-medium">
-                  직업
-                </Label>
-                <Select value={role} onValueChange={setRole}>
-                  <SelectTrigger className="h-11">
-                    <SelectValue placeholder="직업을 선택하세요" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="lawyer">변호사</SelectItem>
-                    <SelectItem value="legal-officer">법무사</SelectItem>
-                    <SelectItem value="other">기타</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
+              <>
+                <div className="space-y-2">
+                  <Label htmlFor="role" className="text-sm font-medium">
+                    직업
+                  </Label>
+                  <Select value={role} onValueChange={setRole} disabled={isLoading}>
+                    <SelectTrigger className="h-11">
+                      <SelectValue placeholder="직업을 선택하세요" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="lawyer">변호사</SelectItem>
+                      <SelectItem value="legal-officer">법무사</SelectItem>
+                      <SelectItem value="other">기타</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="firm-code" className="text-sm font-medium">
+                    회사 코드 <span className="text-destructive">*</span>
+                  </Label>
+                  <Input
+                    id="firm-code"
+                    placeholder="회사 코드를 입력하세요"
+                    value={firmCode}
+                    onChange={(e) => setFirmCode(e.target.value)}
+                    disabled={isLoading}
+                    className="h-11"
+                    required
+                  />
+                </div>
+              </>
             )}
-            <Button type="submit" className="w-full h-11 mt-2 font-medium">
-              {mode === "login" ? "로그인" : "회원가입"}
+            <Button
+              type="submit"
+              className="w-full h-11 mt-2 font-medium"
+              disabled={isLoading}
+            >
+              {isLoading ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  {mode === "login" ? "로그인 중..." : "회원가입 중..."}
+                </>
+              ) : (
+                mode === "login" ? "로그인" : "회원가입"
+              )}
             </Button>
           </form>
 
@@ -215,7 +310,8 @@ export function AuthPage({ onLogin }: AuthPageProps) {
                 <button
                   type="button"
                   onClick={() => setMode("signup")}
-                  className="text-foreground font-medium hover:underline underline-offset-4"
+                  disabled={isLoading}
+                  className="text-foreground font-medium hover:underline underline-offset-4 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   회원가입
                 </button>
@@ -226,7 +322,8 @@ export function AuthPage({ onLogin }: AuthPageProps) {
                 <button
                   type="button"
                   onClick={() => setMode("login")}
-                  className="text-foreground font-medium hover:underline underline-offset-4"
+                  disabled={isLoading}
+                  className="text-foreground font-medium hover:underline underline-offset-4 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   로그인
                 </button>
