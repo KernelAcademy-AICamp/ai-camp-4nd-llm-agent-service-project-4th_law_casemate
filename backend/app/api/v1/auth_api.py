@@ -23,6 +23,7 @@ class SignupRequest(BaseModel):
     email: str
     password: str
     role: str | None = None
+    firm_code: int  # 회사 코드 (필수)
 
 class SignupResponse(BaseModel):
     message: str
@@ -62,9 +63,14 @@ def signup(request: SignupRequest, db: Session = Depends(get_db)):
     print(f"Name: {request.name}")
     print(f"Email: {request.email}")
     print(f"Role: {request.role}")
+    print(f"Firm Code: {request.firm_code}")
     print("=" * 50)
 
     try:
+        # 회사 코드 필수 검증
+        if not request.firm_code:
+            raise HTTPException(status_code=400, detail="회사 코드를 입력해주세요")
+
         # 이메일 중복 확인
         existing_user = db.query(User).filter(User.email == request.email).first()
         if existing_user:
@@ -77,12 +83,13 @@ def signup(request: SignupRequest, db: Session = Depends(get_db)):
         # 비밀번호 해시 처리
         hashed_password = get_password_hash(request.password)
 
-        # 새 사용자 생성
+        # 새 사용자 생성 (firm_id에 firm_code 저장)
         new_user = User(
             name=request.name,
             email=request.email,
             password=hashed_password,  # 해시된 비밀번호 저장
-            role=request.role
+            role=request.role,
+            firm_id=request.firm_code  # 회사 코드를 firm_id에 저장
         )
         db.add(new_user)
         db.commit()

@@ -32,10 +32,18 @@ export function AuthPage({ onLogin }: AuthPageProps) {
   const [password, setPassword] = useState("");
   const [name, setName] = useState("");
   const [role, setRole] = useState("");
+  const [firmCode, setFirmCode] = useState("");
   const [isLoading, setIsLoading] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+
+    // 회원가입 시 회사 코드 필수 검증
+    if (mode === "signup" && !firmCode.trim()) {
+      alert('회사 코드를 입력해주세요.');
+      return;
+    }
+
     setIsLoading(true);
 
     try {
@@ -61,13 +69,13 @@ export function AuthPage({ onLogin }: AuthPageProps) {
         // 로그인 처리
         onLogin();
       } else {
-        // 회원가입 API 호출
+        // 회원가입 API 호출 (회사 코드 포함)
         const response = await fetch('http://localhost:8000/api/v1/signup', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
           },
-          body: JSON.stringify({ name, email, password, role }),
+          body: JSON.stringify({ name, email, password, role, firm_code: firmCode }),
         });
         const data = await response.json();
 
@@ -247,21 +255,37 @@ export function AuthPage({ onLogin }: AuthPageProps) {
               />
             </div>
             {mode === "signup" && (
-              <div className="space-y-2">
-                <Label htmlFor="role" className="text-sm font-medium">
-                  직업
-                </Label>
-                <Select value={role} onValueChange={setRole} disabled={isLoading}>
-                  <SelectTrigger className="h-11">
-                    <SelectValue placeholder="직업을 선택하세요" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="lawyer">변호사</SelectItem>
-                    <SelectItem value="legal-officer">법무사</SelectItem>
-                    <SelectItem value="other">기타</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
+              <>
+                <div className="space-y-2">
+                  <Label htmlFor="role" className="text-sm font-medium">
+                    직업
+                  </Label>
+                  <Select value={role} onValueChange={setRole} disabled={isLoading}>
+                    <SelectTrigger className="h-11">
+                      <SelectValue placeholder="직업을 선택하세요" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="lawyer">변호사</SelectItem>
+                      <SelectItem value="legal-officer">법무사</SelectItem>
+                      <SelectItem value="other">기타</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="firm-code" className="text-sm font-medium">
+                    회사 코드 <span className="text-destructive">*</span>
+                  </Label>
+                  <Input
+                    id="firm-code"
+                    placeholder="회사 코드를 입력하세요"
+                    value={firmCode}
+                    onChange={(e) => setFirmCode(e.target.value)}
+                    disabled={isLoading}
+                    className="h-11"
+                    required
+                  />
+                </div>
+              </>
             )}
             <Button
               type="submit"
