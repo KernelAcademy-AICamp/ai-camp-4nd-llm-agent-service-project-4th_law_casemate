@@ -971,7 +971,7 @@ export function EvidenceUploadPage({
                         />
                       </th>
                       <th className="text-left px-3 py-2 text-xs font-medium text-muted-foreground">이름</th>
-                      <th className="text-left px-3 py-2 text-xs font-medium text-muted-foreground w-28">수정한 날짜</th>
+                      <th className="text-left px-3 py-2 text-xs font-medium text-muted-foreground w-28">업로드 날짜</th>
                       <th className="text-left px-3 py-2 text-xs font-medium text-muted-foreground w-20">크기</th>
                       <th className="text-left px-3 py-2 text-xs font-medium text-muted-foreground w-32">연결된 사건</th>
                       <th className="w-10" />

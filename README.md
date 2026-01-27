@@ -36,7 +36,9 @@ CaseMate/
 │   │   │   └── evidence.py      # Evidence, Case, EvidenceCategory 모델
 │   │   └── services/            # 비즈니스 로직
 │   │       ├── __init__.py
-│   │       └── llm_service.py   # LLM 서비스
+│   │       ├── llm_service.py   # LLM 서비스
+│   │       ├── evidence_processor.py  # 증거 파일 처리 (AUDIO/PDF/IMAGE)
+│   │       └── stt_service.py   # 음성-텍스트 변환 (Whisper API)
 │   ├── tool/
 │   │   ├── database.py          # DB 연결 및 세션 관리
 │   │   └── security.py          # 비밀번호 해싱 및 JWT 처리
@@ -306,13 +308,37 @@ pip install qdrant-client==1.16.1   # Qdrant 벡터 데이터베이스 클라이
 pip install fastembed==0.4.2        # 고속 임베딩 라이브러리 (Sparse embedding, BM25)
 ```
 
-#### LLM 관련 라이브러리
+#### LLM 및 문서 처리 라이브러리
 ```bash
-pip install openai==1.10.0          # OpenAI API 클라이언트 (STT 포함)
+pip install openai==1.10.0          # OpenAI API 클라이언트 (Whisper STT, Vision API)
+pip install pymupdf==1.24.14        # PDF 텍스트 추출
+pip install easyocr==1.7.2          # 로컬 OCR (한글/영어 지원, Pillow 10 호환)
+pip install pillow==10.3.0          # 이미지 처리
 pip install httpx==0.27.0           # HTTP 클라이언트
 ```
 
-**참고:** OpenAI Whisper API를 사용하여 오디오 파일을 자동으로 텍스트로 변환합니다. 추가 시스템 의존성(ffmpeg 등)이 필요하지 않습니다.
+**증거 파일 자동 처리 (하이브리드 전략):**
+
+- **AUDIO**: OpenAI Whisper API로 음성을 텍스트로 변환 (ffmpeg 불필요)
+
+- **PDF**:
+  1. PyMuPDF로 텍스트 추출 시도 (무료)
+  2. 페이지당 20자 미만 → 이미지형 페이지로 판단
+  3. 이미지형 페이지만 Vision API로 OCR → 최소 비용
+
+- **IMAGE**:
+  1. **EasyOCR 로컬 처리** (무료, 한글/영어 동시 인식)
+     - 20자 이상 추출 성공 → 완료 (비용 0원)
+  2. 로컬 OCR 실패 시 → **OpenAI Vision API**
+     - 개선된 프롬프트: 법률 증거 맥락 명시
+     - 카톡, 대화 이미지도 처리 가능
+     - 거절 감지 및 에러 처리
+
+**비용 최적화:**
+- 텍스트형 PDF: 100% 무료 (PyMuPDF)
+- 이미지: 80% 무료 (EasyOCR), 실패 시에만 Vision API
+- 이미지형 PDF: 텍스트 페이지는 무료, 이미지 페이지만 유료
+- 하이브리드 전략으로 평균 70-90% 비용 절감
 
 #### 한 번에 설치
 ```bash

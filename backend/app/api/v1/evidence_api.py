@@ -6,7 +6,7 @@ from datetime import datetime
 from pydantic import BaseModel
 import os
 import uuid
-from app.services.stt_service import STTService
+from app.services.evidence_processor import EvidenceProcessor
 
 from tool.database import get_db
 from tool.security import get_current_user
@@ -106,37 +106,50 @@ async def upload_file(
         db.commit()
         db.refresh(new_evidence)
 
-        # 6. 오디오 파일인 경우 STT 처리
-        audio_types = ['audio/mpeg', 'audio/wav', 'audio/mp3', 'audio/m4a', 'audio/ogg', 'audio/webm', 'audio/x-m4a']
-        if file.content_type and file.content_type.lower() in audio_types:
-            try:
-                print(f"🎤 오디오 파일 감지: {file.content_type} - STT 처리 시작")
+        # 6. 증거 파일 처리 (AUDIO, PDF, IMAGE)
+        try:
+            print(f"🔍 파일 처리 시작: {file.filename}")
 
-                # STT 처리 (OpenAI API 직접 호출 - ffmpeg 불필요!)
-                from io import BytesIO
-                from fastapi import UploadFile
+            # 파일 내용으로 새 UploadFile 객체 생성
+            from io import BytesIO
+            from fastapi import UploadFile
 
-                # 파일 내용으로 새 UploadFile 객체 생성
-                audio_file = BytesIO(file_content)
-                audio_upload = UploadFile(
-                    file=audio_file,
-                    filename=file.filename,
-                    headers={"content-type": file.content_type}
-                )
+            file_for_processing = BytesIO(file_content)
+            upload_file = UploadFile(
+                file=file_for_processing,
+                filename=file.filename,
+                headers={"content-type": file.content_type}
+            )
 
-                stt_service = STTService()
-                stt_result = await stt_service.run(audio_upload)
+            # EvidenceProcessor로 파일 처리
+            processor = EvidenceProcessor()
+            result = await processor.process(upload_file, detail="high")
 
-                # STT 결과 로그 출력 (DB 저장은 나중에 구현 예정)
-                if stt_result:
-                    print(f"✅ STT 변환 완료 (evidence_id={new_evidence.id})")
-                    print(f"📝 변환된 텍스트: {stt_result[:200]}..." if len(stt_result) > 200 else f"📝 변환된 텍스트: {stt_result}")
-                else:
-                    print(f"⚠️ STT 결과가 비어있음 (evidence_id={new_evidence.id})")
+            # 처리 결과 로그 출력
+            if result.get("success"):
+                print(f"✅ 파일 처리 완료 (evidence_id={new_evidence.id})")
+                print(f"📋 타입: {result.get('type')}, 방법: {result.get('method')}")
+                print(f"💰 비용 추정: {result.get('cost_estimate')}")
 
-            except Exception as stt_error:
-                print(f"⚠️ STT 처리 실패 (업로드는 성공): {str(stt_error)}")
-                # STT 실패해도 업로드는 성공으로 처리
+                if result.get("text"):
+                    text = result["text"]
+                    print(f"📝 추출된 텍스트: {text[:200]}..." if len(text) > 200 else f"📝 추출된 텍스트: {text}")
+                    print(f"📊 총 글자 수: {result.get('char_count')}자")
+
+                # PDF 세부 정보
+                if result.get("type") == "PDF":
+                    print(f"📄 총 페이지: {result.get('total_pages')}")
+                    if result.get("text_pages"):
+                        print(f"📝 텍스트 페이지: {result.get('text_pages')}")
+                    if result.get("image_pages"):
+                        print(f"🖼️ 이미지 페이지: {result.get('image_pages')}")
+            else:
+                print(f"⚠️ 파일 처리 실패 (evidence_id={new_evidence.id})")
+                print(f"❌ 에러: {result.get('error')}")
+
+        except Exception as processing_error:
+            print(f"⚠️ 파일 처리 실패 (업로드는 성공): {str(processing_error)}")
+            # 처리 실패해도 업로드는 성공으로 처리
 
         return {
             "message": "업로드 성공",
