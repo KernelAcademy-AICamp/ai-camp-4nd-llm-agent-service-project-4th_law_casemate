@@ -131,6 +131,7 @@ export function EvidenceUploadPage({
   // 삭제 확인 Dialog 상태
   const [showDeleteConfirmDialog, setShowDeleteConfirmDialog] = useState(false);
   const [fileToDelete, setFileToDelete] = useState<ManagedFile | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   // 카테고리 목록 가져오기
   useEffect(() => {
@@ -363,13 +364,15 @@ export function EvidenceUploadPage({
   };
 
   const confirmDeleteFile = async () => {
-    if (!fileToDelete) return;
+    if (!fileToDelete || isDeleting) return;
 
     const token = localStorage.getItem('access_token');
     if (!token) {
       alert('로그인이 필요합니다.');
       return;
     }
+
+    setIsDeleting(true);
 
     try {
       const evidenceId = fileToDelete.id;
@@ -405,6 +408,8 @@ export function EvidenceUploadPage({
     } catch (error) {
       console.error('증거 삭제 실패:', error);
       alert(`증거 삭제 실패: ${error}`);
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -1414,14 +1419,23 @@ export function EvidenceUploadPage({
                     setShowDeleteConfirmDialog(false);
                     setFileToDelete(null);
                   }}
+                  disabled={isDeleting}
                 >
                   취소
                 </Button>
                 <Button
                   variant="destructive"
                   onClick={confirmDeleteFile}
+                  disabled={isDeleting}
                 >
-                  삭제
+                  {isDeleting ? (
+                    <>
+                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                      삭제 중...
+                    </>
+                  ) : (
+                    "삭제"
+                  )}
                 </Button>
               </div>
             </CardContent>
