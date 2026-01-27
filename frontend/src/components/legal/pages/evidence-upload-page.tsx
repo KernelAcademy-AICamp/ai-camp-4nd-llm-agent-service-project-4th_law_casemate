@@ -120,6 +120,9 @@ export function EvidenceUploadPage({
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState({ current: 0, total: 0 });
 
+  // 파일 목록 로딩 상태 관리
+  const [isLoadingFiles, setIsLoadingFiles] = useState(false);
+
   // 카테고리 추가 Dialog 상태
   const [showAddCategoryDialog, setShowAddCategoryDialog] = useState(false);
   const [categoryName, setCategoryName] = useState("");
@@ -175,6 +178,7 @@ export function EvidenceUploadPage({
     const token = localStorage.getItem('access_token');
     if (!token) return;
 
+    setIsLoadingFiles(true);
     try {
       const response = await fetch('http://localhost:8000/api/v1/evidence/list', {
         headers: {
@@ -203,6 +207,8 @@ export function EvidenceUploadPage({
       }
     } catch (error) {
       console.error('증거 목록 조회 실패:', error);
+    } finally {
+      setIsLoadingFiles(false);
     }
   }, []);
 
@@ -554,6 +560,76 @@ export function EvidenceUploadPage({
   const getCaseName = (caseId: string) => {
     const foundCase = cases.find((c) => c.id === caseId);
     return foundCase?.name || caseId;
+  };
+
+  // 단일 파일 다운로드
+  const downloadFile = async (fileId: string, fileName: string) => {
+    const token = localStorage.getItem('access_token');
+    if (!token) {
+      alert('로그인이 필요합니다.');
+      return;
+    }
+
+    try {
+      // Signed URL 가져오기
+      const response = await fetch(`http://localhost:8000/api/v1/evidence/${fileId}/url`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+
+      if (!response.ok) {
+        throw new Error(`URL 생성 실패: ${response.statusText}`);
+      }
+
+      const data = await response.json();
+      const signedUrl = data.signed_url;
+
+      // fetch로 파일 다운로드
+      const fileResponse = await fetch(signedUrl);
+      if (!fileResponse.ok) {
+        throw new Error('파일 다운로드 실패');
+      }
+
+      // Blob으로 변환
+      const blob = await fileResponse.blob();
+
+      // Blob URL 생성 및 다운로드
+      const blobUrl = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = blobUrl;
+      link.download = fileName;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+
+      // Blob URL 해제
+      window.URL.revokeObjectURL(blobUrl);
+    } catch (error) {
+      console.error('파일 다운로드 실패:', error);
+      alert(`파일 다운로드 실패: ${error}`);
+    }
+  };
+
+  // 선택된 파일들 다운로드
+  const downloadSelectedFiles = async () => {
+    const token = localStorage.getItem('access_token');
+    if (!token) {
+      alert('로그인이 필요합니다.');
+      return;
+    }
+
+    const selectedFilesList = files.filter((f) => selectedFiles.has(f.id));
+
+    for (const file of selectedFilesList) {
+      try {
+        await downloadFile(file.id, file.name);
+        // 각 다운로드 사이에 짧은 딜레이
+        await new Promise(resolve => setTimeout(resolve, 500));
+      } catch (error) {
+        console.error(`파일 다운로드 실패 (${file.name}):`, error);
+      }
+    }
   };
 
   const toggleFileSelection = (fileId: string) => {
@@ -913,7 +989,7 @@ export function EvidenceUploadPage({
                 <Trash2 className="h-3.5 w-3.5 mr-1.5" />
                 삭제
               </Button>
-              <Button variant="outline" size="sm">
+              <Button variant="outline" size="sm" onClick={downloadSelectedFiles}>
                 <Download className="h-3.5 w-3.5 mr-1.5" />
                 다운로드
               </Button>
@@ -943,6 +1019,16 @@ export function EvidenceUploadPage({
                   <p className="text-sm font-medium">파일을 여기에 놓으세요</p>
                   <p className="text-xs text-muted-foreground mt-1">
                     "{folders.find((f) => f.id === selectedFolder)?.name || "내 드라이브"}" 폴더에 업로드됩니다
+                  </p>
+                </div>
+              </div>
+            ) : isLoadingFiles ? (
+              <div className="h-full flex items-center justify-center">
+                <div className="text-center">
+                  <Loader2 className="h-12 w-12 mx-auto text-muted-foreground/50 mb-3 animate-spin" />
+                  <p className="text-sm font-medium">파일 목록을 불러오는 중...</p>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    잠시만 기다려 주세요
                   </p>
                 </div>
               </div>
@@ -1034,7 +1120,7 @@ export function EvidenceUploadPage({
                                   <Link2 className="h-4 w-4 mr-2" />
                                   사건에 연결
                                 </DropdownMenuItem>
-                                <DropdownMenuItem>
+                                <DropdownMenuItem onClick={() => downloadFile(file.id, file.name)}>
                                   <Download className="h-4 w-4 mr-2" />
                                   다운로드
                                 </DropdownMenuItem>
@@ -1105,6 +1191,10 @@ export function EvidenceUploadPage({
                             <DropdownMenuItem onClick={() => openLinkModal(file)}>
                               <Link2 className="h-4 w-4 mr-2" />
                               사건에 연결
+                            </DropdownMenuItem>
+                            <DropdownMenuItem onClick={() => downloadFile(file.id, file.name)}>
+                              <Download className="h-4 w-4 mr-2" />
+                              다운로드
                             </DropdownMenuItem>
                             <DropdownMenuSeparator />
                             <DropdownMenuItem

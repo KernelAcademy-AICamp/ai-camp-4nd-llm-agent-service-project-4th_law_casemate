@@ -207,7 +207,7 @@ npm run dev
 - `PATCH /api/v1/evidence/{evidence_id}/starred` - 즐겨찾기 토글 (인증 필요)
   - Response: `{ "message": "string", "starred": boolean }`
 - `GET /api/v1/evidence/{evidence_id}/url` - Signed URL 생성 (인증 필요)
-  - Response: `{ "signed_url": "string", "expires_in": 3600 }`
+  - Response: `{ "signed_url": "string", "expires_in": 60 }`
 
 ### 카테고리 관리 API (v1)
 - `POST /api/v1/evidence/categories` - 카테고리 생성 (인증 필요)
@@ -340,6 +340,24 @@ pip install httpx==0.27.0           # HTTP 클라이언트
 - 이미지형 PDF: 텍스트 페이지는 무료, 이미지 페이지만 유료
 - 하이브리드 전략으로 평균 70-90% 비용 절감
 
+**문서 유형 자동 분류 (Vision API):**
+
+- **IMAGE 파일 + Vision API 사용 시**에만 문서 유형 자동 분류
+- Vision API(gpt-4o-mini)가 이미지를 직접 보고 텍스트 추출과 동시에 문서 유형 판단
+- 지원하는 문서 유형:
+  - **카카오톡**: 카카오톡 메시지, 채팅 대화
+  - **문자메시지**: SMS, MMS 문자 메시지
+  - **계약서**: 계약서, 합의서, 약정서, 동의서
+  - **영수증**: 영수증, 세금계산서, 거래명세서, 청구서
+  - **법원문서**: 소장, 답변서, 판결문, 결정문, 증거서류, 진술서
+  - **신분증**: 신분증, 여권, 운전면허증, 주민등록증
+  - **금융문서**: 통장 거래내역, 계좌이체 확인증, 대출 문서
+  - **일반문서**: 위 카테고리에 해당하지 않는 일반 문서
+  - **기타**: 분류하기 어려운 문서
+- 분류 결과는 `doc_type` 컬럼에 자동 저장
+- 추출된 텍스트는 `content` 컬럼에 저장하여 검색 및 분석 가능
+- 로컬 OCR, PDF 텍스트 추출, 음성 STT의 경우 `doc_type`은 NULL (추후 필요 시 수동 분류 또는 추가 API 호출)
+
 #### 한 번에 설치
 ```bash
 pip install -r requirements.txt
@@ -430,7 +448,9 @@ CREATE TABLE evidences (
     uploader_id INTEGER,                      -- 업로더 ID
     law_firm_id INTEGER REFERENCES law_firms(id) ON DELETE SET NULL,  -- 소속 법무법인 ID
     case_id INTEGER REFERENCES cases(id) ON DELETE CASCADE,           -- 연결된 사건 ID
-    category_id INTEGER REFERENCES evidence_categories(id) ON DELETE SET NULL  -- 카테고리 ID
+    category_id INTEGER REFERENCES evidence_categories(id) ON DELETE SET NULL,  -- 카테고리 ID
+    content TEXT,                             -- OCR/STT로 추출된 텍스트 내용
+    doc_type VARCHAR                          -- 문서 유형 (카카오톡, 계약서, 영수증 등)
 );
 ```
 
@@ -499,7 +519,7 @@ CREATE TABLE evidence_analyses (
 
 ### Supabase Storage 보안
 - **Service Role Key 사용**: RLS 정책 우회하여 서버에서만 업로드 가능
-- **Signed URL**: 60분 제한 임시 URL로 파일 접근 제어
+- **Signed URL**: 60초 제한 임시 URL로 파일 접근 제어
 - **파일 경로 관리**: `firm_id/YYYYMMDD/unique_filename` 구조로 파일 저장
 - **UUID 파일명**: 파일명 중복 방지 및 보안 강화
 

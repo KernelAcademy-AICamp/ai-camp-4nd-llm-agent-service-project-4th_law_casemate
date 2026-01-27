@@ -52,7 +52,7 @@ async def upload_file(
     **응답:**
     - evidence_id: 생성된 증거 ID
     - file_name: 원본 파일명 (한글 포함)
-    - url: Signed URL (60분 유효)
+    - url: Signed URL (60초 유효)
     """
     print("=" * 50)
     print(f"🎉 Upload Evidence endpoint called!")
@@ -85,8 +85,8 @@ async def upload_file(
         if hasattr(upload_response, 'error') and upload_response.error:
             raise HTTPException(status_code=500, detail=f"Supabase 업로드 실패: {upload_response.error}")
 
-        # 4. Signed URL 생성 (60분 유효)
-        signed_url_response = supabase.storage.from_("Evidences").create_signed_url(file_path, 3600)
+        # 4. Signed URL 생성 (60초 유효)
+        signed_url_response = supabase.storage.from_("Evidences").create_signed_url(file_path, 60)
         signed_url = signed_url_response.get('signedURL') if signed_url_response else ""
         print(f"🔗 Signed URL: {signed_url}")
 
@@ -135,6 +135,37 @@ async def upload_file(
                     text = result["text"]
                     print(f"📝 추출된 텍스트: {text[:200]}..." if len(text) > 200 else f"📝 추출된 텍스트: {text}")
                     print(f"📊 총 글자 수: {result.get('char_count')}자")
+
+                    # OCR/STT 결과를 DB에 저장
+                    try:
+                        # 1. 텍스트 저장
+                        new_evidence.content = text
+
+                        # 2. 문서 유형 분류 (Vision API 사용 시에만)
+                        # IMAGE + Vision API 사용 시 → doc_type 포함
+                        # 그 외 (AUDIO, PDF, 로컬 OCR) → doc_type NULL
+                        method = result.get("method", "")
+                        if result.get("type") == "IMAGE" and method.startswith("openai-vision"):
+                            # Vision API가 doc_type을 이미 반환한 경우
+                            doc_type = result.get("doc_type", None)
+                            new_evidence.doc_type = doc_type
+                            print(f"📋 Vision API에서 문서 유형 추출: {doc_type}")
+                        else:
+                            # 로컬 OCR, PDF, AUDIO → doc_type 비움
+                            new_evidence.doc_type = None
+                            print(f"📋 문서 유형: 미분류 (Vision API 미사용)")
+
+                        # 3. DB 업데이트
+                        db.commit()
+                        doc_type_str = new_evidence.doc_type if new_evidence.doc_type else "미분류"
+                        print(f"💾 OCR 결과 저장 완료: content={len(text)}자, doc_type={doc_type_str}")
+
+                    except Exception as classify_error:
+                        print(f"⚠️ 문서 분류/저장 실패: {str(classify_error)}")
+                        # 분류 실패해도 텍스트는 저장
+                        new_evidence.content = text
+                        new_evidence.doc_type = None
+                        db.commit()
 
                 # PDF 세부 정보
                 if result.get("type") == "PDF":
@@ -549,7 +580,7 @@ async def get_signed_url(
     증거파일의 임시 접근 URL 생성
 
     - evidence_id: 증거 ID
-    - 60분간 유효한 signed URL 반환
+    - 60초간 유효한 signed URL 반환
     - 보안: 같은 law_firm_id 사용자만 접근 가능
     """
     print(f"🔐 Signed URL 요청: evidence_id={evidence_id}, user_id={current_user.id}")
@@ -564,11 +595,11 @@ async def get_signed_url(
     if evidence.law_firm_id != current_user.firm_id:
         raise HTTPException(status_code=403, detail="해당 증거에 접근할 권한이 없습니다")
 
-    # 3. Signed URL 생성 (60분 유효)
+    # 3. Signed URL 생성 (60초 유효)
     try:
         signed_url_response = supabase.storage.from_("Evidences").create_signed_url(
             evidence.file_path,
-            3600  # 60분 = 3600초
+            60  # 60초
         )
 
         signed_url = signed_url_response.get('signedURL')
@@ -582,7 +613,7 @@ async def get_signed_url(
             "evidence_id": evidence_id,
             "file_name": evidence.file_name,
             "signed_url": signed_url,
-            "expires_in": 3600
+            "expires_in": 60
         }
     except Exception as e:
         print(f"❌ Signed URL 생성 실패: {str(e)}")

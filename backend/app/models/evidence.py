@@ -17,6 +17,8 @@ class Evidence(Base):
     law_firm_id = Column(Integer, ForeignKey('law_firms.id', ondelete='SET NULL'), nullable=True)  # 사무실 ID
     case_id = Column(Integer, ForeignKey('cases.id', ondelete='CASCADE'), nullable=True)  # 사건 ID
     category_id = Column(Integer, ForeignKey('evidence_categories.id', ondelete='SET NULL'), nullable=True)  # 카테고리 ID
+    content = Column(Text, nullable=True)  # OCR/STT로 추출된 텍스트
+    doc_type = Column(String, nullable=True)  # 문서 유형 (카카오톡, 계약서, 영수증 등)
 
 
 class Case(Base):

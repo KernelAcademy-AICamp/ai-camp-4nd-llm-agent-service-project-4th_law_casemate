@@ -344,7 +344,7 @@ class EvidenceProcessor:
             # Base64 인코딩
             img_base64 = base64.b64encode(file_content).decode("utf-8")
 
-            # Vision API 호출 (법률 맥락 강조)
+            # Vision API 호출 (텍스트 추출 + 문서 유형 분류 동시 수행)
             response = await self.client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
@@ -355,11 +355,31 @@ class EvidenceProcessor:
                                 "type": "text",
                                 "text": """당신은 법원 제출용 증거 자료 분석 전문가입니다.
 이 이미지는 법적 소송 증거로 사용될 문서입니다.
-이미지 내 모든 텍스트, 대화 내용, 시간, 발신자 정보를 빠짐없이 정확하게 추출하세요.
 
-형식:
+**작업 1: 텍스트 추출**
+이미지 내 모든 텍스트, 대화 내용, 시간, 발신자 정보를 빠짐없이 정확하게 추출하세요.
 - 문서/대화의 경우: [발신자/작성자] [시간] 내용
-- 일반 문서의 경우: 텍스트를 원본 구조 그대로 추출"""
+- 일반 문서의 경우: 텍스트를 원본 구조 그대로 추출
+
+**작업 2: 문서 유형 분류**
+추출한 내용을 기반으로 다음 중 하나로 분류하세요:
+- 카카오톡: 카카오톡 메시지, 채팅 대화
+- 문자메시지: SMS, MMS 문자 메시지
+- 계약서: 계약서, 합의서, 약정서, 동의서
+- 영수증: 영수증, 세금계산서, 거래명세서, 청구서
+- 법원문서: 소장, 답변서, 판결문, 결정문, 증거서류, 진술서
+- 신분증: 신분증, 여권, 운전면허증, 주민등록증
+- 금융문서: 통장 거래내역, 계좌이체 확인증, 대출 문서
+- 일반문서: 위 카테고리에 해당하지 않는 일반 문서
+- 기타: 분류하기 어려운 문서
+
+**응답 형식 (JSON):**
+```json
+{
+  "text": "추출된 전체 텍스트 내용",
+  "doc_type": "문서 유형"
+}
+```"""
                             },
                             {
                                 "type": "image_url",
@@ -374,7 +394,32 @@ class EvidenceProcessor:
                 max_tokens=2000
             )
 
-            text = response.choices[0].message.content or ""
+            content = response.choices[0].message.content or ""
+
+            # JSON 응답 파싱 시도
+            import json
+            import re
+
+            try:
+                # JSON 코드블록 제거 (```json ... ```)
+                json_match = re.search(r'```json\s*(.*?)\s*```', content, re.DOTALL)
+                if json_match:
+                    json_str = json_match.group(1)
+                else:
+                    # 코드블록 없이 바로 JSON인 경우
+                    json_str = content
+
+                parsed = json.loads(json_str)
+                text = parsed.get("text", "")
+                doc_type = parsed.get("doc_type", "기타")
+
+                logger.info(f"✅ JSON 파싱 성공: text={len(text)}자, doc_type={doc_type}")
+
+            except (json.JSONDecodeError, AttributeError) as e:
+                # JSON 파싱 실패 시 전체 응답을 텍스트로 사용
+                logger.warning(f"⚠️ JSON 파싱 실패, 전체 응답을 텍스트로 사용: {str(e)}")
+                text = content
+                doc_type = "기타"
 
             # OpenAI가 거절했는지 확인
             if "죄송하지만" in text or "분석할 수 없습니다" in text or len(text.strip()) < 20:
@@ -389,6 +434,7 @@ class EvidenceProcessor:
                 }
 
             logger.info(f"✅ Vision API OCR 완료: {len(text)}자 추출 (detail={detail})")
+            logger.info(f"📋 문서 유형: {doc_type}")
             logger.debug(f"📝 추출된 텍스트 (처음 200자): {text[:200]}")
 
             return {
@@ -396,6 +442,7 @@ class EvidenceProcessor:
                 "type": "IMAGE",
                 "method": f"openai-vision-{detail}",
                 "text": text,
+                "doc_type": doc_type,  # 문서 유형 추가
                 "char_count": len(text),
                 "cost_estimate": "저비용 (Vision API)" if detail == "low" else "중비용 (Vision API High)"
             }
