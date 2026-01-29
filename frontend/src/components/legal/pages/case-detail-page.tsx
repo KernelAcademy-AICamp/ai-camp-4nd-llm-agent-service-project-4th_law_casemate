@@ -82,80 +82,7 @@ interface TimelineEvent {
   actor?: string;
 }
 
-const initialTimelineEvents: TimelineEvent[] = [
-  {
-    id: "1",
-    date: "2025-11-15",
-    time: "09:30",
-    title: "단톡방 첫 비방 발언",
-    description: "피고소인 박OO가 34명 단체 카카오톡 채팅방에서 의뢰인에 대해 '업무능력이 없다'는 발언을 최초로 함",
-    type: "상대방",
-    actor: "박OO (피고소인)",
-  },
-  {
-    id: "2",
-    date: "2025-11-15",
-    time: "14:32",
-    title: "단톡방 대화 캡처 확보",
-    description: "의뢰인이 명예훼손 발언이 담긴 카카오톡 대화를 캡처하여 증거로 확보",
-    type: "증거",
-    actor: "캡처 이미지",
-  },
-  {
-    id: "3",
-    date: "2025-11-20",
-    time: "10:15",
-    title: "횡령 허위사실 유포",
-    description: "피고소인이 '회사 돈을 횡령했다'는 허위사실을 단톡방에 유포",
-    type: "상대방",
-    actor: "박OO (피고소인)",
-  },
-  {
-    id: "4",
-    date: "2025-11-25",
-    time: "11:00",
-    title: "의뢰인 해명 시도",
-    description: "의뢰인 김OO가 단톡방에서 허위사실에 대해 해명을 시도하였으나 추가 비방을 받음",
-    type: "의뢰인",
-    actor: "김OO (의뢰인)",
-  },
-  {
-    id: "5",
-    date: "2025-12-01",
-    time: "15:20",
-    title: "회식 자리 녹취 확보",
-    description: "회식 자리에서 피고소인의 추가 모욕 발언이 녹취됨. '사기꾼' 발언 포함",
-    type: "증거",
-    actor: "음성 녹취",
-  },
-  {
-    id: "6",
-    date: "2025-12-01",
-    time: "19:30",
-    title: "공개적 모욕 발언",
-    description: "피고소인이 회식 자리(15명 참석)에서 의뢰인을 '사기꾼'이라고 공개적으로 모욕",
-    type: "상대방",
-    actor: "박OO (피고소인)",
-  },
-  {
-    id: "7",
-    date: "2025-12-10",
-    time: "10:00",
-    title: "목격자 진술 확보",
-    description: "의뢰인이 동료 2명으로부터 피고소인의 발언을 목격했다는 진술서를 확보",
-    type: "증거",
-    actor: "진술서",
-  },
-  {
-    id: "8",
-    date: "2026-01-05",
-    time: "14:00",
-    title: "법률 상담 진행",
-    description: "의뢰인이 명예훼손 피해에 대한 법률 상담을 진행하고 사건 수임 결정",
-    type: "의뢰인",
-    actor: "김OO (의뢰인)",
-  },
-];
+// 타임라인 이벤트는 API에서 가져옴
 
 // Case overview editable fields
 interface CaseOverviewData {
@@ -175,7 +102,8 @@ export function CaseDetailPage({
   const caseData = propCaseData && propCaseData.id ? propCaseData : sampleCases.find(c => c.id === id) || sampleCases[0];
 
   const [timelineEvents, setTimelineEvents] =
-    useState<TimelineEvent[]>(initialTimelineEvents);
+    useState<TimelineEvent[]>([]);
+  const [timelineLoading, setTimelineLoading] = useState(false);
   const [editingEvent, setEditingEvent] = useState<TimelineEvent | null>(null);
   const [isAddingEvent, setIsAddingEvent] = useState(false);
   const [newEvent, setNewEvent] = useState<Partial<TimelineEvent>>({
@@ -240,9 +168,28 @@ export function CaseDetailPage({
     }
   };
 
-  // 컴포넌트 마운트 시 유사 판례 검색
+  // 타임라인 데이터 가져오기
+  const fetchTimeline = async () => {
+    setTimelineLoading(true);
+    try {
+      const response = await fetch(`http://localhost:8000/api/v1/timeline/${caseData.id}`);
+      if (!response.ok) {
+        throw new Error("타임라인 데이터를 가져오는 중 오류가 발생했습니다.");
+      }
+      const data = await response.json();
+      setTimelineEvents(data);
+    } catch (err) {
+      console.error("타임라인 데이터 가져오기 실패:", err);
+      setTimelineEvents([]);
+    } finally {
+      setTimelineLoading(false);
+    }
+  };
+
+  // 컴포넌트 마운트 시 유사 판례 검색 및 타임라인 데이터 가져오기
   useEffect(() => {
     fetchSimilarCases();
+    fetchTimeline();
   }, []);
 
   // 날짜 포맷 (20200515 → 2020.05.15)
@@ -700,6 +647,17 @@ export function CaseDetailPage({
               </div>
             </CardHeader>
             <CardContent>
+              {timelineLoading ? (
+                <div className="text-center py-12 text-muted-foreground">
+                  <div className="animate-spin h-6 w-6 border-2 border-primary border-t-transparent rounded-full mx-auto mb-2" />
+                  타임라인 데이터 로딩 중...
+                </div>
+              ) : timelineEvents.length === 0 ? (
+                <div className="text-center py-12 text-muted-foreground text-sm">
+                  타임라인 이벤트가 없습니다.
+                </div>
+              ) : (
+              <>
               {/* Zigzag Timeline */}
               <div className="relative py-8">
                 {/* Center Line */}
@@ -799,6 +757,8 @@ export function CaseDetailPage({
                   })}
                 </div>
               </div>
+              </>
+              )}
             </CardContent>
           </Card>
         </TabsContent>
