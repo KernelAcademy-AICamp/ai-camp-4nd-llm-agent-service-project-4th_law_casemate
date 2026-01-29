@@ -30,8 +30,8 @@ function App() {
       }
 
       try {
-        // /api/v1/auth/me 엔드포인트로 사용자 정보 가져오기
-        const response = await fetch('http://localhost:8000/api/v1/auth/me', {
+        // /api/v1/me 엔드포인트로 사용자 정보 가져오기
+        const response = await fetch('http://localhost:8000/api/v1/me', {
           headers: {
             'Authorization': `Bearer ${token}` // 토큰을 헤더에 담아 전송
           }
@@ -64,6 +64,28 @@ function App() {
     checkAuth()
   }, [])
 
+  // 로그인 처리
+  const handleLogin = async () => {
+    const token = localStorage.getItem('access_token')
+    if (!token) return
+
+    try {
+      const response = await fetch('http://localhost:8000/api/v1/me', {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      })
+
+      if (response.ok) {
+        const userData = await response.json()
+        setUserInfo(userData)
+        setIsLoggedIn(true)
+      }
+    } catch (error) {
+      console.error('로그인 후 사용자 정보 가져오기 실패:', error)
+    }
+  }
+
   // 로그아웃 처리
   const handleLogout = () => {
     localStorage.removeItem('access_token')
@@ -92,7 +114,7 @@ function App() {
         {/* Public Route */}
         <Route
           path="/login"
-          element={isLoggedIn ? <Navigate to="/" replace /> : <AuthPage onLogin={() => setIsLoggedIn(true)} />}
+          element={isLoggedIn ? <Navigate to="/" replace /> : <AuthPage onLogin={handleLogin} />}
         />
 
         {/* Protected Routes */}

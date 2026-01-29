@@ -23,7 +23,7 @@ import {
 import { Scale, FileText, Search, BarChart3, Loader2 } from "lucide-react";
 
 interface AuthPageProps {
-  onLogin: () => void;
+  onLogin: () => void | Promise<void>;
 }
 
 export function AuthPage({ onLogin }: AuthPageProps) {
@@ -66,8 +66,23 @@ export function AuthPage({ onLogin }: AuthPageProps) {
 
         // JWT 토큰 저장
         localStorage.setItem('access_token', data.access_token);
-        // 로그인 처리
-        onLogin();
+
+        // 사용자 정보 가져오기
+        const userResponse = await fetch('http://localhost:8000/api/v1/me', {
+          headers: {
+            'Authorization': `Bearer ${data.access_token}`
+          }
+        });
+
+        if (userResponse.ok) {
+          const userData = await userResponse.json();
+          localStorage.setItem('user_email', userData.email);
+          localStorage.setItem('user_id', userData.id);
+          // 로그인 처리
+          await onLogin();
+        } else {
+          throw new Error('사용자 정보를 가져오는데 실패했습니다');
+        }
       } else {
         // 회원가입 API 호출 (회사 코드 포함)
         const response = await fetch('http://localhost:8000/api/v1/signup', {
@@ -90,7 +105,7 @@ export function AuthPage({ onLogin }: AuthPageProps) {
         localStorage.setItem('user_email', data.email);
         localStorage.setItem('user_id', data.user_id);
         // 자동 로그인 처리 - 바로 화면 이동
-        onLogin();
+        await onLogin();
       }
     } catch (error) {
       console.error('요청 실패:', error);
