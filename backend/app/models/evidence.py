@@ -40,6 +40,8 @@ class CaseEvidenceMapping(Base):
     id = Column(Integer, primary_key=True, index=True)
     case_id = Column(Integer, nullable=True)
     evidence_id = Column(Integer, nullable=True)
+    evidence_date = Column(String(20), nullable=True)  # 증거 발생일 (이 사건에서의 관련 날짜)
+    description = Column(Text, nullable=True)  # 증거 설명 (이 사건에서의 맥락)
     created_at = Column(DateTime, server_default=func.now())
 
     __table_args__ = (

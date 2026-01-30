@@ -485,17 +485,33 @@ CREATE TABLE evidence_categories (
 );
 ```
 
-### Case_Evidence_Mappings 테이블
+### Case_Evidence_Mappings 테이블 (사건-증거 관계)
 
 ```sql
 CREATE TABLE case_evidence_mappings (
     id SERIAL PRIMARY KEY,
     case_id INTEGER,                 -- 사건 ID
     evidence_id INTEGER,             -- 증거 ID
+    evidence_date VARCHAR(20),       -- 증거 발생일 (이 사건에서의 관련 날짜)
+    description TEXT,                -- 증거 설명 (이 사건에서의 맥락)
     created_at TIMESTAMP DEFAULT NOW(),
     UNIQUE(case_id, evidence_id)     -- 중복 매핑 방지
 );
+
+CREATE INDEX idx_case_evidence_mappings_evidence_date ON case_evidence_mappings(evidence_date);
 ```
+
+- **evidence_date**: 증거 발생일 (이 사건에서의 관련 날짜, YYYY-MM-DD 형식 또는 "미상")
+  - 예: 대화가 발생한 날짜, 계약서 작성일, 사건 발생일
+  - 증거 파일의 업로드일(`created_at`)이 아닌, 증거가 실제로 발생한 날짜
+- **description**: 증거 설명 (이 사건에서의 맥락 및 의미)
+  - 예: "최초 협박 대화", "허위 계약서 원본", "추가 명예훼손 증거"
+  - 같은 증거가 여러 사건에 연결될 때 각 사건별로 다른 설명 가능
+
+**N:N 관계의 특성:**
+- 하나의 증거는 여러 사건에 연결 가능
+- 하나의 사건은 여러 증거를 포함 가능
+- `evidence_date`와 `description`은 **관계의 속성**으로, 같은 증거라도 사건마다 다른 값을 가질 수 있음
 
 ### Evidence_Analyses 테이블 (AI 분석 결과 저장)
 
