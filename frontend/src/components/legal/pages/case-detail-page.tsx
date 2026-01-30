@@ -142,14 +142,10 @@ export function CaseDetailPage({
   // Case overview state - 빈 값으로 초기화, API 데이터 로드 후 업데이트
   const [isEditingOverview, setIsEditingOverview] = useState(false);
   const [overviewData, setOverviewData] = useState<CaseOverviewData>({
-    summary:
-      "A사 개발팀 소속 박대리가 퇴사를 앞두고 'A사 개발자 정보공유' 오픈채팅방(참여자 약 30명)에서 술에 취한 상태로 의뢰인 김팀장에 대해 '외주 업체 선정 시 뒷돈 수수', '신입 여직원 성희롱', '무능한 인간' 등의 내용을 게시하여 의뢰인의 명예를 훼손함. 일부 내용은 사실과 다르거나 과장된 것으로 확인됨.",
-    facts:
-      "2025년 11월 20일 오후 10시경, A사 퇴사 예정자인 박대리는 현직 개발자 약 30명이 참여한 카카오톡 오픈채팅방에서 의뢰인 김팀장에 대해 다음과 같은 내용의 메시지를 게시함:\n\n1. 외주 비리 의혹: \"B 프로젝트 외주 업체 선정 시 대학 동창 업체에 일감 몰아주고 뒷돈 챙김\"\n   • 사실 확인: 동창 업체 선정은 사실이나, 정상적인 경쟁 입찰을 통해 최저가로 선정됨. 뒷돈 수수 증거 없음 → 허위사실 적시\n\n2. 성희롱 의혹: \"작년 연말 회식에서 신입 여직원 손 만지고 성희롱, 인사과 아는 사람 통해 은폐\"\n   • 사실 확인: 신입 사원의 인사팀 상담 기록은 존재하나, 김팀장은 경고 조치만 받음. 성희롱 성립 여부는 다툼의 여지 있음 → 사실과 다르거나 과장된 표현\n\n3. 무능 비하: \"코딩도 할 줄 몰라서 밑에 사람들 갈아넣는 무능한 인간\"\n   • 주관적 의견 표명 및 모욕적 표현",
-    claims:
-      "1. 형사: 사이버 명예훼손죄(정보통신망법 제70조) 및 모욕죄(형법 제311조)로 고소\n 2.민사: 위자료 3,000만원 손해배상 청구",
-    legalBasis:
-      "정보통신망법 제70조(벌칙), 정보통신망법 제70조 제2항, 형법 제311조(모욕)",
+    summary: "",
+    facts: "",
+    claims: "",
+    legalBasis: "",
   });
 
   // 서브 탭 상태: "analysis" (AI 분석) | "original" (원문 보기)
@@ -451,6 +447,8 @@ export function CaseDetailPage({
 
   // 타임라인 생성 (샘플 데이터)
   const generateTimeline = async () => {
+    if (!caseData) return;
+
     console.log("[Timeline Generate] 시작");
     console.log("[Timeline Generate] Case ID:", caseData.id);
     console.log("[Timeline Generate] Case Data:", caseData);
@@ -499,7 +497,7 @@ export function CaseDetailPage({
 
     setRelatedLawsLoading(true);
     try {
-      const response = await fetch("/api/laws/search", {
+      const response = await fetch("/api/v1/laws/search", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -818,11 +816,10 @@ export function CaseDetailPage({
                     setDetailSubTab("analysis");
                     setIsEditingOriginal(false);
                   }}
-                  className={`px-3 py-1.5 text-sm rounded-md transition-colors ${
-                    detailSubTab === "analysis"
+                  className={`px-3 py-1.5 text-sm rounded-md transition-colors ${detailSubTab === "analysis"
                       ? "bg-primary text-primary-foreground"
                       : "text-muted-foreground hover:bg-secondary"
-                  }`}
+                    }`}
                 >
                   AI 분석
                 </button>
@@ -832,11 +829,10 @@ export function CaseDetailPage({
                     setDetailSubTab("original");
                     setIsEditingOverview(false);
                   }}
-                  className={`px-3 py-1.5 text-sm rounded-md transition-colors ${
-                    detailSubTab === "original"
+                  className={`px-3 py-1.5 text-sm rounded-md transition-colors ${detailSubTab === "original"
                       ? "bg-primary text-primary-foreground"
                       : "text-muted-foreground hover:bg-secondary"
-                  }`}
+                    }`}
                 >
                   원문 보기
                 </button>
@@ -868,160 +864,160 @@ export function CaseDetailPage({
                 <>
                   {/* Basic Info */}
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pb-6 border-b border-border/60">
-                <div className="space-y-1">
-                  <p className="text-xs text-muted-foreground">사건 유형</p>
-                  <p className="text-sm font-medium">{caseData.caseType}</p>
-                </div>
-                <div className="space-y-1">
-                  <p className="text-xs text-muted-foreground">의뢰인</p>
-                  <p className="text-sm font-medium">{caseData.client}</p>
-                </div>
-                <div className="space-y-1">
-                  <p className="text-xs text-muted-foreground">발생 기간</p>
-                  <p className="text-sm font-medium">
-                    {caseData.period || "2025.11.15 ~ 2026.01.10"}
-                  </p>
-                </div>
-              </div>
-
-              {/* Editable Fields */}
-              <div className="space-y-4">
-                <div className="space-y-2">
-                  <Label className="text-sm font-medium">사건 요약</Label>
-                  {isEditingOverview ? (
-                    <Textarea
-                      value={overviewData.summary}
-                      onChange={(e) =>
-                        setOverviewData((prev) => ({
-                          ...prev,
-                          summary: e.target.value,
-                        }))
-                      }
-                      rows={3}
-                      className="text-sm"
-                    />
-                  ) : (
-                    <p className="text-sm text-muted-foreground leading-relaxed">
-                      {overviewData.summary}
-                    </p>
-                  )}
-                </div>
-
-                <div className="space-y-2">
-                  <Label className="text-sm font-medium">사실관계</Label>
-                  {isEditingOverview ? (
-                    <Textarea
-                      value={overviewData.facts}
-                      onChange={(e) =>
-                        setOverviewData((prev) => ({
-                          ...prev,
-                          facts: e.target.value,
-                        }))
-                      }
-                      rows={4}
-                      className="text-sm"
-                    />
-                  ) : (
-                    <p className="text-sm text-muted-foreground leading-relaxed">
-                      {overviewData.facts}
-                    </p>
-                  )}
-                </div>
-
-                <div className="space-y-2">
-                  <Label className="text-sm font-medium">청구 내용</Label>
-                  {isEditingOverview ? (
-                    <Textarea
-                      value={overviewData.claims}
-                      onChange={(e) =>
-                        setOverviewData((prev) => ({
-                          ...prev,
-                          claims: e.target.value,
-                        }))
-                      }
-                      rows={2}
-                      className="text-sm"
-                    />
-                  ) : (
-                    <p className="text-sm text-muted-foreground leading-relaxed whitespace-pre-line">
-                      {overviewData.claims}
-                    </p>
-                  )}
-                </div>
-
-                <div className="space-y-2">
-                  <Label className="text-sm font-medium">적용 법률</Label>
-                  {isEditingOverview ? (
-                    <div className="space-y-2">
-                      {/* 수동 추가된 태그 표시 */}
-                      <div className="flex flex-wrap gap-2">
-                        {manualLawTags.map((tag, index) => (
-                          <Badge
-                            key={`manual-${index}`}
-                            variant="secondary"
-                            className="font-normal text-xs pr-1"
-                          >
-                            {tag}
-                            <button
-                              type="button"
-                              onClick={() => setManualLawTags(prev => prev.filter((_, i) => i !== index))}
-                              className="ml-1 hover:text-destructive"
-                            >
-                              <XCircle className="h-3 w-3" />
-                            </button>
-                          </Badge>
-                        ))}
-                      </div>
-                      {/* 태그 입력창 */}
-                      <Input
-                        value={lawTagInput}
-                        onChange={(e) => setLawTagInput(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter" && lawTagInput.trim()) {
-                            e.preventDefault();
-                            setManualLawTags(prev => [...prev, lawTagInput.trim()]);
-                            setLawTagInput("");
-                          }
-                        }}
-                        placeholder="법령명 입력 후 Enter (예: 형법 제307조)"
-                        className="text-sm"
-                      />
+                    <div className="space-y-1">
+                      <p className="text-xs text-muted-foreground">사건 유형</p>
+                      <p className="text-sm font-medium">{caseData.caseType}</p>
                     </div>
-                  ) : (
-                    <div className="flex flex-wrap gap-2">
-                      {relatedLawsLoading ? (
-                        <span className="text-sm text-muted-foreground">검색 중...</span>
+                    <div className="space-y-1">
+                      <p className="text-xs text-muted-foreground">의뢰인</p>
+                      <p className="text-sm font-medium">{caseData.client}</p>
+                    </div>
+                    <div className="space-y-1">
+                      <p className="text-xs text-muted-foreground">발생 기간</p>
+                      <p className="text-sm font-medium">
+                        {caseData.period || "2025.11.15 ~ 2026.01.10"}
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Editable Fields */}
+                  <div className="space-y-4">
+                    <div className="space-y-2">
+                      <Label className="text-sm font-medium">사건 요약</Label>
+                      {isEditingOverview ? (
+                        <Textarea
+                          value={overviewData.summary}
+                          onChange={(e) =>
+                            setOverviewData((prev) => ({
+                              ...prev,
+                              summary: e.target.value,
+                            }))
+                          }
+                          rows={3}
+                          className="text-sm"
+                        />
                       ) : (
-                        <>
-                          {/* 수동 추가 태그 */}
-                          {manualLawTags.map((tag, index) => (
-                            <Badge
-                              key={`manual-${index}`}
-                              variant="secondary"
-                              className="font-normal text-xs"
-                            >
-                              {tag}
-                            </Badge>
-                          ))}
-                          {/* API 검색 결과 태그 */}
-                          {relatedLaws.map((law, index) => (
-                            <Badge
-                              key={`${law.law_name}-${law.article_number}-${index}`}
-                              variant="outline"
-                              className="font-normal text-xs"
-                            >
-                              {law.law_name} 제{law.article_number}조({law.article_title})
-                            </Badge>
-                          ))}
-                          {manualLawTags.length === 0 && relatedLaws.length === 0 && (
-                            <span className="text-sm text-muted-foreground">관련 법령이 없습니다.</span>
-                          )}
-                        </>
+                        <p className="text-sm text-muted-foreground leading-relaxed">
+                          {overviewData.summary}
+                        </p>
                       )}
                     </div>
-                  )}
-                </div>
-              </div>
+
+                    <div className="space-y-2">
+                      <Label className="text-sm font-medium">사실관계</Label>
+                      {isEditingOverview ? (
+                        <Textarea
+                          value={overviewData.facts}
+                          onChange={(e) =>
+                            setOverviewData((prev) => ({
+                              ...prev,
+                              facts: e.target.value,
+                            }))
+                          }
+                          rows={4}
+                          className="text-sm"
+                        />
+                      ) : (
+                        <p className="text-sm text-muted-foreground leading-relaxed">
+                          {overviewData.facts}
+                        </p>
+                      )}
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label className="text-sm font-medium">청구 내용</Label>
+                      {isEditingOverview ? (
+                        <Textarea
+                          value={overviewData.claims}
+                          onChange={(e) =>
+                            setOverviewData((prev) => ({
+                              ...prev,
+                              claims: e.target.value,
+                            }))
+                          }
+                          rows={2}
+                          className="text-sm"
+                        />
+                      ) : (
+                        <p className="text-sm text-muted-foreground leading-relaxed whitespace-pre-line">
+                          {overviewData.claims}
+                        </p>
+                      )}
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label className="text-sm font-medium">적용 법률</Label>
+                      {isEditingOverview ? (
+                        <div className="space-y-2">
+                          {/* 수동 추가된 태그 표시 */}
+                          <div className="flex flex-wrap gap-2">
+                            {manualLawTags.map((tag, index) => (
+                              <Badge
+                                key={`manual-${index}`}
+                                variant="secondary"
+                                className="font-normal text-xs pr-1"
+                              >
+                                {tag}
+                                <button
+                                  type="button"
+                                  onClick={() => setManualLawTags(prev => prev.filter((_, i) => i !== index))}
+                                  className="ml-1 hover:text-destructive"
+                                >
+                                  <XCircle className="h-3 w-3" />
+                                </button>
+                              </Badge>
+                            ))}
+                          </div>
+                          {/* 태그 입력창 */}
+                          <Input
+                            value={lawTagInput}
+                            onChange={(e) => setLawTagInput(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter" && lawTagInput.trim()) {
+                                e.preventDefault();
+                                setManualLawTags(prev => [...prev, lawTagInput.trim()]);
+                                setLawTagInput("");
+                              }
+                            }}
+                            placeholder="법령명 입력 후 Enter (예: 형법 제307조)"
+                            className="text-sm"
+                          />
+                        </div>
+                      ) : (
+                        <div className="flex flex-wrap gap-2">
+                          {relatedLawsLoading ? (
+                            <span className="text-sm text-muted-foreground">검색 중...</span>
+                          ) : (
+                            <>
+                              {/* 수동 추가 태그 */}
+                              {manualLawTags.map((tag, index) => (
+                                <Badge
+                                  key={`manual-${index}`}
+                                  variant="secondary"
+                                  className="font-normal text-xs"
+                                >
+                                  {tag}
+                                </Badge>
+                              ))}
+                              {/* API 검색 결과 태그 */}
+                              {relatedLaws.map((law, index) => (
+                                <Badge
+                                  key={`${law.law_name}-${law.article_number}-${index}`}
+                                  variant="outline"
+                                  className="font-normal text-xs"
+                                >
+                                  {law.law_name} 제{law.article_number}조({law.article_title})
+                                </Badge>
+                              ))}
+                              {manualLawTags.length === 0 && relatedLaws.length === 0 && (
+                                <span className="text-sm text-muted-foreground">관련 법령이 없습니다.</span>
+                              )}
+                            </>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
                 </>
               )}
             </CardContent>
@@ -1198,107 +1194,107 @@ export function CaseDetailPage({
                   </Button>
                 </div>
               ) : (
-              <>
-              {/* Zigzag Timeline */}
-              <div className="relative py-8">
-                {/* Center Line */}
-                <div className="absolute left-1/2 top-0 bottom-0 w-px bg-border -translate-x-1/2" />
+                <>
+                  {/* Zigzag Timeline */}
+                  <div className="relative py-8">
+                    {/* Center Line */}
+                    <div className="absolute left-1/2 top-0 bottom-0 w-px bg-border -translate-x-1/2" />
 
-                {/* Timeline Events */}
-                <div className="space-y-8">
-                  {timelineEvents.map((event, index) => {
-                    const isLeft = index % 2 === 0;
-                    return (
-                      <div
-                        key={event.id}
-                        className={`relative flex items-center ${isLeft ? "justify-start" : "justify-end"}`}
-                      >
-                        {/* Center Number Circle with Color */}
-                        <div className="absolute left-1/2 -translate-x-1/2 z-10">
-                          <div className={`w-10 h-10 rounded-full flex items-center justify-center text-sm font-semibold ${getTimelineDotColor(event.type)} text-white`}>
-                            {index + 1}
-                          </div>
-                        </div>
-
-                        {/* Event Card */}
-                        <div
-                          className={`w-[calc(50%-3rem)] group ${isLeft ? "pr-4 text-right" : "pl-4 text-left"}`}
-                        >
+                    {/* Timeline Events */}
+                    <div className="space-y-8">
+                      {timelineEvents.map((event, index) => {
+                        const isLeft = index % 2 === 0;
+                        return (
                           <div
-                            className={`p-5 rounded-xl border-2 bg-card hover:shadow-md transition-all ${getTypeColor(event.type)}`}
+                            key={event.id}
+                            className={`relative flex items-center ${isLeft ? "justify-start" : "justify-end"}`}
                           >
-                            {/* Header */}
-                            <div
-                              className={`flex items-center gap-2 mb-2 ${isLeft ? "justify-end" : "justify-start"}`}
-                            >
-                              <Badge
-                                variant="outline"
-                                className={`text-xs font-medium px-2 py-0.5 ${event.type === "의뢰인"
-                                  ? "border-emerald-300 bg-emerald-100 text-emerald-700"
-                                  : event.type === "상대방"
-                                    ? "border-amber-300 bg-amber-100 text-amber-800"
-                                    : event.type === "증거"
-                                      ? "border-blue-300 bg-blue-100 text-blue-700"
-                                      : "border-border bg-secondary text-muted-foreground"
-                                  }`}
-                              >
-                                {getTypeLabel(event.type)}
-                              </Badge>
-                              {event.actor && (
-                                <span className="text-xs text-muted-foreground">{event.actor}</span>
-                              )}
+                            {/* Center Number Circle with Color */}
+                            <div className="absolute left-1/2 -translate-x-1/2 z-10">
+                              <div className={`w-10 h-10 rounded-full flex items-center justify-center text-sm font-semibold ${getTimelineDotColor(event.type)} text-white`}>
+                                {index + 1}
+                              </div>
                             </div>
 
-                            {/* Title */}
-                            <h4 className="text-base font-semibold mb-1">
-                              {event.title}
-                            </h4>
-
-                            {/* Description */}
-                            <p className="text-sm text-muted-foreground leading-relaxed mb-3">
-                              {event.description}
-                            </p>
-
-                            {/* Date & Time */}
+                            {/* Event Card */}
                             <div
-                              className={`pt-3 border-t border-current/10 flex items-center gap-2 text-xs text-muted-foreground ${isLeft ? "justify-end" : "justify-start"}`}
+                              className={`w-[calc(50%-3rem)] group ${isLeft ? "pr-4 text-right" : "pl-4 text-left"}`}
                             >
-                              <Calendar className="h-3 w-3" />
-                              <span>{formatDate(event.date)}</span>
-                              <span className="opacity-50">|</span>
-                              <Clock className="h-3 w-3" />
-                              <span>{event.time}</span>
-                            </div>
+                              <div
+                                className={`p-5 rounded-xl border-2 bg-card hover:shadow-md transition-all ${getTypeColor(event.type)}`}
+                              >
+                                {/* Header */}
+                                <div
+                                  className={`flex items-center gap-2 mb-2 ${isLeft ? "justify-end" : "justify-start"}`}
+                                >
+                                  <Badge
+                                    variant="outline"
+                                    className={`text-xs font-medium px-2 py-0.5 ${event.type === "의뢰인"
+                                      ? "border-emerald-300 bg-emerald-100 text-emerald-700"
+                                      : event.type === "상대방"
+                                        ? "border-amber-300 bg-amber-100 text-amber-800"
+                                        : event.type === "증거"
+                                          ? "border-blue-300 bg-blue-100 text-blue-700"
+                                          : "border-border bg-secondary text-muted-foreground"
+                                      }`}
+                                  >
+                                    {getTypeLabel(event.type)}
+                                  </Badge>
+                                  {event.actor && (
+                                    <span className="text-xs text-muted-foreground">{event.actor}</span>
+                                  )}
+                                </div>
 
-                            {/* Action Buttons - Show on Hover */}
-                            <div
-                              className={`mt-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity ${isLeft ? "justify-end" : "justify-start"}`}
-                            >
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-7 w-7"
-                                onClick={() => setEditingEvent(event)}
-                              >
-                                <Edit2 className="h-3 w-3" />
-                              </Button>
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-7 w-7 text-destructive"
-                                onClick={() => handleDeleteEvent(event.id)}
-                              >
-                                <Trash2 className="h-3 w-3" />
-                              </Button>
+                                {/* Title */}
+                                <h4 className="text-base font-semibold mb-1">
+                                  {event.title}
+                                </h4>
+
+                                {/* Description */}
+                                <p className="text-sm text-muted-foreground leading-relaxed mb-3">
+                                  {event.description}
+                                </p>
+
+                                {/* Date & Time */}
+                                <div
+                                  className={`pt-3 border-t border-current/10 flex items-center gap-2 text-xs text-muted-foreground ${isLeft ? "justify-end" : "justify-start"}`}
+                                >
+                                  <Calendar className="h-3 w-3" />
+                                  <span>{formatDate(event.date)}</span>
+                                  <span className="opacity-50">|</span>
+                                  <Clock className="h-3 w-3" />
+                                  <span>{event.time}</span>
+                                </div>
+
+                                {/* Action Buttons - Show on Hover */}
+                                <div
+                                  className={`mt-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity ${isLeft ? "justify-end" : "justify-start"}`}
+                                >
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    className="h-7 w-7"
+                                    onClick={() => setEditingEvent(event)}
+                                  >
+                                    <Edit2 className="h-3 w-3" />
+                                  </Button>
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    className="h-7 w-7 text-destructive"
+                                    onClick={() => handleDeleteEvent(event.id)}
+                                  >
+                                    <Trash2 className="h-3 w-3" />
+                                  </Button>
+                                </div>
+                              </div>
                             </div>
                           </div>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-              </>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </>
               )}
             </CardContent>
           </Card>

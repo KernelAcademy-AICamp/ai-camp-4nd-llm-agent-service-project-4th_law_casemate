@@ -19,7 +19,7 @@ from fastembed import SparseTextEmbedding
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from tool.qdrant_client import QdrantService
-from app.services.summary_service import SummaryService
+from app.services.precedent_summary_service import SummaryService
 from app.prompts.summary_prompt import PROMPT_VERSION
 
 load_dotenv()

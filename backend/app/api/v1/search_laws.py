@@ -15,7 +15,7 @@ class SearchLawsRequest(BaseModel):
     score_threshold: Optional[float] = 0.3
 
 
-router = APIRouter(prefix="/api/laws", tags=["laws"])
+router = APIRouter(prefix="/laws", tags=["laws"])
 
 # 서비스 인스턴스
 search_laws_service = SearchLawsService()
