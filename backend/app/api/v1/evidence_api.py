@@ -9,6 +9,7 @@ import os
 import uuid
 import time
 from app.services.evidence_processor import EvidenceProcessor
+from openai import AsyncOpenAI
 
 from tool.database import get_db
 from tool.security import get_current_user
@@ -667,4 +668,226 @@ async def get_signed_url(
     except Exception as e:
         print(f"❌ Signed URL 생성 실패: {str(e)}")
         raise HTTPException(status_code=500, detail=f"URL 생성 실패: {str(e)}")
+
+@router.get("/{evidence_id}/analysis")
+async def get_evidence_analysis(
+    evidence_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    증거 분석 정보 조회
+
+    - evidence_id: 증거 ID
+    - 해당 증거의 분석 정보 반환 (없으면 null)
+    """
+    print(f"📊 분석 정보 조회: evidence_id={evidence_id}, user_id={current_user.id}")
+
+    try:
+        # 1. 증거 조회 및 권한 확인
+        evidence = db.query(models.Evidence).filter(models.Evidence.id == evidence_id).first()
+        if not evidence:
+            raise HTTPException(status_code=404, detail="증거를 찾을 수 없습니다")
+
+        if evidence.law_firm_id != current_user.firm_id:
+            raise HTTPException(status_code=403, detail="해당 증거에 접근할 권한이 없습니다")
+
+        # 2. 분석 정보 조회 (최신 것만)
+        analysis = db.query(models.EvidenceAnalysis).filter(
+            models.EvidenceAnalysis.evidence_id == evidence_id
+        ).order_by(models.EvidenceAnalysis.created_at.desc()).first()
+
+        if not analysis:
+            print(f"📊 분석 정보 없음: evidence_id={evidence_id}")
+            return {
+                "has_analysis": False,
+                "analysis": None
+            }
+
+        print(f"✅ 분석 정보 조회 완료: analysis_id={analysis.id}")
+
+        return {
+            "has_analysis": True,
+            "analysis": {
+                "id": analysis.id,
+                "summary": analysis.summary,
+                "legal_relevance": analysis.legal_relevance,
+                "risk_level": analysis.risk_level,
+                "ai_model": analysis.ai_model,
+                "created_at": analysis.created_at.isoformat() if analysis.created_at else None
+            }
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ 분석 정보 조회 실패: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"분석 정보 조회 실패: {str(e)}")
+
+@router.post("/{evidence_id}/analyze")
+async def analyze_evidence(
+    evidence_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    증거 분석 수행
+
+    - evidence_id: 증거 ID
+    - 증거의 content를 AI로 분석하여 요약, 법적 관련성, 위험도 평가
+    - 결과를 evidence_analyses 테이블에 저장
+    """
+    print(f"🤖 증거 분석 시작: evidence_id={evidence_id}, user_id={current_user.id}")
+
+    try:
+        # 1. 증거 조회 및 권한 확인
+        evidence = db.query(models.Evidence).filter(models.Evidence.id == evidence_id).first()
+        if not evidence:
+            raise HTTPException(status_code=404, detail="증거를 찾을 수 없습니다")
+
+        if evidence.law_firm_id != current_user.firm_id:
+            raise HTTPException(status_code=403, detail="해당 증거에 접근할 권한이 없습니다")
+
+        # 2. content 확인
+        if not evidence.content or len(evidence.content.strip()) < 20:
+            raise HTTPException(
+                status_code=400,
+                detail="분석할 텍스트가 없습니다. 먼저 텍스트 추출을 수행해주세요."
+            )
+
+        # 3. AI 분석 수행
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            raise HTTPException(status_code=500, detail="OPENAI_API_KEY가 설정되지 않았습니다")
+
+        client = AsyncOpenAI(api_key=api_key)
+
+        print(f"🤖 AI 분석 중... (텍스트 길이: {len(evidence.content)}자)")
+
+        # 분석 프롬프트
+        prompt = f"""당신은 법률 전문가입니다. 다음 증거 자료를 분석해주세요.
+
+**파일명:** {evidence.file_name}
+**문서 유형:** {evidence.doc_type if evidence.doc_type else '미분류'}
+
+**내용:**
+{evidence.content}
+
+---
+
+다음 형식으로 JSON 응답을 작성해주세요:
+
+```json
+{{
+  "summary": "증거 내용을 3-5문장으로 요약",
+  "legal_relevance": "이 증거가 법적으로 어떤 의미를 가지는지, 어떤 주장을 뒷받침하는지 분석 (3-5문장)",
+  "risk_level": "high, medium, low 중 하나 (상대방에게 불리한 정도)"
+}}
+```
+
+**주의사항:**
+- summary: 핵심 내용만 간결하게 요약
+- legal_relevance: 법적 쟁점, 증거 가치, 활용 방안을 구체적으로 작성
+- risk_level: 상대방 입장에서 불리한 정도를 평가 (높을수록 우리에게 유리)
+"""
+
+        response = await client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "당신은 법률 증거 분석 전문가입니다."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.3,
+            max_tokens=1500
+        )
+
+        content = response.choices[0].message.content or ""
+
+        # JSON 파싱
+        import json
+        import re
+
+        try:
+            # JSON 코드블록 제거
+            json_match = re.search(r'```json\s*(.*?)\s*```', content, re.DOTALL)
+            if json_match:
+                json_str = json_match.group(1)
+            else:
+                json_str = content
+
+            parsed = json.loads(json_str)
+            summary = parsed.get("summary", "")
+            legal_relevance = parsed.get("legal_relevance", "")
+            risk_level = parsed.get("risk_level", "medium")
+
+            print(f"✅ AI 분석 완료: risk_level={risk_level}")
+
+        except (json.JSONDecodeError, AttributeError) as e:
+            print(f"⚠️ JSON 파싱 실패: {str(e)}")
+            # 파싱 실패 시 전체 응답을 summary로 사용
+            summary = content[:500]
+            legal_relevance = "자동 분석 실패"
+            risk_level = "medium"
+
+        # 4. DB 저장 (기존 분석이 있으면 업데이트, 없으면 생성)
+        existing_analysis = db.query(models.EvidenceAnalysis).filter(
+            models.EvidenceAnalysis.evidence_id == evidence_id
+        ).first()
+
+        if existing_analysis:
+            # 기존 분석 업데이트
+            existing_analysis.summary = summary
+            existing_analysis.legal_relevance = legal_relevance
+            existing_analysis.risk_level = risk_level
+            existing_analysis.ai_model = "gpt-4o-mini"
+            existing_analysis.created_at = func.now()
+            db.commit()
+            db.refresh(existing_analysis)
+
+            print(f"✅ 분석 업데이트 완료: analysis_id={existing_analysis.id}")
+
+            return {
+                "message": "분석 완료 (업데이트)",
+                "analysis": {
+                    "id": existing_analysis.id,
+                    "summary": existing_analysis.summary,
+                    "legal_relevance": existing_analysis.legal_relevance,
+                    "risk_level": existing_analysis.risk_level,
+                    "ai_model": existing_analysis.ai_model,
+                    "created_at": existing_analysis.created_at.isoformat()
+                }
+            }
+        else:
+            # 새 분석 생성
+            new_analysis = models.EvidenceAnalysis(
+                evidence_id=evidence_id,
+                summary=summary,
+                legal_relevance=legal_relevance,
+                risk_level=risk_level,
+                ai_model="gpt-4o-mini"
+            )
+            db.add(new_analysis)
+            db.commit()
+            db.refresh(new_analysis)
+
+            print(f"✅ 분석 생성 완료: analysis_id={new_analysis.id}")
+
+            return {
+                "message": "분석 완료",
+                "analysis": {
+                    "id": new_analysis.id,
+                    "summary": new_analysis.summary,
+                    "legal_relevance": new_analysis.legal_relevance,
+                    "risk_level": new_analysis.risk_level,
+                    "ai_model": new_analysis.ai_model,
+                    "created_at": new_analysis.created_at.isoformat()
+                }
+            }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        print(f"❌ 증거 분석 실패: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"증거 분석 실패: {str(e)}")
 
