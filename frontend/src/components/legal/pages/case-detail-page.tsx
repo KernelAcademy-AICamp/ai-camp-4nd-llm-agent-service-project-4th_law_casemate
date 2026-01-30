@@ -6,9 +6,23 @@ import {
   type CaseData,
   type EvidenceData,
   type PrecedentData,
-  sampleCases,
   sampleEvidenceByDate,
 } from "@/lib/sample-data";
+import { Loader2 } from "lucide-react";
+
+// API 응답 타입
+interface CaseApiResponse {
+  id: number;
+  title: string;
+  client_name: string | null;
+  client_role: string | null;
+  case_type: string | null;
+  status: string | null;
+  created_at: string | null;
+  incident_date: string | null;
+  incident_date_end: string | null;
+  description: string | null;
+}
 
 // 유사 판례 API 응답 타입
 interface SimilarCaseResult {
@@ -22,6 +36,20 @@ interface SimilarCaseResult {
 interface SimilarCasesResponse {
   total: number;
   results: SimilarCaseResult[];
+}
+
+// 관련 법령 API 응답 타입
+interface RelatedLawResult {
+  law_name: string;
+  article_number: string;
+  article_title: string;
+  content: string;
+  score: number;
+}
+
+interface RelatedLawsResponse {
+  total: number;
+  results: RelatedLawResult[];
 }
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -171,11 +199,12 @@ export function CaseDetailPage({
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
 
-  // Find case data from sample data if not provided as prop
-  const caseData = propCaseData && propCaseData.id ? propCaseData : sampleCases.find(c => c.id === id) || sampleCases[0];
+  // 모든 useState 훅을 컴포넌트 최상단에 선언 (React 훅 규칙)
+  const [caseData, setCaseData] = useState<CaseData | null>(propCaseData || null);
+  const [isLoadingCase, setIsLoadingCase] = useState(!propCaseData);
+  const [caseError, setCaseError] = useState<string | null>(null);
 
-  const [timelineEvents, setTimelineEvents] =
-    useState<TimelineEvent[]>(initialTimelineEvents);
+  const [timelineEvents, setTimelineEvents] = useState<TimelineEvent[]>(initialTimelineEvents);
   const [editingEvent, setEditingEvent] = useState<TimelineEvent | null>(null);
   const [isAddingEvent, setIsAddingEvent] = useState(false);
   const [newEvent, setNewEvent] = useState<Partial<TimelineEvent>>({
@@ -187,24 +216,246 @@ export function CaseDetailPage({
     actor: "",
   });
 
-  // Case overview state
+  // Case overview state - 빈 값으로 초기화, API 데이터 로드 후 업데이트
   const [isEditingOverview, setIsEditingOverview] = useState(false);
   const [overviewData, setOverviewData] = useState<CaseOverviewData>({
-    summary:
-      "온라인 커뮤니티 및 직장 내에서 발생한 명예훼손 사건. 피고소인이 34명 규모의 단체 카카오톡 채팅방에서 의뢰인에 대해 '업무능력이 없다', '팀에 짐만 된다' 등의 모욕적 발언과 '회사 돈을 횡령했다'는 허위사실을 유포함.",
-    facts:
-      "2025년 11월 15일부터 2026년 1월 10일까지 약 2개월간, 피고소인 박OO는 직장 동료 34명이 참여한 카카오톡 단체 채팅방에서 의뢰인 김OO에 대해 '업무능력이 없다', '팀에 짐만 된다' 등의 모욕적 발언과 '회사 돈을 횡령했다'는 허위사실을 유포함.",
-    claims:
-      "1. 형사: 명예훼손죄(형법 제307조) 및 모욕죄(형법 제311조)로 고소\n2. 민사: 위자료 5,000만원 손해배상 청구",
-    legalBasis:
-      "형법 제307조(명예훼손), 형법 제311조(모욕), 정보통신망 이용촉진 및 정보보호 등에 관한 법률 제70조",
+    summary: "",
+    facts: "",
+    claims: "",
+    legalBasis: "",
   });
+
+  // 서브 탭 상태: "analysis" (AI 분석) | "original" (원문 보기)
+  const [detailSubTab, setDetailSubTab] = useState<"analysis" | "original">("analysis");
+
+  // 원문 편집 상태
+  const [isEditingOriginal, setIsEditingOriginal] = useState(false);
+  const [originalDescription, setOriginalDescription] = useState("");
+  const [isSaving, setIsSaving] = useState(false);
 
   const allEvidence = Object.values(sampleEvidenceByDate).flat();
 
   // 유사 판례 상태
   const [similarCases, setSimilarCases] = useState<SimilarCaseResult[]>([]);
   const [similarCasesLoading, setSimilarCasesLoading] = useState(false);
+
+  // 관련 법령 상태
+  const [relatedLaws, setRelatedLaws] = useState<RelatedLawResult[]>([]);
+  const [relatedLawsLoading, setRelatedLawsLoading] = useState(false);
+
+  // 수동 추가 법령 태그 상태
+  const [manualLawTags, setManualLawTags] = useState<string[]>([]);
+  const [lawTagInput, setLawTagInput] = useState("");
+
+  const [bottomSectionOpen, setBottomSectionOpen] = useState(false);
+
+  // API에서 사건 상세 조회
+  useEffect(() => {
+    if (propCaseData) return;
+
+    const fetchCase = async () => {
+      try {
+        const token = localStorage.getItem("access_token");
+        if (!token) {
+          setCaseError("로그인이 필요합니다.");
+          setIsLoadingCase(false);
+          return;
+        }
+
+        const response = await fetch(`http://localhost:8000/api/v1/cases/${id}`, {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        });
+
+        if (!response.ok) {
+          if (response.status === 404) {
+            setCaseError("사건을 찾을 수 없습니다.");
+            return;
+          }
+          throw new Error("사건 정보를 불러오는데 실패했습니다.");
+        }
+
+        const data: CaseApiResponse = await response.json();
+
+        // API 응답을 CaseData 타입으로 변환
+        const mappedCase: CaseData = {
+          id: String(data.id),
+          name: data.title,
+          progress: 0,
+          status: data.status || "접수",
+          date: data.created_at ? new Date(data.created_at).toLocaleDateString("ko-KR") : "",
+          evidenceCount: 0,
+          riskLevel: "medium" as const,
+          client: data.client_name || "미지정",
+          opponent: "상대방",
+          caseType: data.case_type || "미분류",
+          claimAmount: 0,
+          description: data.description || "",
+          period: data.incident_date && data.incident_date_end
+            ? `${data.incident_date} ~ ${data.incident_date_end}`
+            : data.incident_date || "",
+        };
+
+        setCaseData(mappedCase);
+
+        // 원문 상태 저장
+        setOriginalDescription(data.description || "");
+
+        // 사건 분석 API 호출 (description → summary, facts, claims 추출)
+        if (data.description) {
+          try {
+            const analyzeResponse = await fetch(`http://localhost:8000/api/v1/cases/${id}/analyze`, {
+              method: "POST",
+              headers: {
+                Authorization: `Bearer ${token}`,
+              },
+            });
+
+            if (analyzeResponse.ok) {
+              const analyzed = await analyzeResponse.json();
+              setOverviewData({
+                summary: analyzed.summary || "",
+                facts: analyzed.facts || "",
+                claims: analyzed.claims || "",
+                legalBasis: "",
+              });
+              // 분석된 summary + facts로 관련 법령 검색
+              const searchQuery = `${analyzed.summary} ${analyzed.facts}`;
+              if (searchQuery.trim()) {
+                fetchRelatedLaws(searchQuery);
+              }
+            }
+          } catch (analyzeErr) {
+            console.error("사건 분석 실패:", analyzeErr);
+            // 분석 실패 시 description 원본 사용
+            setOverviewData(prev => ({
+              ...prev,
+              summary: data.description || "",
+            }));
+            fetchRelatedLaws(data.description);
+          }
+        }
+      } catch (err) {
+        console.error("사건 상세 조회 실패:", err);
+        setCaseError(err instanceof Error ? err.message : "오류가 발생했습니다.");
+      } finally {
+        setIsLoadingCase(false);
+      }
+    };
+
+    fetchCase();
+  }, [id, propCaseData]);
+
+  // AI 분석 결과 저장 (summary, facts, claims)
+  const saveSummary = async () => {
+    const token = localStorage.getItem("access_token");
+    if (!token || !id) return;
+
+    setIsSaving(true);
+    try {
+      const response = await fetch(`http://localhost:8000/api/v1/cases/${id}/summary`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          summary: overviewData.summary,
+          facts: overviewData.facts,
+          claims: overviewData.claims,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error("AI 분석 결과 저장 실패");
+      }
+
+      console.log("✅ AI 분석 결과 저장 완료");
+      // 저장 후 관련 법령 재검색
+      fetchRelatedLaws(`${overviewData.summary} ${overviewData.facts}`);
+    } catch (err) {
+      console.error("AI 분석 결과 저장 실패:", err);
+      alert("저장에 실패했습니다.");
+    } finally {
+      setIsSaving(false);
+      setIsEditingOverview(false);
+    }
+  };
+
+  // AI 분석 새로고침 (강제 재분석)
+  const [isRefreshing, setIsRefreshing] = useState(false);
+
+  const refreshAnalysis = async () => {
+    const token = localStorage.getItem("access_token");
+    if (!token || !id) return;
+
+    setIsRefreshing(true);
+    try {
+      const response = await fetch(`http://localhost:8000/api/v1/cases/${id}/analyze?force=true`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error("AI 분석 새로고침 실패");
+      }
+
+      const analyzed = await response.json();
+      setOverviewData({
+        summary: analyzed.summary || "",
+        facts: analyzed.facts || "",
+        claims: analyzed.claims || "",
+        legalBasis: "",
+      });
+
+      console.log("✅ AI 분석 새로고침 완료");
+      // 새로고침 후 관련 법령 재검색
+      fetchRelatedLaws(`${analyzed.summary} ${analyzed.facts}`);
+    } catch (err) {
+      console.error("AI 분석 새로고침 실패:", err);
+      alert("AI 분석 새로고침에 실패했습니다.");
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
+
+  // 원문(description) 저장
+  const saveDescription = async () => {
+    const token = localStorage.getItem("access_token");
+    if (!token || !id) return;
+
+    setIsSaving(true);
+    try {
+      const response = await fetch(`http://localhost:8000/api/v1/cases/${id}`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          description: originalDescription,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error("원문 저장 실패");
+      }
+
+      console.log("✅ 원문 저장 완료");
+      // caseData도 업데이트
+      setCaseData(prev => prev ? { ...prev, description: originalDescription } : null);
+    } catch (err) {
+      console.error("원문 저장 실패:", err);
+      alert("저장에 실패했습니다.");
+    } finally {
+      setIsSaving(false);
+      setIsEditingOriginal(false);
+    }
+  };
 
   // 유사 판례 검색 (overviewData 기반)
   const fetchSimilarCases = async () => {
@@ -240,9 +491,44 @@ export function CaseDetailPage({
     }
   };
 
-  // 컴포넌트 마운트 시 유사 판례 검색
+  // 관련 법령 검색 (overviewData 기반)
+  const fetchRelatedLaws = async (customQuery?: string) => {
+    const query = customQuery ?? `${overviewData.summary} ${overviewData.facts}`;
+
+    if (!query.trim()) return;
+
+    setRelatedLawsLoading(true);
+    try {
+      const response = await fetch("/api/laws/search", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          query: query,
+          limit: 5,
+          score_threshold: 0.3,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error("관련 법령 검색 중 오류가 발생했습니다.");
+      }
+
+      const data: RelatedLawsResponse = await response.json();
+      setRelatedLaws(data.results);
+    } catch (err) {
+      console.error("관련 법령 검색 실패:", err);
+      setRelatedLaws([]);
+    } finally {
+      setRelatedLawsLoading(false);
+    }
+  };
+
+  // 컴포넌트 마운트 시 유사 판례 및 관련 법령 검색
   useEffect(() => {
     fetchSimilarCases();
+    fetchRelatedLaws();
   }, []);
 
   // 날짜 포맷 (20200515 → 2020.05.15)
@@ -342,7 +628,30 @@ export function CaseDetailPage({
     });
   };
 
-  const [bottomSectionOpen, setBottomSectionOpen] = useState(false);
+  // 로딩 상태
+  if (isLoadingCase) {
+    return (
+      <div className="flex items-center justify-center py-16">
+        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  // 에러 상태
+  if (caseError || !caseData) {
+    return (
+      <div className="text-center py-16">
+        <p className="text-muted-foreground">{caseError || "사건을 찾을 수 없습니다."}</p>
+        <Button
+          variant="outline"
+          className="mt-4"
+          onClick={() => navigate("/cases")}
+        >
+          사건 목록으로
+        </Button>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -405,33 +714,160 @@ export function CaseDetailPage({
         <TabsContent value="overview" className="space-y-6 mt-6">
           {/* Case Details - Editable (Moved to top) */}
           <Card className="border-border/60">
-            <CardHeader className="pb-4">
+            <CardHeader className="pb-2">
               <div className="flex items-center justify-between">
                 <CardTitle className="text-base font-medium">
                   사건 상세 정보
                 </CardTitle>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => setIsEditingOverview(!isEditingOverview)}
-                >
-                  {isEditingOverview ? (
-                    <>
-                      <Save className="h-4 w-4 mr-2" />
-                      저장
-                    </>
-                  ) : (
-                    <>
-                      <Edit2 className="h-4 w-4 mr-2" />
-                      편집
-                    </>
-                  )}
-                </Button>
+                {/* 서브 탭에 따라 다른 버튼 표시 */}
+                {detailSubTab === "analysis" ? (
+                  <div className="flex items-center gap-2">
+                    {/* AI 분석 새로고침 버튼 */}
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      disabled={isRefreshing || isSaving}
+                      onClick={refreshAnalysis}
+                      title="AI 분석 새로고침"
+                    >
+                      {isRefreshing ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          width="16"
+                          height="16"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        >
+                          <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+                          <path d="M3 3v5h5" />
+                          <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16" />
+                          <path d="M16 21h5v-5" />
+                        </svg>
+                      )}
+                    </Button>
+                    {/* 편집/저장 버튼 */}
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={isSaving || isRefreshing}
+                      onClick={() => {
+                        if (isEditingOverview) {
+                          saveSummary();
+                        } else {
+                          setIsEditingOverview(true);
+                        }
+                      }}
+                    >
+                      {isSaving ? (
+                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                      ) : isEditingOverview ? (
+                        <>
+                          <Save className="h-4 w-4 mr-2" />
+                          저장
+                        </>
+                      ) : (
+                        <>
+                          <Edit2 className="h-4 w-4 mr-2" />
+                          편집
+                        </>
+                      )}
+                    </Button>
+                  </div>
+                ) : (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={isSaving}
+                    onClick={() => {
+                      if (isEditingOriginal) {
+                        saveDescription();
+                      } else {
+                        setIsEditingOriginal(true);
+                      }
+                    }}
+                  >
+                    {isSaving ? (
+                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    ) : isEditingOriginal ? (
+                      <>
+                        <Save className="h-4 w-4 mr-2" />
+                        저장
+                      </>
+                    ) : (
+                      <>
+                        <Edit2 className="h-4 w-4 mr-2" />
+                        원문 수정
+                      </>
+                    )}
+                  </Button>
+                )}
               </div>
             </CardHeader>
             <CardContent className="space-y-6">
-              {/* Basic Info */}
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pb-6 border-b border-border/60">
+              {/* 서브 탭 */}
+              <div className="flex gap-1 border-b border-border/60 pb-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDetailSubTab("analysis");
+                    setIsEditingOriginal(false);
+                  }}
+                  className={`px-3 py-1.5 text-sm rounded-md transition-colors ${
+                    detailSubTab === "analysis"
+                      ? "bg-primary text-primary-foreground"
+                      : "text-muted-foreground hover:bg-secondary"
+                  }`}
+                >
+                  AI 분석
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDetailSubTab("original");
+                    setIsEditingOverview(false);
+                  }}
+                  className={`px-3 py-1.5 text-sm rounded-md transition-colors ${
+                    detailSubTab === "original"
+                      ? "bg-primary text-primary-foreground"
+                      : "text-muted-foreground hover:bg-secondary"
+                  }`}
+                >
+                  원문 보기
+                </button>
+              </div>
+
+              {/* 원문 보기 탭 콘텐츠 */}
+              {detailSubTab === "original" && (
+                <div className="space-y-4">
+                  {isEditingOriginal ? (
+                    <Textarea
+                      value={originalDescription}
+                      onChange={(e) => setOriginalDescription(e.target.value)}
+                      rows={12}
+                      className="text-sm font-mono"
+                      placeholder="사건 내용 원문을 입력하세요..."
+                    />
+                  ) : (
+                    <div className="p-4 bg-secondary/30 rounded-lg border border-border/60">
+                      <p className="text-sm text-muted-foreground whitespace-pre-wrap leading-relaxed">
+                        {originalDescription || "원문이 입력되지 않았습니다."}
+                      </p>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* AI 분석 탭 콘텐츠 */}
+              {detailSubTab === "analysis" && (
+                <>
+                  {/* Basic Info */}
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pb-6 border-b border-border/60">
                 <div className="space-y-1">
                   <p className="text-xs text-muted-foreground">사건 유형</p>
                   <p className="text-sm font-medium">{caseData.caseType}</p>
@@ -516,32 +952,78 @@ export function CaseDetailPage({
                 <div className="space-y-2">
                   <Label className="text-sm font-medium">적용 법률</Label>
                   {isEditingOverview ? (
-                    <Textarea
-                      value={overviewData.legalBasis}
-                      onChange={(e) =>
-                        setOverviewData((prev) => ({
-                          ...prev,
-                          legalBasis: e.target.value,
-                        }))
-                      }
-                      rows={2}
-                      className="text-sm"
-                    />
+                    <div className="space-y-2">
+                      {/* 수동 추가된 태그 표시 */}
+                      <div className="flex flex-wrap gap-2">
+                        {manualLawTags.map((tag, index) => (
+                          <Badge
+                            key={`manual-${index}`}
+                            variant="secondary"
+                            className="font-normal text-xs pr-1"
+                          >
+                            {tag}
+                            <button
+                              type="button"
+                              onClick={() => setManualLawTags(prev => prev.filter((_, i) => i !== index))}
+                              className="ml-1 hover:text-destructive"
+                            >
+                              <XCircle className="h-3 w-3" />
+                            </button>
+                          </Badge>
+                        ))}
+                      </div>
+                      {/* 태그 입력창 */}
+                      <Input
+                        value={lawTagInput}
+                        onChange={(e) => setLawTagInput(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" && lawTagInput.trim()) {
+                            e.preventDefault();
+                            setManualLawTags(prev => [...prev, lawTagInput.trim()]);
+                            setLawTagInput("");
+                          }
+                        }}
+                        placeholder="법령명 입력 후 Enter (예: 형법 제307조)"
+                        className="text-sm"
+                      />
+                    </div>
                   ) : (
                     <div className="flex flex-wrap gap-2">
-                      {overviewData.legalBasis.split(", ").map((law) => (
-                        <Badge
-                          key={law}
-                          variant="outline"
-                          className="font-normal text-xs"
-                        >
-                          {law}
-                        </Badge>
-                      ))}
+                      {relatedLawsLoading ? (
+                        <span className="text-sm text-muted-foreground">검색 중...</span>
+                      ) : (
+                        <>
+                          {/* 수동 추가 태그 */}
+                          {manualLawTags.map((tag, index) => (
+                            <Badge
+                              key={`manual-${index}`}
+                              variant="secondary"
+                              className="font-normal text-xs"
+                            >
+                              {tag}
+                            </Badge>
+                          ))}
+                          {/* API 검색 결과 태그 */}
+                          {relatedLaws.map((law, index) => (
+                            <Badge
+                              key={`${law.law_name}-${law.article_number}-${index}`}
+                              variant="outline"
+                              className="font-normal text-xs"
+                            >
+                              {law.law_name} 제{law.article_number}조({law.article_title})
+                            </Badge>
+                          ))}
+                          {manualLawTags.length === 0 && relatedLaws.length === 0 && (
+                            <span className="text-sm text-muted-foreground">관련 법령이 없습니다.</span>
+                          )}
+                        </>
+                      )}
                     </div>
                   )}
                 </div>
               </div>
+                </>
+              )}
             </CardContent>
           </Card>
 
