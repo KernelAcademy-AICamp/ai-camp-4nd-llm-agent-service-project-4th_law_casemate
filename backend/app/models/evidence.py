@@ -1,6 +1,7 @@
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Text, UniqueConstraint, Boolean, BigInteger
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Text, UniqueConstraint, Boolean, BigInteger, Date
 from sqlalchemy.sql import func
 from tool.database import Base
+
 
 class Evidence(Base):
     __tablename__ = "evidences"
@@ -25,10 +26,20 @@ class Case(Base):
     __tablename__ = "cases"
 
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, nullable=True)
+    user_id = Column(Integer, nullable=True)  # 레거시 호환용
+    law_firm_id = Column(Integer, ForeignKey('law_firms.id', ondelete='SET NULL'), nullable=True)
+    created_by = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
     title = Column(String(255), nullable=False)
     client_name = Column(String(100), nullable=True)
+    client_role = Column(String(50), nullable=True)
+    case_type = Column(String(50), nullable=True)
     status = Column(String(50), server_default="접수", nullable=True)
+    incident_date = Column(Date, nullable=True)
+    incident_date_end = Column(Date, nullable=True)
+    notification_date = Column(Date, nullable=True)
+    notification_date_end = Column(Date, nullable=True)
+    deadline_at = Column(Date, nullable=True)
+    deadline_at_end = Column(Date, nullable=True)
     description = Column(Text, nullable=True)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
@@ -70,3 +81,15 @@ class EvidenceAnalysis(Base):
     risk_level = Column(String(20), nullable=True)  # 위험 수준 (high, medium, low)
     ai_model = Column(String(50), nullable=True)  # 사용한 AI 모델 (예: openai-whisper)
     created_at = Column(DateTime, server_default=func.now())
+
+class CaseSummary(Base):
+    """사건 분석 결과 캐시 테이블"""
+    __tablename__ = "case_summaries"
+
+    id = Column(Integer, primary_key=True, index=True)
+    case_id = Column(Integer, ForeignKey('cases.id', ondelete='CASCADE'), unique=True, nullable=False)
+    summary = Column(Text, nullable=True)  # 사건 요약
+    facts = Column(Text, nullable=True)  # 사실관계
+    claims = Column(Text, nullable=True)  # 청구내용
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())

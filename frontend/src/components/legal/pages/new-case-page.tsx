@@ -370,24 +370,62 @@ export function NewCasePage({ }: NewCasePageProps) {
     setStep("evidence");
   };
 
-  const handleSubmit = () => {
-    console.log({
-      caseName,
-      caseType,
-      clientName,
-      clientRole,
-      incidentDate: isIncidentPeriod
-        ? `${incidentDate} ~ ${incidentDateEnd}`
-        : incidentDate,
-      notificationDate: isNotificationPeriod
-        ? `${notificationDate} ~ ${notificationDateEnd}`
-        : notificationDate,
-      deadline: isDeadlinePeriod ? `${deadline} ~ ${deadlineEnd}` : deadline,
-      consultationNote,
-      evidenceItems,
-      linkedFiles,
-    });
-    navigate(-1);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const handleSubmit = async () => {
+    if (!caseName.trim()) {
+      alert("사건 명을 입력해주세요.");
+      return;
+    }
+
+    setIsSubmitting(true);
+
+    try {
+      const token = localStorage.getItem("access_token");
+      if (!token) {
+        alert("로그인이 필요합니다.");
+        navigate("/");
+        return;
+      }
+
+      const response = await fetch("http://localhost:8000/api/v1/cases", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          title: caseName,
+          case_type: caseType || null,
+          client_name: clientName || null,
+          client_role: clientRole || null,
+          incident_date: incidentDate || null,
+          incident_date_end: isIncidentPeriod ? incidentDateEnd || null : null,
+          notification_date: notificationDate || null,
+          notification_date_end: isNotificationPeriod ? notificationDateEnd || null : null,
+          deadline_at: deadline || null,
+          deadline_at_end: isDeadlinePeriod ? deadlineEnd || null : null,
+          description: consultationNote || null,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.detail || "사건 등록에 실패했습니다");
+      }
+
+      console.log("사건 등록 성공:", data);
+      alert("사건이 등록되었습니다.");
+      navigate("/cases");
+    } catch (error) {
+      console.error("사건 등록 실패:", error);
+      const errorMessage =
+        error instanceof Error ? error.message : "사건 등록 중 오류가 발생했습니다.";
+      alert(errorMessage);
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const { folders: currentFolders, files: currentFiles } = getCurrentFolderContent();
@@ -458,15 +496,15 @@ export function NewCasePage({ }: NewCasePageProps) {
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-5">
-            {/* 사건 명 + 사건 종류 (같은 줄) */}
+            {/* 사건명 + 사건 종류 (같은 줄) */}
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label htmlFor="caseName" className="text-sm font-medium">
-                  사건 명
+                  사건명
                 </Label>
                 <Input
                   id="caseName"
-                  placeholder="예: 임대차보증금 반환 청구"
+                  placeholder="예: 온라인 명예훼손 손해배상"
                   value={caseName}
                   onChange={(e) => setCaseName(e.target.value)}
                   className="h-10"
@@ -499,7 +537,7 @@ export function NewCasePage({ }: NewCasePageProps) {
                 </Label>
                 <Input
                   id="clientName"
-                  placeholder="의뢰인 이름 입력"
+                  placeholder="이름 입력"
                   value={clientName}
                   onChange={(e) => setClientName(e.target.value)}
                   className="h-10"
@@ -667,7 +705,7 @@ export function NewCasePage({ }: NewCasePageProps) {
               </Label>
               <Textarea
                 id="consultationNote"
-                placeholder="상담 내용을 입력해주세요..."
+                placeholder="상담 내용을 입력해 주세요."
                 value={consultationNote}
                 onChange={(e) => setConsultationNote(e.target.value)}
                 rows={5}
@@ -797,7 +835,7 @@ export function NewCasePage({ }: NewCasePageProps) {
                     <div className="col-span-2 space-y-1">
                       <Label className="text-xs text-muted-foreground">증거 설명</Label>
                       <Input
-                        placeholder="이 증거에 대한 설명..."
+                        placeholder="예. 수집 경위, 증명 취지 등"
                         value={item.description}
                         onChange={(e) =>
                           updateEvidenceItem(item.id, "description", e.target.value)
@@ -1026,7 +1064,7 @@ export function NewCasePage({ }: NewCasePageProps) {
                         <div className="col-span-2 space-y-1">
                           <Label className="text-xs text-muted-foreground">증거 설명</Label>
                           <Input
-                            placeholder="이 증거에 대한 설명..."
+                            placeholder="예. 수집 경위, 증명 취지 등"
                             value={managedDescription}
                             onChange={(e) => setManagedDescription(e.target.value)}
                             className="h-8 text-sm bg-background/50 border-border/40"
@@ -1117,10 +1155,12 @@ export function NewCasePage({ }: NewCasePageProps) {
 
           {/* Actions */}
           <div className="flex justify-between">
-            <Button variant="outline" onClick={() => setStep("info")}>
+            <Button variant="outline" onClick={() => setStep("info")} disabled={isSubmitting}>
               이전 단계
             </Button>
-            <Button onClick={handleSubmit}>사건 등록 완료</Button>
+            <Button onClick={handleSubmit} disabled={isSubmitting}>
+              {isSubmitting ? "등록 중..." : "사건 등록 완료"}
+            </Button>
           </div>
         </div>
       )}

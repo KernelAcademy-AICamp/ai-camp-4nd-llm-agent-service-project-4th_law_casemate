@@ -1,51 +1,127 @@
 "use client";
 
 import { useNavigate } from "react-router-dom";
-import { type CaseData, sampleCases } from "@/lib/sample-data";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Progress } from "@/components/ui/progress";
 import { Input } from "@/components/ui/input";
-import { Plus, Search, ArrowUpRight } from "lucide-react";
-import { useState } from "react";
+import { Plus, Search, ArrowUpRight, Loader2 } from "lucide-react";
+import { useState, useEffect } from "react";
 
-interface CasesPageProps {
-  cases?: CaseData[];
+// API 응답 타입
+interface CaseApiResponse {
+  id: number;
+  title: string;
+  client_name: string | null;
+  case_type: string | null;
+  status: string | null;
+  created_at: string | null;
 }
 
-export function CasesPage({ cases: propCases }: CasesPageProps) {
+// 화면 표시용 타입
+interface CaseDisplayItem {
+  id: string;
+  title: string;
+  clientName: string;
+  caseType: string;
+  status: string;
+  createdAt: string;
+}
+
+export function CasesPage() {
   const navigate = useNavigate();
-  const cases = propCases || sampleCases;
+  const [cases, setCases] = useState<CaseDisplayItem[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
 
+  // API에서 사건 목록 조회
+  useEffect(() => {
+    const fetchCases = async () => {
+      try {
+        const token = localStorage.getItem("access_token");
+        if (!token) {
+          setError("로그인이 필요합니다.");
+          setIsLoading(false);
+          return;
+        }
+
+        const response = await fetch("http://localhost:8000/api/v1/cases", {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        });
+
+        if (!response.ok) {
+          if (response.status === 401) {
+            setError("로그인이 만료되었습니다. 다시 로그인해주세요.");
+            return;
+          }
+          throw new Error("사건 목록을 불러오는데 실패했습니다.");
+        }
+
+        const data = await response.json();
+
+        // API 응답을 화면 표시용 타입으로 변환
+        const displayCases: CaseDisplayItem[] = data.cases.map(
+          (c: CaseApiResponse) => ({
+            id: String(c.id),
+            title: c.title,
+            clientName: c.client_name || "",
+            caseType: c.case_type || "",
+            status: c.status || "접수",
+            createdAt: c.created_at
+              ? new Date(c.created_at).toLocaleDateString("ko-KR")
+              : "",
+          })
+        );
+
+        setCases(displayCases);
+      } catch (err) {
+        console.error("사건 목록 조회 실패:", err);
+        setError(
+          err instanceof Error ? err.message : "오류가 발생했습니다."
+        );
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    fetchCases();
+  }, []);
+
+  // 검색 필터링
   const filteredCases = cases.filter(
     (c) =>
-      c.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      c.client.toLowerCase().includes(searchQuery.toLowerCase())
+      c.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      c.clientName.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
-  const getRiskBadgeVariant = (risk: CaseData["riskLevel"]) => {
-    switch (risk) {
-      case "low":
-        return "secondary";
-      case "medium":
-        return "outline";
-      case "high":
-        return "destructive";
-    }
-  };
+  // 로딩 상태
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center py-16">
+        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
 
-  const getRiskLabel = (risk: CaseData["riskLevel"]) => {
-    switch (risk) {
-      case "low":
-        return "낮음";
-      case "medium":
-        return "중간";
-      case "high":
-        return "높음";
-    }
-  };
+  // 에러 상태
+  if (error) {
+    return (
+      <div className="text-center py-16">
+        <p className="text-muted-foreground">{error}</p>
+        <Button
+          variant="outline"
+          className="mt-4"
+          onClick={() => navigate("/")}
+        >
+          로그인 페이지로
+        </Button>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -86,39 +162,30 @@ export function CasesPage({ cases: propCases }: CasesPageProps) {
               </div>
 
               <h3 className="font-medium mb-1 line-clamp-2 leading-snug text-sm">
-                {caseItem.name}
+                {caseItem.title}
               </h3>
               <p className="text-xs text-muted-foreground mb-4">
-                {caseItem.date} · 증거 {caseItem.evidenceCount}건
+                {caseItem.createdAt}
+                {caseItem.clientName && ` · ${caseItem.clientName}`}
               </p>
 
-              <div className="space-y-3">
-                <div>
-                  <div className="flex items-center justify-between text-xs mb-1">
-                    <span className="text-muted-foreground">진행률</span>
-                    <span className="font-medium">{caseItem.progress}%</span>
-                  </div>
-                  <Progress value={caseItem.progress} className="h-1" />
-                </div>
-
+              {caseItem.caseType && (
                 <div className="flex items-center justify-between">
-                  <span className="text-xs text-muted-foreground">리스크</span>
-                  <Badge
-                    variant={getRiskBadgeVariant(caseItem.riskLevel)}
-                    className="text-xs font-normal"
-                  >
-                    {getRiskLabel(caseItem.riskLevel)}
-                  </Badge>
+                  <span className="text-xs text-muted-foreground">유형</span>
+                  <span className="text-xs font-medium">{caseItem.caseType}</span>
                 </div>
-              </div>
+              )}
             </CardContent>
           </Card>
         ))}
       </div>
 
+      {/* Empty State */}
       {filteredCases.length === 0 && (
         <div className="text-center py-16">
-          <p className="text-muted-foreground">검색 결과가 없습니다.</p>
+          <p className="text-muted-foreground">
+            {searchQuery ? "검색 결과가 없습니다." : "등록된 사건이 없습니다."}
+          </p>
         </div>
       )}
     </div>

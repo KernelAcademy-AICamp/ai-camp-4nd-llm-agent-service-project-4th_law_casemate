@@ -28,7 +28,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# v1 API 라우터 포함 (모든 API가 /api/v1 하위에 통합)
+# v1 API 라우터 포함
 from app.api.v1 import router as v1_router
 app.include_router(v1_router, prefix="/api/v1")
 
