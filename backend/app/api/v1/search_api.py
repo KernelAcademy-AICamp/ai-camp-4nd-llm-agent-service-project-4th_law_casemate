@@ -6,9 +6,9 @@
 from fastapi import APIRouter, Query, HTTPException
 from pydantic import BaseModel
 from typing import Optional
-from app.services.search_service import SearchService
+from app.services.precedent_search_service import SearchService
 from app.services.similar_search_service import SimilarSearchService
-from app.services.summary_service import SummaryService
+from app.services.precedent_summary_service import SummaryService
 from app.services.comparison_service import ComparisonService
 
 

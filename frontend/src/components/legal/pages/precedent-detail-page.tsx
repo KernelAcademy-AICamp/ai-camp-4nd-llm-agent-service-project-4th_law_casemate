@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import React, { useState, useEffect } from "react";
 import { useNavigate, useParams, useLocation, useSearchParams, Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -344,12 +344,9 @@ export function PrecedentDetailPage({ }: PrecedentDetailPageProps) {
                         const isRefSection = section.header?.includes("참조판례");
 
                         return (
-                          <>
-                            {isNumbered && <div key={`spacer-${lIndex}`} className="min-h-[1.5rem]"></div>}
-                            <div
-                              key={lIndex}
-                              className="min-h-[1.5rem]"
-                            >
+                          <React.Fragment key={lIndex}>
+                            {isNumbered && <div className="min-h-[1.5rem]"></div>}
+                            <div className="min-h-[1.5rem]">
                               {isRefSection ? (
                                 // 참조판례 섹션: 사건번호를 링크로 변환
                                 renderWithCaseLinks(cleanedLine)
@@ -362,7 +359,7 @@ export function PrecedentDetailPage({ }: PrecedentDetailPageProps) {
                                 />
                               )}
                             </div>
-                          </>
+                          </React.Fragment>
                         );
                       })}
                     </div>
