@@ -9,6 +9,7 @@ from typing import Optional
 from app.services.search_service import SearchService
 from app.services.similar_search_service import SimilarSearchService
 from app.services.summary_service import SummaryService
+from app.services.comparison_service import ComparisonService
 
 
 class SummarizeRequest(BaseModel):
@@ -21,12 +22,19 @@ class SimilarCasesRequest(BaseModel):
     exclude_case_number: Optional[str] = None  # 현재 판례 제외
 
 
-router = APIRouter(prefix="/api/search", tags=["search"])
+class CompareRequest(BaseModel):
+    origin_facts: str  # 현재 사건의 사실관계
+    origin_claims: str  # 현재 사건의 청구내용
+    target_case_number: str  # 비교할 유사 판례 사건번호
+
+
+router = APIRouter(prefix="/search", tags=["search"])
 
 # 서비스 인스턴스
 search_service = SearchService()
 similar_search_service = SimilarSearchService()
 summary_service = SummaryService()
+comparison_service = ComparisonService()
 
 
 @router.get("/cases")
@@ -128,3 +136,29 @@ async def search_similar_cases(request: SimilarCasesRequest):
         return results
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"유사 판례 검색 중 오류 발생: {str(e)}")
+
+
+@router.post("/cases/compare")
+async def compare_cases(request: CompareRequest):
+    """
+    현재 사건과 유사 판례 비교 분석 (RAG)
+
+    - **origin_facts**: 현재 사건의 사실관계
+    - **origin_claims**: 현재 사건의 청구내용
+    - **target_case_number**: 비교할 유사 판례 사건번호
+    """
+    try:
+        result = comparison_service.compare(
+            origin_facts=request.origin_facts,
+            origin_claims=request.origin_claims,
+            target_case_number=request.target_case_number,
+        )
+
+        if not result.get("success"):
+            raise HTTPException(status_code=404, detail=result.get("error"))
+
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"비교 분석 중 오류 발생: {str(e)}")

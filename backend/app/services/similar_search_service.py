@@ -1,19 +1,33 @@
 """
 유사 판례 검색 서비스
-Dense 벡터 유사도 기반 의미적 유사 판례 검색
+하이브리드 검색 (Dense + Sparse) 기반 유사 판례 검색
 """
 
 import os
 import logging
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple
 from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor
 from openai import OpenAI
 from qdrant_client import QdrantClient
+from qdrant_client.http import models
+from fastembed import SparseTextEmbedding
 from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
 
 load_dotenv()
+
+# Sparse 임베딩 모델 (싱글톤)
+_sparse_model = None
+
+
+def get_sparse_model():
+    global _sparse_model
+    if _sparse_model is None:
+        logger.info("Sparse 임베딩 모델 로딩 중...")
+        _sparse_model = SparseTextEmbedding(model_name="Qdrant/bm25")
+    return _sparse_model
 
 
 @dataclass
@@ -36,21 +50,12 @@ class SimilarCaseResult:
 
 
 class SimilarSearchService:
-    """유사 판례 검색 서비스 (HyDE + Dense 벡터 유사도)"""
+    """유사 판례 검색 서비스 (요약 기반 하이브리드: Dense + Sparse, RRF 기반)"""
 
-    CASES_COLLECTION = "cases"
+    SUMMARIES_COLLECTION = "case_summaries"
 
-    # HyDE 프롬프트: 가상의 유사 판례 생성
-    HYDE_SYSTEM_PROMPT = """당신은 한국 법률 전문가입니다.
-주어진 사건 정보를 바탕으로, 이와 유사한 가상의 판례 요약을 작성해주세요.
-
-작성 형식:
-- 사건 유형과 핵심 쟁점
-- 주요 사실관계
-- 법원의 판단 요지
-- 적용 법률
-
-실제 판례처럼 법률 용어를 사용하여 2-3문단으로 작성하세요."""
+    # RRF 파라미터 (값이 클수록 순위 간 점수 차이가 완만해짐)
+    RRF_K = 60
 
     def __init__(self):
         self.openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -58,27 +63,77 @@ class SimilarSearchService:
             host=os.getenv("QDRANT_HOST", "localhost"),
             port=int(os.getenv("QDRANT_PORT", "6333"))
         )
+        self.sparse_model = get_sparse_model()
 
-    def _generate_hypothetical_document(self, query: str) -> str:
-        """HyDE: 쿼리를 기반으로 가상의 판례 문서 생성"""
-        response = self.openai_client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": self.HYDE_SYSTEM_PROMPT},
-                {"role": "user", "content": f"다음 사건과 유사한 판례를 작성해주세요:\n\n{query}"}
-            ],
-            temperature=0.7,
-            max_tokens=500,
-        )
-        return response.choices[0].message.content
+    # ==================== 임베딩 생성 ====================
 
     def _create_dense_embedding(self, text: str) -> List[float]:
-        """Dense 임베딩 생성 (OpenAI)"""
+        """Dense 임베딩 생성 (OpenAI text-embedding-3-large)"""
         response = self.openai_client.embeddings.create(
-            model="text-embedding-3-small",
+            model="text-embedding-3-large",
             input=text
         )
         return response.data[0].embedding
+
+    def _create_sparse_embedding(self, text: str) -> models.SparseVector:
+        """Sparse 임베딩 생성 (BM25)"""
+        sparse_emb = list(self.sparse_model.embed([text]))[0]
+        return models.SparseVector(
+            indices=sparse_emb.indices.tolist(),
+            values=sparse_emb.values.tolist(),
+        )
+
+    def _create_embeddings_parallel(self, text: str) -> Tuple[List[float], models.SparseVector]:
+        """Dense와 Sparse 임베딩을 병렬로 생성"""
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            dense_future = executor.submit(self._create_dense_embedding, text)
+            sparse_future = executor.submit(self._create_sparse_embedding, text)
+
+            dense_vector = dense_future.result()
+            sparse_vector = sparse_future.result()
+
+        return dense_vector, sparse_vector
+
+    # ==================== RRF 점수 결합 ====================
+
+    def _combine_rrf_scores(
+        self,
+        dense_points: List,
+        sparse_points: List,
+    ) -> Dict[str, Dict[str, Any]]:
+        """
+        Dense와 Sparse 검색 결과를 RRF(Reciprocal Rank Fusion)로 결합
+
+        - 점수가 아닌 순위만 사용하여 결합
+        - 양쪽 검색에서 모두 상위권인 문서가 높은 점수를 받음
+        - score = 1/(k + rank_dense) + 1/(k + rank_sparse)
+        """
+        combined = {}
+
+        # Dense 결과: 순위 기반 RRF 점수
+        for rank, point in enumerate(dense_points, start=1):
+            point_id = str(point.id)
+            rrf_score = 1.0 / (self.RRF_K + rank)
+            combined[point_id] = {
+                "score": rrf_score,
+                "payload": point.payload,
+            }
+
+        # Sparse 결과: RRF 점수 합산
+        for rank, point in enumerate(sparse_points, start=1):
+            point_id = str(point.id)
+            rrf_score = 1.0 / (self.RRF_K + rank)
+            if point_id in combined:
+                combined[point_id]["score"] += rrf_score
+            else:
+                combined[point_id] = {
+                    "score": rrf_score,
+                    "payload": point.payload,
+                }
+
+        return combined
+
+    # ==================== 유사 판례 검색 ====================
 
     def search_similar_cases(
         self,
@@ -87,11 +142,11 @@ class SimilarSearchService:
         limit: int = 3
     ) -> Dict[str, Any]:
         """
-        유사 판례 검색 (HyDE + Dense 벡터 유사도)
+        유사 판례 검색 (요약 컬렉션 대상, RRF 하이브리드)
 
         Args:
-            query: 검색 쿼리 (AI 요약의 결과요약 + 사실관계)
-            exclude_case_number: 제외할 판례 사건번호 (현재 보고 있는 판례)
+            query: 검색 쿼리 (사건 요약 + 사실관계 + 청구내용)
+            exclude_case_number: 제외할 판례 사건번호
             limit: 반환할 유사 판례 수 (기본 3개)
 
         Returns:
@@ -100,59 +155,63 @@ class SimilarSearchService:
         if not query or len(query.strip()) < 10:
             return {"total": 0, "results": []}
 
-        # HyDE: 가상의 유사 판례 문서 생성
-        hypothetical_doc = self._generate_hypothetical_document(query)
-        logger.info(f"HyDE 가상 문서 생성 완료 ({len(hypothetical_doc)}자)")
+        # Dense + Sparse 임베딩 병렬 생성
+        dense_vector, sparse_vector = self._create_embeddings_parallel(query)
 
-        # 가상 문서를 임베딩 (쿼리 대신)
-        dense_vector = self._create_dense_embedding(hypothetical_doc)
-
-        # Dense 벡터 유사도 검색
+        # 요약 컬렉션 대상 하이브리드 검색 (1건 = 1판례, 청크 없음)
         search_limit = (limit + 1) * 10
 
-        results = self.qdrant_client.query_points(
-            collection_name=self.CASES_COLLECTION,
+        # Dense 검색
+        dense_results = self.qdrant_client.query_points(
+            collection_name=self.SUMMARIES_COLLECTION,
             query=dense_vector,
             using="dense",
             limit=search_limit,
         )
 
-        # 결과 처리 (자기 자신 제외, 청크 병합)
-        case_scores = {}
-        case_metadata = {}
+        # Sparse 검색
+        sparse_results = self.qdrant_client.query_points(
+            collection_name=self.SUMMARIES_COLLECTION,
+            query=sparse_vector,
+            using="sparse",
+            limit=search_limit,
+        )
 
-        for result in results.points:
-            payload = result.payload
+        # RRF 점수 결합
+        combined_scores = self._combine_rrf_scores(
+            dense_results.points,
+            sparse_results.points,
+        )
+
+        # 결과 처리 (자기 자신 제외)
+        similar_cases = []
+
+        for point_id, data in combined_scores.items():
+            payload = data["payload"]
+            score = data["score"]
             case_num = payload.get("case_number", "")
 
             # 현재 판례 제외
             if exclude_case_number and case_num == exclude_case_number:
                 continue
 
-            # 같은 판례는 가장 높은 점수만 유지
-            if case_num not in case_scores or result.score > case_scores[case_num]:
-                case_scores[case_num] = result.score
-                case_metadata[case_num] = {
-                    "case_name": payload.get("case_name", ""),
-                    "court_name": payload.get("court_name", ""),
-                    "judgment_date": payload.get("judgment_date", ""),
-                }
-
-        # 결과 생성
-        similar_cases = []
-        for case_num, score in case_scores.items():
-            metadata = case_metadata[case_num]
             similar_cases.append(SimilarCaseResult(
                 case_number=case_num,
-                case_name=metadata["case_name"],
-                court_name=metadata["court_name"],
-                judgment_date=metadata["judgment_date"],
+                case_name=payload.get("case_name", ""),
+                court_name=payload.get("court_name", ""),
+                judgment_date=payload.get("judgment_date", ""),
                 score=score,
             ))
 
         # 점수순 정렬 후 limit 적용
         similar_cases.sort(key=lambda x: x.score, reverse=True)
         similar_cases = similar_cases[:limit]
+
+        # RRF 점수를 0~1 스케일로 변환 (표시용)
+        # 이론상 최대: 양쪽 모두 1등 = 2/(k+1)
+        max_rrf_score = 2.0 / (self.RRF_K + 1)
+        for case in similar_cases:
+            case.score = min(case.score / max_rrf_score, 1.0)
 
         return {
             "total": len(similar_cases),

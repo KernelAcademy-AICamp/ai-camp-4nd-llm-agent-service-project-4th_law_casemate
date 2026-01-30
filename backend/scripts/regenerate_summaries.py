@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 # 프로젝트 루트를 path에 추가
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from app.services.qdrant_service import QdrantService
+from tool.qdrant_client import QdrantService
 from app.services.summary_service import SummaryService
 from app.prompts.summary_prompt import PROMPT_VERSION
 

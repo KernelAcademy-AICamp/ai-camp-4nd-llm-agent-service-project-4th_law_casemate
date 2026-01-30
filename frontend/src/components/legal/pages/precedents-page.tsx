@@ -59,7 +59,7 @@ export function PrecedentsPage({ }: PrecedentsPageProps) {
     setError(null);
 
     try {
-      const response = await fetch("/api/search/cases/recent?limit=10");
+      const response = await fetch("/api/v1/search/cases/recent?limit=10");
 
       if (!response.ok) {
         throw new Error("판례를 불러오는 중 오류가 발생했습니다.");
@@ -92,7 +92,7 @@ export function PrecedentsPage({ }: PrecedentsPageProps) {
 
     try {
       const response = await fetch(
-        `/api/search/cases?query=${encodeURIComponent(searchQuery)}&limit=100`
+        `/api/v1/search/cases?query=${encodeURIComponent(searchQuery)}&limit=100`
       );
 
       if (!response.ok) {

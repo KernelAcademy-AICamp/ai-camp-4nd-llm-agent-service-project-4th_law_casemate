@@ -5,15 +5,17 @@ AI 기반 법률 지능 플랫폼 - FastAPI 백엔드와 React + TypeScript 프�
 ## 주요 기능
 
 - 🔐 사용자 인증 시스템 (회원가입/로그인, JWT 기반)
-- 💬 LLM 기반 대화 시스템
+- 🔍 판례 검색 (Qdrant 벡터 DB 기반 하이브리드 검색: 의미 + 키워드)
+- 🤖 AI 판례 요약 (OpenAI LLM 기반)
+- ⚖️ 유사 판례 검색 및 비교 분석 (RAG)
 - 📄 증거 자동 분석 및 파일 관리
 - 📁 증거 파일 업로드 및 Supabase Storage 통합
 - 🗂️ 증거 카테고리 관리 (계층 구조 지원)
 - 📋 사건(Case) 관리
-- 🔍 판례 검색 (Qdrant 벡터 DB 기반 유사도 검색)
 - 📊 리스크 평가
 - 🏢 법무법인/사무실(Firm) 기반 데이터 격리
 - 🤖 Markdown 렌더링 지원 (LLM 응답 포맷팅)
+- 📥 법령/판례 데이터 수집 스크립트 (국가법령정보 Open API 연동)
 
 ## 📁 프로젝트 구조
 
@@ -25,21 +27,36 @@ CaseMate/
 │   │   ├── main.py              # FastAPI 앱 진입점
 │   │   ├── api/
 │   │   │   ├── __init__.py
-│   │   │   ├── routes.py        # API 라우트 (LLM 채팅)
 │   │   │   └── v1/              # API v1
 │   │   │       ├── __init__.py
 │   │   │       ├── auth_api.py  # 인증 API (회원가입/로그인)
-│   │   │       └── evidence_api.py  # 증거 관리 API
+│   │   │       ├── evidence_api.py  # 증거 관리 API
+│   │   │       └── search_api.py    # 판례 검색/요약/비교 API
 │   │   ├── models/              # 데이터 모델
 │   │   │   ├── __init__.py
 │   │   │   ├── user.py          # User 모델
 │   │   │   └── evidence.py      # Evidence, Case, EvidenceCategory 모델
-│   │   └── services/            # 비즈니스 로직
+│   │   ├── services/            # 비즈니스 로직
+│   │   │   ├── __init__.py
+│   │   │   ├── search_service.py      # 판례 검색 서비스 (하이브리드 검색)
+│   │   │   ├── similar_search_service.py  # 유사 판례 검색 서비스
+│   │   │   ├── summary_service.py     # AI 요약 서비스 (OpenAI)
+│   │   │   └── comparison_service.py  # 판례 비교 분석 서비스 (RAG)
+│   │   └── prompts/             # LLM 프롬프트 템플릿
 │   │       ├── __init__.py
-│   │       └── llm_service.py   # LLM 서비스
+│   │       ├── summary_prompt.py      # 요약 프롬프트
+│   │       └── comparison_prompt.py   # 비교 분석 프롬프트
+│   ├── scripts/                 # 데이터 수집 스크립트
+│   │   ├── base_collector.py    # 수집기 베이스 클래스
+│   │   ├── collect_laws.py      # 법령 수집
+│   │   ├── collect_cases.py     # 판례 수집
+│   │   ├── collect_ref_cases.py # 참조 판례 수집
+│   │   └── regenerate_summaries.py  # 요약 재생성
 │   ├── tool/
 │   │   ├── database.py          # DB 연결 및 세션 관리
-│   │   └── security.py          # 비밀번호 해싱 및 JWT 처리
+│   │   ├── security.py          # 비밀번호 해싱 및 JWT 처리
+│   │   ├── law_api_client.py    # 국가법령정보 Open API 클라이언트
+│   │   └── qdrant_client.py     # Qdrant 벡터 DB 클라이언트
 │   ├── requirements.txt         # Python 의존성
 │   └── .env                     # 환경 변수 (Git에 커밋하지 않음)
 ├── frontend/                    # React + TypeScript + Vite
@@ -47,11 +64,17 @@ CaseMate/
 │   │   ├── App.tsx             # 메인 컴포넌트
 │   │   ├── App.css             # 스타일시트
 │   │   ├── types.ts            # TypeScript 타입 정의
+│   │   ├── contexts/
+│   │   │   └── search-context.tsx  # 검색 상태 관리 (Context API)
+│   │   ├── lib/
+│   │   │   ├── utils.ts        # 유틸리티 함수
+│   │   │   └── highlight.ts    # 검색어 하이라이트
 │   │   ├── components/
 │   │   │   └── legal/
 │   │   │       ├── auth-page.tsx       # 로그인/회원가입 페이지
 │   │   │       ├── main-layout.tsx     # 메인 레이아웃
 │   │   │       ├── sidebar.tsx         # 사이드바
+│   │   │       ├── comparison-analysis.tsx  # 판례 비교 분석 컴포넌트
 │   │   │       └── pages/
 │   │   │           ├── home-page.tsx           # 홈 페이지
 │   │   │           ├── dashboard-page.tsx      # 대시보드
@@ -214,34 +237,26 @@ npm run dev
 - `GET /api/v1/evidence/categories` - 카테고리 목록 조회 (인증 필요)
   - Response: `{ "total": int, "categories": [...] }`
 
-### LLM 채팅 API
-- `POST /api/chat` - LLM과 대화
-- `GET /api/conversations/{conversation_id}` - 대화 기록 조회
-- `DELETE /api/conversations/{conversation_id}` - 대화 기록 삭제
+### 판례 검색 API (v1)
+- `GET /api/v1/search/cases` - 판례 검색 (하이브리드: 의미 + 키워드)
+  - Query Parameters: `query` (필수), `limit` (기본 30), `merge_chunks` (기본 true)
+  - Response: `{ "results": [...], "total": int }`
+- `GET /api/v1/search/cases/recent` - 최신 판례 목록 조회
+  - Query Parameters: `limit` (기본 10)
+  - Response: `{ "results": [...] }`
+- `GET /api/v1/search/cases/{case_number}` - 판례 상세 조회
+  - Response: 판례 상세 정보
+- `POST /api/v1/search/summarize` - AI 판례 요약
+  - Request Body: `{ "content": "string", "case_number": "string" (optional) }`
+  - Response: `{ "summary": {...}, "cached": boolean }`
+- `POST /api/v1/search/cases/similar` - 유사 판례 검색
+  - Request Body: `{ "query": "string", "exclude_case_number": "string" (optional) }`
+  - Response: `{ "results": [...] }`
+- `POST /api/v1/search/cases/compare` - 판례 비교 분석 (RAG)
+  - Request Body: `{ "origin_facts": "string", "origin_claims": "string", "target_case_number": "string" }`
+  - Response: 비교 분석 결과
 
 자세한 API 문서는 서버 실행 후 `http://localhost:8000/docs`에서 확인할 수 있습니다.
-
-## 📝 LLM 통합
-
-현재 코드는 임시 에코 응답을 반환합니다. 실제 LLM을 사용하려면:
-
-1. `backend/app/services/llm_service.py` 파일 수정
-2. 필요한 LLM 라이브러리 주석 해제 (`requirements.txt`)
-3. API 키를 `.env` 파일에 설정
-4. LLM 호출 코드 구현
-
-### OpenAI 예제
-
-```python
-from openai import AsyncOpenAI
-
-client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
-response = await client.chat.completions.create(
-    model="gpt-4",
-    messages=self.conversations[conversation_id]
-)
-```
 
 ## 🛠️ 개발
 

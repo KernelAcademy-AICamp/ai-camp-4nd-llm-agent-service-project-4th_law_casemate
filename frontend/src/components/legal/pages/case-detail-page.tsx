@@ -9,16 +9,9 @@ import {
   sampleCases,
   sampleEvidenceByDate,
 } from "@/lib/sample-data";
+import { useSearch, type SimilarCaseResult } from "@/contexts/search-context";
 
 // 유사 판례 API 응답 타입
-interface SimilarCaseResult {
-  case_number: string;
-  case_name: string;
-  court_name: string;
-  judgment_date: string;
-  score: number;
-}
-
 interface SimilarCasesResponse {
   total: number;
   results: SimilarCaseResult[];
@@ -170,6 +163,7 @@ export function CaseDetailPage({
 }: CaseDetailPageProps) {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const { getSimilarCases, setSimilarCases: cacheSimilarCases } = useSearch();
 
   // Find case data from sample data if not provided as prop
   const caseData = propCaseData && propCaseData.id ? propCaseData : sampleCases.find(c => c.id === id) || sampleCases[0];
@@ -191,13 +185,13 @@ export function CaseDetailPage({
   const [isEditingOverview, setIsEditingOverview] = useState(false);
   const [overviewData, setOverviewData] = useState<CaseOverviewData>({
     summary:
-      "온라인 커뮤니티 및 직장 내에서 발생한 명예훼손 사건. 피고소인이 34명 규모의 단체 카카오톡 채팅방에서 의뢰인에 대해 '업무능력이 없다', '팀에 짐만 된다' 등의 모욕적 발언과 '회사 돈을 횡령했다'는 허위사실을 유포함.",
+      "A사 개발팀 소속 박대리가 퇴사를 앞두고 'A사 개발자 정보공유' 오픈채팅방(참여자 약 30명)에서 술에 취한 상태로 의뢰인 김팀장에 대해 '외주 업체 선정 시 뒷돈 수수', '신입 여직원 성희롱', '무능한 인간' 등의 내용을 게시하여 의뢰인의 명예를 훼손함. 일부 내용은 사실과 다르거나 과장된 것으로 확인됨.",
     facts:
-      "2025년 11월 15일부터 2026년 1월 10일까지 약 2개월간, 피고소인 박OO는 직장 동료 34명이 참여한 카카오톡 단체 채팅방에서 의뢰인 김OO에 대해 '업무능력이 없다', '팀에 짐만 된다' 등의 모욕적 발언과 '회사 돈을 횡령했다'는 허위사실을 유포함.",
+      "2025년 11월 20일 오후 10시경, A사 퇴사 예정자인 박대리는 현직 개발자 약 30명이 참여한 카카오톡 오픈채팅방에서 의뢰인 김팀장에 대해 다음과 같은 내용의 메시지를 게시함:\n\n1. 외주 비리 의혹: \"B 프로젝트 외주 업체 선정 시 대학 동창 업체에 일감 몰아주고 뒷돈 챙김\"\n   • 사실 확인: 동창 업체 선정은 사실이나, 정상적인 경쟁 입찰을 통해 최저가로 선정됨. 뒷돈 수수 증거 없음 → 허위사실 적시\n\n2. 성희롱 의혹: \"작년 연말 회식에서 신입 여직원 손 만지고 성희롱, 인사과 아는 사람 통해 은폐\"\n   • 사실 확인: 신입 사원의 인사팀 상담 기록은 존재하나, 김팀장은 경고 조치만 받음. 성희롱 성립 여부는 다툼의 여지 있음 → 사실과 다르거나 과장된 표현\n\n3. 무능 비하: \"코딩도 할 줄 몰라서 밑에 사람들 갈아넣는 무능한 인간\"\n   • 주관적 의견 표명 및 모욕적 표현",
     claims:
-      "1. 형사: 명예훼손죄(형법 제307조) 및 모욕죄(형법 제311조)로 고소\n2. 민사: 위자료 5,000만원 손해배상 청구",
+      "1. 형사: 사이버 명예훼손죄(정보통신망법 제70조) 및 모욕죄(형법 제311조)로 고소\n 2.민사: 위자료 3,000만원 손해배상 청구",
     legalBasis:
-      "형법 제307조(명예훼손), 형법 제311조(모욕), 정보통신망 이용촉진 및 정보보호 등에 관한 법률 제70조",
+      "정보통신망법 제70조(벌칙), 정보통신망법 제70조 제2항, 형법 제311조(모욕)",
   });
 
   const allEvidence = Object.values(sampleEvidenceByDate).flat();
@@ -206,16 +200,24 @@ export function CaseDetailPage({
   const [similarCases, setSimilarCases] = useState<SimilarCaseResult[]>([]);
   const [similarCasesLoading, setSimilarCasesLoading] = useState(false);
 
-  // 유사 판례 검색 (overviewData 기반)
+  // 유사 판례 검색 (overviewData 기반, 캐시 사용)
   const fetchSimilarCases = async () => {
-    // overviewData의 summary + facts를 쿼리로 사용
-    const query = `${overviewData.summary} ${overviewData.facts}`;
+    const caseId = caseData.id;
 
+    // 1. 캐시에 있으면 캐시된 결과 사용
+    const cached = getSimilarCases(caseId);
+    if (cached) {
+      setSimilarCases(cached);
+      return;
+    }
+
+    // 2. 캐시에 없으면 API 호출 (요약 + 사실관계 + 청구내용)
+    const query = `${overviewData.summary} ${overviewData.facts} ${overviewData.claims}`;
     if (!query.trim()) return;
 
     setSimilarCasesLoading(true);
     try {
-      const response = await fetch("/api/search/cases/similar", {
+      const response = await fetch("/api/v1/search/cases/similar", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -232,6 +234,9 @@ export function CaseDetailPage({
 
       const data: SimilarCasesResponse = await response.json();
       setSimilarCases(data.results);
+
+      // 3. 결과를 캐시에 저장
+      cacheSimilarCases(caseId, data.results);
     } catch (err) {
       console.error("유사 판례 검색 실패:", err);
       setSimilarCases([]);
@@ -240,10 +245,10 @@ export function CaseDetailPage({
     }
   };
 
-  // 컴포넌트 마운트 시 유사 판례 검색
+  // 컴포넌트 마운트 시 또는 caseData 변경 시 유사 판례 검색
   useEffect(() => {
     fetchSimilarCases();
-  }, []);
+  }, [caseData.id]);
 
   // 날짜 포맷 (20200515 → 2020.05.15)
   const formatJudgmentDate = (dateStr: string) => {
@@ -627,7 +632,10 @@ export function CaseDetailPage({
                     <button
                       key={`${caseItem.case_number}-${index}`}
                       type="button"
-                      onClick={() => navigate(`/precedents/${encodeURIComponent(caseItem.case_number)}`)}
+                      onClick={() => navigate(
+                        `/precedents/${encodeURIComponent(caseItem.case_number)}?caseId=${caseData.id}`,
+                        { state: { originFacts: overviewData.facts, originClaims: overviewData.claims } }
+                      )}
                       className="w-full p-4 rounded-lg border border-l-4 border-l-primary border-t-border/60 border-r-border/60 border-b-border/60 bg-card hover:bg-secondary/30 transition-colors text-left group overflow-hidden relative"
                     >
                       <div className="flex items-start justify-between gap-4">

@@ -17,8 +17,8 @@ from openai import OpenAI
 # 프로젝트 루트를 path에 추가
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from app.services.law_api_service import LawAPIClient
-from app.services.qdrant_service import QdrantService
+from tool.law_api_client import LawAPIClient
+from tool.qdrant_client import QdrantService
 
 load_dotenv()
 
@@ -27,8 +27,8 @@ class LawCollector:
     """법령 데이터 수집기"""
 
     # 수집할 법령 목록
-    #TARGET_LAWS = ["민법", "형법", "근로기준법", "노동위원회법", "정보통신망 이용촉진 및 정보보호 등에 관한 법률", "언론중재 및 피해구제 등에 관한 법률", "개인정보 보호법"]
-    TARGET_LAWS = ["남녀고용평등과 일ㆍ가정 양립 지원에 관한 법률"]
+    #TARGET_LAWS = ["민법", "형법", "근로기준법", "노동위원회법", "정보통신망 이용촉진 및 정보보호 등에 관한 법률", "언론중재 및 피해구제 등에 관한 법률", "개인정보 보호법", "남녀고용평등과 일ㆍ가정 양립 지원에 관한 법률"]
+    TARGET_LAWS = ["민법"]
 
     def __init__(self):
         self.openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -90,159 +90,263 @@ class LawCollector:
 
             return detail
 
-    # ==================== 2. 조문 추출 및 청킹 ====================
+    # ==================== 2. 조문 추출 (부모-자식 청킹) ====================
 
-    def extract_articles(self, law_data: Dict[str, Any], law_name: str) -> List[Dict[str, Any]]:
+    def _ensure_list(self, data) -> list:
+        """단일 dict를 리스트로 변환"""
+        if isinstance(data, dict):
+            return [data]
+        if isinstance(data, list):
+            return data
+        return []
+
+    def _build_ho_text(self, ho: Dict[str, Any]) -> str:
+        """호 + 하위 목을 합친 텍스트 생성"""
+        text = ho.get("호내용", "")
+        moks = self._ensure_list(ho.get("목", []))
+        for mok in moks:
+            if isinstance(mok, dict):
+                mok_content = mok.get("목내용", "")
+                if mok_content:
+                    text += f"\n  {mok_content}"
+        return text
+
+    def _build_full_text(self, article: Dict[str, Any]) -> str:
+        """조문 전체 텍스트 생성 (부모용: 조문 + 항 + 호 + 목 전부 합침)"""
+        full_content = article.get("조문내용", "")
+        paragraphs = self._ensure_list(article.get("항", []))
+
+        for para in paragraphs:
+            if not isinstance(para, dict):
+                continue
+            para_content = para.get("항내용", "")
+            if para_content:
+                full_content += f"\n{para_content}"
+
+            hos = self._ensure_list(para.get("호", []))
+            for ho in hos:
+                if not isinstance(ho, dict):
+                    continue
+                ho_text = self._build_ho_text(ho)
+                if ho_text:
+                    full_content += f"\n{ho_text}"
+
+        return full_content.strip()
+
+    def extract_chunks(self, law_data: Dict[str, Any], law_name: str) -> Dict[str, List[Dict[str, Any]]]:
         """
-        법령 데이터에서 조문 추출
+        법령 데이터에서 부모/자식 청크 추출
 
         Args:
             law_data: API에서 받은 법령 데이터
             law_name: 법령명
 
         Returns:
-            조문 리스트
+            {"parents": [...], "children": [...]}
         """
-        print(f"\n[2단계] 조문 추출 중...")
+        print(f"\n[2단계] 부모-자식 청크 추출 중...")
 
-        articles = []
+        parents = []
+        children = []
 
-        # JSON 구조에서 조문 찾기
         law_service = law_data.get("법령", {})
-
-        # 조문 정보 추출
-        article_list = law_service.get("조문", {}).get("조문단위", [])
-
-        # 단일 조문인 경우 리스트로 변환
-        if isinstance(article_list, dict):
-            article_list = [article_list]
+        article_list = self._ensure_list(law_service.get("조문", {}).get("조문단위", []))
 
         for article in article_list:
             article_num = article.get("조문번호", "")
             article_title = article.get("조문제목", "")
             article_content = article.get("조문내용", "")
 
-            # 조문 내용이 있는 경우만 추가
-            if article_content:
-                # 항 정보가 있으면 합치기
-                paragraphs = article.get("항", [])
-                if isinstance(paragraphs, dict):
-                    paragraphs = [paragraphs]
+            if not article_content:
+                continue
 
-                full_content = article_content
-                for para in paragraphs:
-                    if isinstance(para, dict):
-                        para_content = para.get("항내용", "")
-                        if para_content:
-                            full_content += f"\n{para_content}"
+            # --- 부모 청크: 조문 전체 합본 ---
+            full_text = self._build_full_text(article)
+            parent_id_string = f"law_parent_{law_name}_{article_num}"
+            parent_hash = hashlib.md5(parent_id_string.encode()).hexdigest()[:16]
+            parent_point_id = int(parent_hash, 16)
 
-                articles.append({
-                    "law_name": law_name,
-                    "article_number": article_num,
-                    "article_title": article_title,
-                    "content": full_content.strip(),
-                })
+            parents.append({
+                "law_name": law_name,
+                "article_number": article_num,
+                "article_title": article_title,
+                "content": full_text,
+                "point_type": "parent",
+                "point_id": parent_point_id,
+                "id_string": parent_id_string,
+            })
 
-        print(f"  - 추출된 조문 수: {len(articles)}개")
-        return articles
+            # --- 자식 청크 추출 ---
+            parent_context = f"{law_name} 제{article_num}조({article_title})"
+            child_index = 0
+            paragraphs = self._ensure_list(article.get("항", []))
+
+            for para in paragraphs:
+                if not isinstance(para, dict):
+                    continue
+
+                hos = self._ensure_list(para.get("호", []))
+
+                if hos:
+                    # 호가 있으면: 호 단위로 자식 생성
+                    for ho in hos:
+                        if not isinstance(ho, dict):
+                            continue
+                        ho_text = self._build_ho_text(ho)
+                        if not ho_text:
+                            continue
+
+                        child_id_string = f"law_child_{law_name}_{article_num}_{child_index}"
+                        child_hash = hashlib.md5(child_id_string.encode()).hexdigest()[:16]
+
+                        children.append({
+                            "law_name": law_name,
+                            "article_number": article_num,
+                            "article_title": article_title,
+                            "content": ho_text.strip(),
+                            "embed_text": f"{parent_context} > {ho_text.strip()}",
+                            "point_type": "child",
+                            "point_id": int(child_hash, 16),
+                            "parent_id": parent_point_id,
+                            "child_index": child_index,
+                            "id_string": child_id_string,
+                        })
+                        child_index += 1
+                else:
+                    # 호가 없으면: 항 단위로 자식 생성
+                    para_content = para.get("항내용", "")
+                    if not para_content:
+                        continue
+
+                    child_id_string = f"law_child_{law_name}_{article_num}_{child_index}"
+                    child_hash = hashlib.md5(child_id_string.encode()).hexdigest()[:16]
+
+                    children.append({
+                        "law_name": law_name,
+                        "article_number": article_num,
+                        "article_title": article_title,
+                        "content": para_content.strip(),
+                        "embed_text": f"{parent_context} > {para_content.strip()}",
+                        "point_type": "child",
+                        "point_id": int(child_hash, 16),
+                        "parent_id": parent_point_id,
+                        "child_index": child_index,
+                        "id_string": child_id_string,
+                    })
+                    child_index += 1
+
+        print(f"  - 부모 청크: {len(parents)}개 (조문 단위)")
+        print(f"  - 자식 청크: {len(children)}개 (호/항 단위)")
+        print(f"  - 총 청크: {len(parents) + len(children)}개")
+        return {"parents": parents, "children": children}
 
     # ==================== 3. 임베딩 생성 ====================
 
-    def create_embeddings(self, articles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def create_embeddings(self, chunks: List[Dict[str, Any]], label: str = "") -> List[Dict[str, Any]]:
         """
-        조문 텍스트를 벡터로 변환
+        청크 텍스트를 벡터로 변환
 
         Args:
-            articles: 조문 리스트
+            chunks: 부모 또는 자식 청크 리스트
+            label: 로그용 라벨 (예: "부모", "자식")
 
         Returns:
-            벡터가 추가된 조문 리스트
+            벡터가 추가된 청크 리스트
         """
-        print(f"\n[3단계] 임베딩 생성 중...")
+        if not chunks:
+            return []
+
+        print(f"\n[3단계] {label} 임베딩 생성 중... ({len(chunks)}개)")
 
         results = []
-        batch_size = 20  # OpenAI API 배치 크기
+        batch_size = 20
 
-        for i in range(0, len(articles), batch_size):
-            batch = articles[i:i + batch_size]
+        for i in range(0, len(chunks), batch_size):
+            batch = chunks[i:i + batch_size]
 
             # 임베딩할 텍스트 준비
-            texts = [
-                f"{a['law_name']} {a['article_number']} {a['article_title']}\n{a['content']}"
-                for a in batch
-            ]
+            # 자식: embed_text (부모 맥락 포함), 부모: 법령명 + 조번호 + 내용
+            texts = []
+            for chunk in batch:
+                if "embed_text" in chunk:
+                    texts.append(chunk["embed_text"])
+                else:
+                    texts.append(
+                        f"{chunk['law_name']} 제{chunk['article_number']}조 {chunk['article_title']}\n{chunk['content']}"
+                    )
 
-            # OpenAI 임베딩 API 호출
             response = self.openai_client.embeddings.create(
                 model="text-embedding-3-small",
                 input=texts
             )
 
-            # 결과 매핑
-            for j, article in enumerate(batch):
-                article_with_vector = article.copy()
-                article_with_vector["vector"] = response.data[j].embedding
-                results.append(article_with_vector)
+            for j, chunk in enumerate(batch):
+                chunk_with_vector = chunk.copy()
+                chunk_with_vector["vector"] = response.data[j].embedding
+                results.append(chunk_with_vector)
 
-            print(f"  - 진행: {min(i + batch_size, len(articles))}/{len(articles)}")
-
-            # Rate Limit 방지: 배치 사이 1초 대기
+            print(f"  - {label} 진행: {min(i + batch_size, len(chunks))}/{len(chunks)}")
             time.sleep(1)
 
-        print(f"  - 임베딩 생성 완료: {len(results)}개")
+        print(f"  - {label} 임베딩 완료: {len(results)}개")
         return results
 
     # ==================== 4. Qdrant 저장 ====================
 
-    def save_to_qdrant(self, articles_with_vectors: List[Dict[str, Any]]) -> int:
+    def save_to_qdrant(self, chunks_with_vectors: List[Dict[str, Any]], label: str = "") -> int:
         """
         벡터 데이터를 Qdrant에 저장
 
         Args:
-            articles_with_vectors: 벡터가 포함된 조문 리스트
+            chunks_with_vectors: 벡터가 포함된 청크 리스트
+            label: 로그용 라벨
 
         Returns:
             저장된 개수
         """
-        print(f"\n[4단계] Qdrant에 저장 중...")
+        if not chunks_with_vectors:
+            return 0
+
+        print(f"\n[4단계] {label} Qdrant에 저장 중... ({len(chunks_with_vectors)}개)")
 
         points = []
-        for article in articles_with_vectors:
-            # 고유 ID 생성 (해시값 사용 - Qdrant는 정수 또는 UUID만 허용)
-            id_string = f"law_{article['law_name']}_{article['article_number']}"
-            # MD5 해시의 앞 16자리를 정수로 변환
-            hash_hex = hashlib.md5(id_string.encode()).hexdigest()[:16]
-            point_id = int(hash_hex, 16)
+        for chunk in chunks_with_vectors:
+            payload = {
+                "law_name": chunk["law_name"],
+                "article_number": chunk["article_number"],
+                "article_title": chunk["article_title"],
+                "content": chunk["content"],
+                "type": "law",
+                "point_type": chunk["point_type"],
+                "id_string": chunk["id_string"],
+            }
+
+            # 자식 전용 필드
+            if chunk["point_type"] == "child":
+                payload["parent_id"] = chunk["parent_id"]
+                payload["child_index"] = chunk["child_index"]
 
             points.append({
-                "id": point_id,
-                "vector": article["vector"],
-                "payload": {
-                    "law_name": article["law_name"],
-                    "article_number": article["article_number"],
-                    "article_title": article["article_title"],
-                    "content": article["content"],
-                    "type": "law",
-                    "id_string": id_string,  # 원본 ID 문자열도 payload에 저장
-                }
+                "id": chunk["point_id"],
+                "vector": chunk["vector"],
+                "payload": payload,
             })
 
-        # 배치 저장
         saved = self.qdrant_service.upsert_batch(
             collection_name=QdrantService.LAWS_COLLECTION,
             points=points,
             batch_size=100
         )
 
-        print(f"  - 저장 완료: {saved}개")
+        print(f"  - {label} 저장 완료: {saved}개")
         return saved
 
     # ==================== 메인 실행 ====================
 
     async def collect_all(self):
-        """모든 대상 법령 수집"""
+        """모든 대상 법령 수집 (부모-자식 청킹)"""
         print("\n" + "=" * 60)
-        print("법령 데이터 수집 시작")
+        print("법령 데이터 수집 시작 (부모-자식 청킹)")
         print(f"대상: {', '.join(self.TARGET_LAWS)}")
         print("=" * 60)
 
@@ -251,7 +355,13 @@ class LawCollector:
             print("Qdrant 서버에 연결할 수 없습니다.")
             return
 
-        total_saved = 0
+        # laws 컬렉션이 없으면 생성
+        if not self.qdrant_service.create_collection(QdrantService.LAWS_COLLECTION):
+            print("laws 컬렉션 생성에 실패했습니다.")
+            return
+
+        total_parents = 0
+        total_children = 0
 
         for law_name in self.TARGET_LAWS:
             try:
@@ -260,18 +370,22 @@ class LawCollector:
                 if not law_data:
                     continue
 
-                # 2. 조문 추출
-                articles = self.extract_articles(law_data, law_name)
-                if not articles:
+                # 2. 부모-자식 청크 추출
+                chunks = self.extract_chunks(law_data, law_name)
+                if not chunks["parents"]:
                     print(f"  - '{law_name}'에서 조문을 추출할 수 없습니다.")
                     continue
 
-                # 3. 임베딩 생성
-                articles_with_vectors = self.create_embeddings(articles)
+                # 3. 임베딩 생성 (부모/자식 각각)
+                parents_with_vectors = self.create_embeddings(chunks["parents"], label="부모")
+                children_with_vectors = self.create_embeddings(chunks["children"], label="자식")
 
-                # 4. Qdrant 저장
-                saved = self.save_to_qdrant(articles_with_vectors)
-                total_saved += saved
+                # 4. Qdrant 저장 (부모/자식 각각)
+                saved_parents = self.save_to_qdrant(parents_with_vectors, label="부모")
+                saved_children = self.save_to_qdrant(children_with_vectors, label="자식")
+
+                total_parents += saved_parents
+                total_children += saved_children
 
             except Exception as e:
                 print(f"  - '{law_name}' 처리 중 에러: {e}")
@@ -282,7 +396,9 @@ class LawCollector:
         # 결과 출력
         print("\n" + "=" * 60)
         print("수집 완료!")
-        print(f"총 저장된 조문 수: {total_saved}개")
+        print(f"부모 청크 (조문 단위): {total_parents}개")
+        print(f"자식 청크 (호/항 단위): {total_children}개")
+        print(f"총 저장: {total_parents + total_children}개")
 
         # 컬렉션 상태 확인
         info = self.qdrant_service.get_collection_info(QdrantService.LAWS_COLLECTION)

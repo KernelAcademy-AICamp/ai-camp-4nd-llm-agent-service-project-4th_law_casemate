@@ -54,11 +54,6 @@ def create_dense_embedding_cached(text: str) -> Tuple[float, ...]:
     return tuple(response.data[0].embedding)
 
 
-def get_embedding_cache_info():
-    """임베딩 캐시 상태 확인"""
-    return create_dense_embedding_cached.cache_info()
-
-
 @dataclass
 class SearchResult:
     """검색 결과 데이터 클래스"""
@@ -86,6 +81,13 @@ class SearchService:
     """벡터 검색 서비스"""
 
     CASES_COLLECTION = "cases"
+
+    # 하이브리드 검색 가중치 (Dense:Sparse = 4:6)
+    DENSE_WEIGHT = 0.4
+    SPARSE_WEIGHT = 0.6
+
+    # 최소 점수 하한선 (이 점수 미만은 결과에서 제외)
+    MIN_SCORE_THRESHOLD = 0.3
 
     def __init__(self):
         # Qdrant 클라이언트
@@ -122,6 +124,69 @@ class SearchService:
             sparse_vector = sparse_future.result()
 
         return dense_vector, sparse_vector
+
+    # ==================== 가중치 기반 점수 결합 ====================
+
+    def _combine_weighted_scores(
+        self,
+        dense_points: List,
+        sparse_points: List,
+    ) -> Dict[str, Dict[str, Any]]:
+        """
+        Dense와 Sparse 검색 결과를 가중치 기반으로 결합
+
+        - 각 검색 결과의 점수를 0~1로 정규화
+        - Dense * 0.4 + Sparse * 0.6 가중치 적용
+        - 동일 문서는 점수 합산
+
+        Returns:
+            {point_id: {"score": combined_score, "payload": payload}}
+        """
+        combined = {}
+
+        # Dense 점수 정규화를 위한 최대/최소값
+        dense_scores = [p.score for p in dense_points] if dense_points else [0]
+        dense_max = max(dense_scores) if dense_scores else 1
+        dense_min = min(dense_scores) if dense_scores else 0
+        dense_range = dense_max - dense_min if dense_max != dense_min else 1
+
+        # Sparse 점수 정규화를 위한 최대/최소값
+        sparse_scores = [p.score for p in sparse_points] if sparse_points else [0]
+        sparse_max = max(sparse_scores) if sparse_scores else 1
+        sparse_min = min(sparse_scores) if sparse_scores else 0
+        sparse_range = sparse_max - sparse_min if sparse_max != sparse_min else 1
+
+        # Dense 결과 처리
+        for point in dense_points:
+            point_id = str(point.id)
+            normalized_score = (point.score - dense_min) / dense_range
+            weighted_score = normalized_score * self.DENSE_WEIGHT
+
+            combined[point_id] = {
+                "score": weighted_score,
+                "payload": point.payload,
+                "dense_score": normalized_score,
+                "sparse_score": 0,
+            }
+
+        # Sparse 결과 처리 (기존 결과에 합산)
+        for point in sparse_points:
+            point_id = str(point.id)
+            normalized_score = (point.score - sparse_min) / sparse_range
+            weighted_score = normalized_score * self.SPARSE_WEIGHT
+
+            if point_id in combined:
+                combined[point_id]["score"] += weighted_score
+                combined[point_id]["sparse_score"] = normalized_score
+            else:
+                combined[point_id] = {
+                    "score": weighted_score,
+                    "payload": point.payload,
+                    "dense_score": 0,
+                    "sparse_score": normalized_score,
+                }
+
+        return combined
 
     # ==================== 사건번호 패턴 감지 ====================
 
@@ -215,7 +280,7 @@ class SearchService:
         merge_chunks: bool = True
     ) -> Dict[str, Any]:
         """
-        판례 하이브리드 검색 (Dense + Sparse + RRF)
+        판례 하이브리드 검색 (Dense 40% + Sparse 60% 가중치 기반)
         - 사건번호 패턴이면 필터 검색
         - 일반 키워드면 하이브리드 검색
 
@@ -234,31 +299,36 @@ class SearchService:
         # Dense + Sparse 임베딩 병렬 생성
         dense_vector, sparse_vector = self._create_embeddings_parallel(query)
 
-        # 하이브리드 검색 (RRF 융합)
+        # 하이브리드 검색 (가중치 기반: Dense 40%, Sparse 60%)
         search_limit = limit * 5 if merge_chunks else limit
 
-        results = self.qdrant_client.query_points(
+        # Dense 검색과 Sparse 검색을 별도로 수행
+        dense_results = self.qdrant_client.query_points(
             collection_name=self.CASES_COLLECTION,
-            prefetch=[
-                models.Prefetch(
-                    query=dense_vector,
-                    using="dense",
-                    limit=search_limit,
-                ),
-                models.Prefetch(
-                    query=sparse_vector,
-                    using="sparse",
-                    limit=search_limit,
-                ),
-            ],
-            query=models.FusionQuery(fusion=models.Fusion.RRF),
+            query=dense_vector,
+            using="dense",
             limit=search_limit,
         )
 
-        # 결과 변환
+        sparse_results = self.qdrant_client.query_points(
+            collection_name=self.CASES_COLLECTION,
+            query=sparse_vector,
+            using="sparse",
+            limit=search_limit,
+        )
+
+        # 점수 정규화 및 가중치 결합
+        combined_scores = self._combine_weighted_scores(
+            dense_results.points,
+            sparse_results.points,
+        )
+
+        # 결과 변환 (점수 기준 정렬)
         search_results = []
-        for result in results.points:
-            payload = result.payload
+        sorted_results = sorted(combined_scores.items(), key=lambda x: x[1]["score"], reverse=True)
+
+        for point_id, data in sorted_results[:search_limit]:
+            payload = data["payload"]
             search_results.append(SearchResult(
                 case_number=payload.get("case_number", ""),
                 case_name=payload.get("case_name", ""),
@@ -266,12 +336,15 @@ class SearchService:
                 judgment_date=payload.get("judgment_date", ""),
                 content=payload.get("content", ""),
                 section=payload.get("section", ""),
-                score=result.score,
+                score=data["score"],
             ))
 
         # 같은 판례 청크 병합
         if merge_chunks:
             search_results = self._merge_case_chunks(search_results)
+
+        # 최소 점수 필터링 (하한선 미만 제외)
+        search_results = [r for r in search_results if r.score >= self.MIN_SCORE_THRESHOLD]
 
         # limit 적용
         search_results = search_results[:limit]
@@ -331,7 +404,7 @@ class SearchService:
 
     def _get_full_case_contents_batch(self, case_numbers: List[str]) -> Dict[str, str]:
         """
-        여러 판례의 전체 내용을 한 번의 쿼리로 조회 (최적화)
+        여러 판례의 전체 내용을 배치로 나눠서 조회
 
         Args:
             case_numbers: 조회할 사건번호 리스트
@@ -342,35 +415,39 @@ class SearchService:
         if not case_numbers:
             return {}
 
-        # should 필터로 여러 case_number를 OR 조건으로 조회
-        results = self.qdrant_client.scroll(
-            collection_name=self.CASES_COLLECTION,
-            scroll_filter=models.Filter(
-                should=[
-                    models.FieldCondition(
-                        key="case_number",
-                        match=models.MatchValue(value=case_num)
-                    )
-                    for case_num in case_numbers
-                ]
-            ),
-            limit=len(case_numbers) * 100,  # 판례당 최대 100개 청크
-            with_payload=True,
-            with_vectors=False,
-        )
-
-        # case_number별로 청크 그룹화
+        # 배치 크기 제한 (Qdrant 쿼리 과부하 방지)
+        BATCH_SIZE = 20
         case_chunks: Dict[str, List[Dict]] = {cn: [] for cn in case_numbers}
 
-        for point in results[0]:
-            payload = point.payload
-            case_num = payload.get("case_number", "")
-            if case_num in case_chunks:
-                case_chunks[case_num].append({
-                    "section": payload.get("section", ""),
-                    "chunk_index": payload.get("chunk_index", 0),
-                    "content": payload.get("content", ""),
-                })
+        # 배치 단위로 나눠서 조회
+        for i in range(0, len(case_numbers), BATCH_SIZE):
+            batch = case_numbers[i:i + BATCH_SIZE]
+
+            results = self.qdrant_client.scroll(
+                collection_name=self.CASES_COLLECTION,
+                scroll_filter=models.Filter(
+                    should=[
+                        models.FieldCondition(
+                            key="case_number",
+                            match=models.MatchValue(value=case_num)
+                        )
+                        for case_num in batch
+                    ]
+                ),
+                limit=len(batch) * 50,
+                with_payload=True,
+                with_vectors=False,
+            )
+
+            for point in results[0]:
+                payload = point.payload
+                case_num = payload.get("case_number", "")
+                if case_num in case_chunks:
+                    case_chunks[case_num].append({
+                        "section": payload.get("section", ""),
+                        "chunk_index": payload.get("chunk_index", 0),
+                        "content": payload.get("content", ""),
+                    })
 
         # 각 판례의 청크를 정렬하고 내용 합치기
         all_contents = {}
@@ -486,17 +563,25 @@ class SearchService:
 
         chunk_list.sort(key=lambda x: x["chunk_index"])
 
-        # 전문 텍스트 합치기
-        content_parts = []
-        current_section = None
-        for chunk in chunk_list:
-            if chunk["section"] != current_section:
-                current_section = chunk["section"]
-                if current_section:
-                    content_parts.append(f"\n【{current_section}】")
-            content_parts.append(chunk["content"])
-
+        # 전문 텍스트 합치기: chunk_index 순서대로 content만 합침
+        # (section 필드는 무시 - content 안에 이미 【섹션명】이 포함되어 있음)
+        import re
+        content_parts = [chunk["content"] for chunk in chunk_list]
         full_text = "\n".join(content_parts)
+
+        # 모든 【header】를 독립 줄로 보장 (프론트 섹션 파싱용)
+        parts = re.split(r'(【[^】]+】)', full_text)
+        cleaned = []
+        for part in parts:
+            if re.match(r'^【[^】]+】$', part):
+                cleaned.append('\n' + part + '\n')
+            elif part.strip():
+                cleaned.append(part)
+        full_text = ''.join(cleaned)
+
+        # 헤더 앞뒤 연속 줄바꿈 정리
+        full_text = re.sub(r'\n{3,}', '\n\n', full_text)
+        full_text = full_text.strip()
 
         return {
             **metadata,

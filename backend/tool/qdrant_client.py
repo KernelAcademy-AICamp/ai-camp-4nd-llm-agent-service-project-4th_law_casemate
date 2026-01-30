@@ -161,8 +161,8 @@ class QdrantService:
 
     def create_summaries_collection(self) -> bool:
         """
-        판례 요약 저장용 컬렉션 생성
-        벡터 검색이 필요 없으므로 최소 차원(1)으로 생성
+        판례 요약 저장용 하이브리드 컬렉션 생성 (Dense 3072 + Sparse)
+        유사 판례 검색에서 요약 벡터를 활용하기 위해 text-embedding-3-large 차원 사용
         """
         try:
             collections = self.client.get_collections().collections
@@ -174,10 +174,12 @@ class QdrantService:
 
             self.client.create_collection(
                 collection_name=self.SUMMARIES_COLLECTION,
-                vectors_config=VectorParams(
-                    size=1,  # 최소 차원 (검색 불필요)
-                    distance=Distance.COSINE,
-                ),
+                vectors_config={
+                    "dense": VectorParams(size=3072, distance=Distance.COSINE),
+                },
+                sparse_vectors_config={
+                    "sparse": SparseVectorParams(),
+                },
             )
 
             # case_number 필드에 인덱스 생성 (빠른 조회를 위해)
@@ -187,7 +189,7 @@ class QdrantService:
                 field_schema=models.PayloadSchemaType.KEYWORD,
             )
 
-            print(f"요약 컬렉션 '{self.SUMMARIES_COLLECTION}' 생성 완료")
+            print(f"요약 컬렉션 '{self.SUMMARIES_COLLECTION}' 생성 완료 (Dense 3072 + Sparse)")
             return True
 
         except Exception as e:
@@ -199,14 +201,24 @@ class QdrantService:
         case_number: str,
         summary: str,
         prompt_version: str,
+        dense_vector: List[float] = None,
+        sparse_vector: Dict[str, Any] = None,
+        case_name: str = "",
+        court_name: str = "",
+        judgment_date: str = "",
     ) -> bool:
         """
-        판례 요약 저장
+        판례 요약 저장 (Dense + Sparse 벡터 포함)
 
         Args:
             case_number: 사건번호
             summary: 요약 텍스트
             prompt_version: 프롬프트 버전 (재생성 시 참고용)
+            dense_vector: Dense 임베딩 벡터 (text-embedding-3-large, 3072차원)
+            sparse_vector: Sparse 임베딩 벡터 (BM25) {"indices": [...], "values": [...]}
+            case_name: 사건명
+            court_name: 법원명
+            judgment_date: 선고일자
 
         Returns:
             성공 여부
@@ -230,12 +242,25 @@ class QdrantService:
                 ),
             )
 
+            # 벡터 구성
+            vector = {}
+            if dense_vector:
+                vector["dense"] = dense_vector
+            if sparse_vector:
+                vector["sparse"] = models.SparseVector(
+                    indices=sparse_vector["indices"],
+                    values=sparse_vector["values"],
+                )
+
             # 새 요약 저장
             point = PointStruct(
                 id=str(uuid.uuid4()),
-                vector=[0.0],  # 더미 벡터
+                vector=vector,
                 payload={
                     "case_number": case_number,
+                    "case_name": case_name,
+                    "court_name": court_name,
+                    "judgment_date": judgment_date,
                     "summary": summary,
                     "prompt_version": prompt_version,
                     "created_at": int(time.time()),
