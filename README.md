@@ -10,6 +10,8 @@ AI 기반 법률 지능 플랫폼 - FastAPI 백엔드와 React + TypeScript 프�
 - 📁 증거 파일 업로드 및 Supabase Storage 통합
 - 🗂️ 증거 카테고리 관리 (계층 구조 지원)
 - 📋 사건(Case) 관리
+- ⏱️ **사건 타임라인 관리** (시간순 이벤트 추적, CRUD 지원)
+- 🤖 **AI 기반 타임라인 자동 생성** (LLM을 활용한 지능형 이벤트 추출)
 - 🔍 판례 검색 (Qdrant 벡터 DB 기반 유사도 검색)
 - 📊 리스크 평가
 - 🏢 법무법인/사무실(Firm) 기반 데이터 격리
@@ -215,6 +217,23 @@ npm run dev
   - Response: `{ "category_id": int, "name": "string", "firm_id": int, "parent_id": int | null }`
 - `GET /api/v1/evidence/categories` - 카테고리 목록 조회 (인증 필요)
   - Response: `{ "total": int, "categories": [...] }`
+
+### 타임라인 관리 API (v1)
+- `GET /api/v1/timeline/{case_id}` - 사건 타임라인 목록 조회 (인증 필요)
+  - Response: `[{ "id": "string", "case_id": int, "firm_id": int | null, "date": "YYYY-MM-DD", "time": "HH:MM", "title": "string", "description": "string", "type": "의뢰인|상대방|증거|기타", "actor": "string", "order_index": int }]`
+- `POST /api/v1/timeline/{case_id}` - 타임라인 이벤트 추가 (인증 필요)
+  - Request Body: `{ "date": "string", "time": "string", "title": "string", "description": "string", "type": "string", "actor": "string", "order_index": int, "firm_id": int | null }`
+  - Response: 생성된 타임라인 객체
+- `PUT /api/v1/timeline/{timeline_id}` - 타임라인 이벤트 수정 (인증 필요)
+  - Request Body: 타임라인 데이터 (POST와 동일, firm_id 포함)
+  - Response: 수정된 타임라인 객체
+- `DELETE /api/v1/timeline/{timeline_id}` - 타임라인 이벤트 삭제 (인증 필요)
+  - Response: `{ "message": "타임라인이 삭제되었습니다" }`
+- `POST /api/v1/timeline/{case_id}/generate?use_llm=false&firm_id=1` - AI 자동 생성 (인증 필요)
+  - Query Parameters:
+    - `use_llm` (boolean, 기본값: false) - LLM 사용 여부
+    - `firm_id` (int, 옵션) - 소속 법무법인/사무실 ID
+  - Response: 생성된 타임라인 목록
 
 ### LLM 채팅 API
 - `POST /api/chat` - LLM과 대화
@@ -497,7 +516,59 @@ CREATE TABLE evidence_analyses (
 - **risk_level**: AI가 판단한 법적 위험 수준
 - **ai_model**: 분석에 사용된 AI 모델명
 
-테이블은 `/db-init` 엔드포인트 호출 시 자동으로 생성됩니다.
+### Timelines 테이블 (사건 타임라인)
+
+```sql
+CREATE TABLE timelines (
+    id SERIAL PRIMARY KEY,
+    case_id INTEGER NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
+    firm_id INTEGER REFERENCES law_firms(id) ON DELETE SET NULL,  -- 소속 법무법인/사무실 ID (멀티테넌트 데이터 격리)
+    date VARCHAR(20) NOT NULL,              -- 발생 날짜 (YYYY-MM-DD 또는 "미상")
+    time VARCHAR(10) NOT NULL,              -- 발생 시각 (HH:MM)
+    title VARCHAR(200) NOT NULL,            -- 타임라인 제목
+    description TEXT,                       -- 상세 설명
+    type VARCHAR(20) NOT NULL,              -- 타입 (의뢰인, 상대방, 증거, 기타)
+    actor VARCHAR(100),                     -- 관련 인물명 또는 증거명
+    order_index INTEGER DEFAULT 0,          -- 표시 순서 (낮을수록 먼저 표시)
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 인덱스
+CREATE INDEX idx_timelines_case_id ON timelines(case_id);
+CREATE INDEX idx_timelines_firm_id ON timelines(firm_id);
+CREATE INDEX idx_timelines_date ON timelines(date);
+CREATE INDEX idx_timelines_order_index ON timelines(order_index);
+```
+
+- **case_id**: 연결된 사건 ID (외래키, CASCADE 삭제)
+- **firm_id**: 소속 법무법인/사무실 ID (멀티테넌트 데이터 격리, 외래키, SET NULL 삭제)
+- **date**: 이벤트 발생 날짜 (YYYY-MM-DD 형식, 날짜 미상인 경우 "미상")
+- **time**: 이벤트 발생 시각 (HH:MM 형식, 24시간 표기)
+- **title**: 타임라인 이벤트 제목 (예: "단톡방 첫 비방 발언")
+- **description**: 이벤트에 대한 상세 설명
+- **type**: 이벤트 타입
+  - **의뢰인**: 의뢰인(피해자)이 취한 행동
+  - **상대방**: 상대방(피고소인/가해자)의 행동
+  - **증거**: 증거 확보/발견 관련
+  - **기타**: 법률 상담, 소송 제기 등 기타 사건
+- **actor**: 관련 인물명 또는 증거명 (예: "박OO (피고소인)", "카카오톡 대화 캡처본")
+- **order_index**: 동일 날짜/시간 내 이벤트의 정렬 순서
+
+**타임라인 자동 생성 (AI 활용 가능):**
+
+- LLM을 사용하여 사건 개요, 사실관계, 증거 목록에서 시간순 이벤트 자동 추출
+- 날짜/시간 정보를 자연어에서 파싱하여 구조화
+- 이벤트 타입 자동 분류 (의뢰인/상대방/증거/기타)
+- 사용자가 직접 타임라인 이벤트 추가/수정/삭제 가능 (CRUD)
+
+**멀티테넌트 데이터 격리:**
+
+- `firm_id` 필드를 통한 법무법인/사무실별 타임라인 데이터 격리
+- Evidence 모델과 동일한 패턴으로 `case_id`와 `firm_id` 모두 포함
+- 같은 법무법인 소속만 타임라인 데이터 접근 가능 (추후 인증 로직 구현 시)
+
+테이블은 `/db-init` 엔드포인트 호출 시 자동으로 생성되며, SQL 파일은 `backend/sql/create_timelines_table.sql`에서 확인할 수 있습니다.
 
 ## 🔐 보안
 

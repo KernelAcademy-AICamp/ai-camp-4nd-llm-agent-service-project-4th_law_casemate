@@ -186,6 +186,43 @@ export function CaseDetailPage({
     }
   };
 
+  // 타임라인 생성 (샘플 데이터)
+  const generateTimeline = async () => {
+    console.log("[Timeline Generate] 시작");
+    console.log("[Timeline Generate] Case ID:", caseData.id);
+    console.log("[Timeline Generate] Case Data:", caseData);
+
+    setTimelineLoading(true);
+    try {
+      const url = `http://localhost:8000/api/v1/timeline/${caseData.id}/generate?use_llm=false`;
+      console.log("[Timeline Generate] 요청 URL:", url);
+
+      const response = await fetch(url, {
+        method: 'POST',
+      });
+
+      console.log("[Timeline Generate] Response Status:", response.status);
+      console.log("[Timeline Generate] Response OK:", response.ok);
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error("[Timeline Generate] Error Response:", errorText);
+        throw new Error(`타임라인 생성 중 오류가 발생했습니다. Status: ${response.status}`);
+      }
+
+      const data = await response.json();
+      console.log("[Timeline Generate] 생성된 타임라인 개수:", data.length);
+      console.log("[Timeline Generate] 타임라인 데이터:", data);
+
+      setTimelineEvents(data);
+    } catch (err) {
+      console.error("[Timeline Generate] 실패:", err);
+      alert("타임라인 생성에 실패했습니다.");
+    } finally {
+      setTimelineLoading(false);
+    }
+  };
+
   // 컴포넌트 마운트 시 유사 판례 검색 및 타임라인 데이터 가져오기
   useEffect(() => {
     fetchSimilarCases();
@@ -653,8 +690,11 @@ export function CaseDetailPage({
                   타임라인 데이터 로딩 중...
                 </div>
               ) : timelineEvents.length === 0 ? (
-                <div className="text-center py-12 text-muted-foreground text-sm">
-                  타임라인 이벤트가 없습니다.
+                <div className="text-center py-12">
+                  <p className="text-muted-foreground text-sm mb-4">타임라인 이벤트가 없습니다.</p>
+                  <Button onClick={generateTimeline} variant="outline">
+                    샘플 타임라인 생성
+                  </Button>
                 </div>
               ) : (
               <>
