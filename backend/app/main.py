@@ -4,6 +4,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from tool.database import SessionLocal, init_db
 from sqlalchemy import text
 from app.models.user import User  # User 모델 import
+from app.models.law_firm import LawFirm  # LawFirm 모델 import
+from app.models import evidence  # Evidence 관련 모델들 import
 
 # 로깅 설정
 logging.basicConfig(

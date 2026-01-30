@@ -17,6 +17,8 @@ class Evidence(Base):
     law_firm_id = Column(Integer, ForeignKey('law_firms.id', ondelete='SET NULL'), nullable=True)  # 사무실 ID
     case_id = Column(Integer, ForeignKey('cases.id', ondelete='CASCADE'), nullable=True)  # 사건 ID
     category_id = Column(Integer, ForeignKey('evidence_categories.id', ondelete='SET NULL'), nullable=True)  # 카테고리 ID
+    content = Column(Text, nullable=True)  # OCR/STT로 추출된 텍스트
+    doc_type = Column(String, nullable=True)  # 문서 유형 (카카오톡, 계약서, 영수증 등)
 
 
 class Case(Base):
@@ -38,6 +40,8 @@ class CaseEvidenceMapping(Base):
     id = Column(Integer, primary_key=True, index=True)
     case_id = Column(Integer, nullable=True)
     evidence_id = Column(Integer, nullable=True)
+    evidence_date = Column(String(20), nullable=True)  # 증거 발생일 (이 사건에서의 관련 날짜)
+    description = Column(Text, nullable=True)  # 증거 설명 (이 사건에서의 맥락)
     created_at = Column(DateTime, server_default=func.now())
 
     __table_args__ = (
@@ -53,3 +57,16 @@ class EvidenceCategory(Base):
     parent_id = Column(Integer, ForeignKey('evidence_categories.id'), nullable=True)  # 부모 카테고리
     name = Column(String(100), nullable=False)
     order_index = Column(Integer, server_default="0", nullable=True)  # 정렬 순서
+
+
+class EvidenceAnalysis(Base):
+    """증거 분석 결과 저장 (STT, OCR, 법적 분석 등)"""
+    __tablename__ = "evidence_analyses"
+
+    id = Column(Integer, primary_key=True, index=True)
+    evidence_id = Column(Integer, nullable=True)  # 증거 ID
+    summary = Column(Text, nullable=True)  # STT 결과 또는 요약
+    legal_relevance = Column(Text, nullable=True)  # 법적 관련성 분석
+    risk_level = Column(String(20), nullable=True)  # 위험 수준 (high, medium, low)
+    ai_model = Column(String(50), nullable=True)  # 사용한 AI 모델 (예: openai-whisper)
+    created_at = Column(DateTime, server_default=func.now())

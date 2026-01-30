@@ -13,11 +13,17 @@ httpx==0.27.0
 # LLM 관련 라이브러리
 openai==1.10.0
 
+# 문서 처리
+pymupdf==1.24.14  # PDF 텍스트 추출
+easyocr==1.7.2    # 로컬 OCR (한글 지원, Pillow 10 호환)
+pillow==10.3.0    # 이미지 처리
+
 # 벡터 DB
 qdrant-client==1.16.1
 
 # Sparse embedding (BM25)
 fastembed==0.4.2
+
 # 데이터베이스 (PostgreSQL with Supabase)
 sqlalchemy==2.0.25         # ORM for database operations
 psycopg2-binary==2.9.9     # PostgreSQL adapter for Python

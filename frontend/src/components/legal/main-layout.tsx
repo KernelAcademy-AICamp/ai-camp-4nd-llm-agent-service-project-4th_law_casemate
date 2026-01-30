@@ -66,7 +66,12 @@ export function MainLayout({ onLogout, userInfo }: MainLayoutProps) {
             </Button>
             <div className="hidden sm:flex items-center gap-2 text-muted-foreground">
               <Scale className="h-4 w-4" />
-              <span className="text-sm font-medium">Casemate</span>
+              <span
+                className="text-sm font-medium cursor-pointer hover:text-foreground transition-colors"
+                onClick={() => navigate('/home')}
+              >
+                Casemate
+              </span>
               <span className="text-muted-foreground/50">/</span>
             </div>
             <h1 className="text-sm font-medium truncate">{getPageTitle()}</h1>

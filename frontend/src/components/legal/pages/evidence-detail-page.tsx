@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { type EvidenceData, sampleEvidenceByDate } from "@/lib/sample-data";
 import { Button } from "@/components/ui/button";
@@ -14,11 +14,21 @@ import {
   Eye,
   EyeOff,
   Sparkles,
+  Loader2,
 } from "lucide-react";
 
 interface EvidenceDetailPageProps {
   evidence?: EvidenceData;
   allEvidence?: EvidenceData[];
+}
+
+interface AnalysisData {
+  id: number;
+  summary: string;
+  legal_relevance: string;
+  risk_level: string;
+  ai_model: string;
+  created_at: string;
 }
 
 export function EvidenceDetailPage({
@@ -34,8 +44,84 @@ export function EvidenceDetailPage({
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
   const [showInfo, setShowInfo] = useState(true);
 
+  // 분석 상태 관리
+  const [hasAnalysis, setHasAnalysis] = useState(false);
+  const [analysisData, setAnalysisData] = useState<AnalysisData | null>(null);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [isLoadingAnalysis, setIsLoadingAnalysis] = useState(true);
+
   const currentIndex = allEvidence.findIndex((e) => e.id === evidence.id);
   const hasImages = evidence.images && evidence.images.length > 0;
+
+  // 분석 정보 조회
+  const fetchAnalysis = async () => {
+    const token = localStorage.getItem('access_token');
+    if (!token || !evidence.id) return;
+
+    setIsLoadingAnalysis(true);
+    try {
+      const response = await fetch(`http://localhost:8000/api/v1/evidence/${evidence.id}/analysis`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        console.log('분석 정보:', data);
+        setHasAnalysis(data.has_analysis);
+        setAnalysisData(data.analysis);
+      }
+    } catch (error) {
+      console.error('분석 정보 조회 실패:', error);
+    } finally {
+      setIsLoadingAnalysis(false);
+    }
+  };
+
+  // 분석 수행
+  const handleAnalyze = async () => {
+    const token = localStorage.getItem('access_token');
+    if (!token || !evidence.id) {
+      alert('로그인이 필요합니다.');
+      return;
+    }
+
+    setIsAnalyzing(true);
+    try {
+      const response = await fetch(`http://localhost:8000/api/v1/evidence/${evidence.id}/analyze`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.detail || '분석 실패');
+      }
+
+      const data = await response.json();
+      console.log('분석 완료:', data);
+
+      // 분석 결과 업데이트
+      setHasAnalysis(true);
+      setAnalysisData(data.analysis);
+
+      alert('분석이 완료되었습니다!');
+    } catch (error: any) {
+      console.error('분석 실패:', error);
+      alert(`분석 실패: ${error.message}`);
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
+
+  // 초기 로드 시 분석 정보 조회
+  useEffect(() => {
+    fetchAnalysis();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [evidence.id]);
 
   const handlePrevEvidence = () => {
     if (currentIndex > 0) {
@@ -228,16 +314,101 @@ export function EvidenceDetailPage({
             {/* AI Analysis */}
             <Card className="border-border/60">
               <CardHeader className="pb-3">
-                <CardTitle className="text-sm font-medium flex items-center gap-2">
-                  <Sparkles className="h-4 w-4 text-muted-foreground" />
-                  AI 텍스트 추출
-                </CardTitle>
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-sm font-medium flex items-center gap-2">
+                    <Sparkles className="h-4 w-4 text-muted-foreground" />
+                    AI 법적 분석
+                  </CardTitle>
+                  {!isLoadingAnalysis && (
+                    <Badge
+                      variant={hasAnalysis ? "default" : "secondary"}
+                      className="text-xs"
+                    >
+                      {hasAnalysis ? "분석완료" : "미분석"}
+                    </Badge>
+                  )}
+                </div>
               </CardHeader>
-              <CardContent>
+              <CardContent className="space-y-3">
                 <Separator className="mb-4" />
-                <p className="text-sm leading-relaxed text-muted-foreground">
-                  {evidence.aiSummary}
-                </p>
+
+                {isLoadingAnalysis ? (
+                  <div className="flex items-center justify-center py-8">
+                    <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+                  </div>
+                ) : hasAnalysis && analysisData ? (
+                  <>
+                    <div className="space-y-3">
+                      <div>
+                        <p className="text-xs text-muted-foreground mb-1">요약</p>
+                        <p className="text-sm leading-relaxed">{analysisData.summary}</p>
+                      </div>
+                      <div>
+                        <p className="text-xs text-muted-foreground mb-1">법적 관련성</p>
+                        <p className="text-sm leading-relaxed">{analysisData.legal_relevance}</p>
+                      </div>
+                      <div>
+                        <p className="text-xs text-muted-foreground mb-1">위험도</p>
+                        <Badge
+                          variant={
+                            analysisData.risk_level === 'high' ? 'destructive' :
+                            analysisData.risk_level === 'medium' ? 'secondary' :
+                            'default'
+                          }
+                          className="text-xs"
+                        >
+                          {analysisData.risk_level === 'high' ? '높음' :
+                           analysisData.risk_level === 'medium' ? '보통' :
+                           '낮음'}
+                        </Badge>
+                      </div>
+                    </div>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="w-full mt-3"
+                      onClick={handleAnalyze}
+                      disabled={isAnalyzing}
+                    >
+                      {isAnalyzing ? (
+                        <>
+                          <Loader2 className="h-3.5 w-3.5 mr-2 animate-spin" />
+                          분석 중...
+                        </>
+                      ) : (
+                        <>
+                          <Sparkles className="h-3.5 w-3.5 mr-2" />
+                          다시 분석
+                        </>
+                      )}
+                    </Button>
+                  </>
+                ) : (
+                  <>
+                    <p className="text-sm text-muted-foreground text-center py-4">
+                      아직 분석되지 않은 증거입니다.
+                    </p>
+                    <Button
+                      variant="default"
+                      size="sm"
+                      className="w-full"
+                      onClick={handleAnalyze}
+                      disabled={isAnalyzing}
+                    >
+                      {isAnalyzing ? (
+                        <>
+                          <Loader2 className="h-3.5 w-3.5 mr-2 animate-spin" />
+                          분석 중...
+                        </>
+                      ) : (
+                        <>
+                          <Sparkles className="h-3.5 w-3.5 mr-2" />
+                          분석하기
+                        </>
+                      )}
+                    </Button>
+                  </>
+                )}
               </CardContent>
             </Card>
           </div>

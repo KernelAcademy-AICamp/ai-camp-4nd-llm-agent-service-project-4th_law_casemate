@@ -12,6 +12,9 @@ AI 기반 법률 지능 플랫폼 - FastAPI 백엔드와 React + TypeScript 프�
 - 📁 증거 파일 업로드 및 Supabase Storage 통합
 - 🗂️ 증거 카테고리 관리 (계층 구조 지원)
 - 📋 사건(Case) 관리
+- ⏱️ **사건 타임라인 관리** (시간순 이벤트 추적, CRUD 지원)
+- 🤖 **AI 기반 타임라인 자동 생성** (LLM을 활용한 지능형 이벤트 추출)
+- 🔍 판례 검색 (Qdrant 벡터 DB 기반 유사도 검색)
 - 📊 리스크 평가
 - 🏢 법무법인/사무실(Firm) 기반 데이터 격리
 - 🤖 Markdown 렌더링 지원 (LLM 응답 포맷팅)
@@ -46,12 +49,16 @@ CaseMate/
 │   │       ├── __init__.py
 │   │       ├── summary_prompt.py      # 요약 프롬프트
 │   │       └── comparison_prompt.py   # 비교 분석 프롬프트
+│   │       └── timeline_prompt.py     # 타임라인 프롬프트
 │   ├── scripts/                 # 데이터 수집 스크립트
 │   │   ├── base_collector.py    # 수집기 베이스 클래스
 │   │   ├── collect_laws.py      # 법령 수집
 │   │   ├── collect_cases.py     # 판례 수집
 │   │   ├── collect_ref_cases.py # 참조 판례 수집
 │   │   └── regenerate_summaries.py  # 요약 재생성
+│   │       ├── llm_service.py   # LLM 서비스
+│   │       ├── evidence_processor.py  # 증거 파일 처리 (AUDIO/PDF/IMAGE)
+│   │       └── stt_service.py   # 음성-텍스트 변환 (Whisper API)
 │   ├── tool/
 │   │   ├── database.py          # DB 연결 및 세션 관리
 │   │   ├── security.py          # 비밀번호 해싱 및 JWT 처리
@@ -228,7 +235,7 @@ npm run dev
 - `PATCH /api/v1/evidence/{evidence_id}/starred` - 즐겨찾기 토글 (인증 필요)
   - Response: `{ "message": "string", "starred": boolean }`
 - `GET /api/v1/evidence/{evidence_id}/url` - Signed URL 생성 (인증 필요)
-  - Response: `{ "signed_url": "string", "expires_in": 3600 }`
+  - Response: `{ "signed_url": "string", "expires_in": 60 }`
 
 ### 카테고리 관리 API (v1)
 - `POST /api/v1/evidence/categories` - 카테고리 생성 (인증 필요)
@@ -255,6 +262,27 @@ npm run dev
 - `POST /api/v1/search/cases/compare` - 판례 비교 분석 (RAG)
   - Request Body: `{ "origin_facts": "string", "origin_claims": "string", "target_case_number": "string" }`
   - Response: 비교 분석 결과
+### 타임라인 관리 API (v1)
+- `GET /api/v1/timeline/{case_id}` - 사건 타임라인 목록 조회 (인증 필요)
+  - Response: `[{ "id": "string", "case_id": int, "firm_id": int | null, "date": "YYYY-MM-DD", "time": "HH:MM", "title": "string", "description": "string", "type": "의뢰인|상대방|증거|기타", "actor": "string", "order_index": int }]`
+- `POST /api/v1/timeline/{case_id}` - 타임라인 이벤트 추가 (인증 필요)
+  - Request Body: `{ "date": "string", "time": "string", "title": "string", "description": "string", "type": "string", "actor": "string", "order_index": int, "firm_id": int | null }`
+  - Response: 생성된 타임라인 객체
+- `PUT /api/v1/timeline/{timeline_id}` - 타임라인 이벤트 수정 (인증 필요)
+  - Request Body: 타임라인 데이터 (POST와 동일, firm_id 포함)
+  - Response: 수정된 타임라인 객체
+- `DELETE /api/v1/timeline/{timeline_id}` - 타임라인 이벤트 삭제 (인증 필요)
+  - Response: `{ "message": "타임라인이 삭제되었습니다" }`
+- `POST /api/v1/timeline/{case_id}/generate?use_llm=false&firm_id=1` - AI 자동 생성 (인증 필요)
+  - Query Parameters:
+    - `use_llm` (boolean, 기본값: false) - LLM 사용 여부
+    - `firm_id` (int, 옵션) - 소속 법무법인/사무실 ID
+  - Response: 생성된 타임라인 목록
+
+### LLM 채팅 API
+- `POST /api/chat` - LLM과 대화
+- `GET /api/conversations/{conversation_id}` - 대화 기록 조회
+- `DELETE /api/conversations/{conversation_id}` - 대화 기록 삭제
 
 자세한 API 문서는 서버 실행 후 `http://localhost:8000/docs`에서 확인할 수 있습니다.
 
@@ -305,7 +333,7 @@ pip install python-multipart==0.0.6 # 파일 업로드 처리
 ```bash
 pip install sqlalchemy==2.0.25      # ORM (Object-Relational Mapping)
 pip install psycopg2-binary==2.9.9  # PostgreSQL 어댑터
-pip install supabase==2.3.4         # Supabase 클라이언트 (Storage 및 DB)
+pip install supabase==2.10.0        # Supabase 클라이언트 (Storage 및 DB)
 ```
 
 #### 인증 및 보안
@@ -321,11 +349,55 @@ pip install qdrant-client==1.16.1   # Qdrant 벡터 데이터베이스 클라이
 pip install fastembed==0.4.2        # 고속 임베딩 라이브러리 (Sparse embedding, BM25)
 ```
 
-#### LLM 관련 라이브러리
+#### LLM 및 문서 처리 라이브러리
 ```bash
-pip install openai==1.10.0          # OpenAI API 클라이언트
+pip install openai==1.10.0          # OpenAI API 클라이언트 (Whisper STT, Vision API)
+pip install pymupdf==1.24.14        # PDF 텍스트 추출
+pip install easyocr==1.7.2          # 로컬 OCR (한글/영어 지원, Pillow 10 호환)
+pip install pillow==10.3.0          # 이미지 처리
 pip install httpx==0.27.0           # HTTP 클라이언트
 ```
+
+**증거 파일 자동 처리 (하이브리드 전략):**
+
+- **AUDIO**: OpenAI Whisper API로 음성을 텍스트로 변환 (ffmpeg 불필요)
+
+- **PDF**:
+  1. PyMuPDF로 텍스트 추출 시도 (무료)
+  2. 페이지당 20자 미만 → 이미지형 페이지로 판단
+  3. 이미지형 페이지만 Vision API로 OCR → 최소 비용
+
+- **IMAGE**:
+  1. **EasyOCR 로컬 처리** (무료, 한글/영어 동시 인식)
+     - 20자 이상 추출 성공 → 완료 (비용 0원)
+  2. 로컬 OCR 실패 시 → **OpenAI Vision API**
+     - 개선된 프롬프트: 법률 증거 맥락 명시
+     - 카톡, 대화 이미지도 처리 가능
+     - 거절 감지 및 에러 처리
+
+**비용 최적화:**
+- 텍스트형 PDF: 100% 무료 (PyMuPDF)
+- 이미지: 80% 무료 (EasyOCR), 실패 시에만 Vision API
+- 이미지형 PDF: 텍스트 페이지는 무료, 이미지 페이지만 유료
+- 하이브리드 전략으로 평균 70-90% 비용 절감
+
+**문서 유형 자동 분류 (Vision API):**
+
+- **IMAGE 파일 + Vision API 사용 시**에만 문서 유형 자동 분류
+- Vision API(gpt-4o-mini)가 이미지를 직접 보고 텍스트 추출과 동시에 문서 유형 판단
+- 지원하는 문서 유형:
+  - **카카오톡**: 카카오톡 메시지, 채팅 대화
+  - **문자메시지**: SMS, MMS 문자 메시지
+  - **계약서**: 계약서, 합의서, 약정서, 동의서
+  - **영수증**: 영수증, 세금계산서, 거래명세서, 청구서
+  - **법원문서**: 소장, 답변서, 판결문, 결정문, 증거서류, 진술서
+  - **신분증**: 신분증, 여권, 운전면허증, 주민등록증
+  - **금융문서**: 통장 거래내역, 계좌이체 확인증, 대출 문서
+  - **일반문서**: 위 카테고리에 해당하지 않는 일반 문서
+  - **기타**: 분류하기 어려운 문서
+- 분류 결과는 `doc_type` 컬럼에 자동 저장
+- 추출된 텍스트는 `content` 컬럼에 저장하여 검색 및 분석 가능
+- 로컬 OCR, PDF 텍스트 추출, 음성 STT의 경우 `doc_type`은 NULL (추후 필요 시 수동 분류 또는 추가 API 호출)
 
 #### 한 번에 설치
 ```bash
@@ -417,7 +489,9 @@ CREATE TABLE evidences (
     uploader_id INTEGER,                      -- 업로더 ID
     law_firm_id INTEGER REFERENCES law_firms(id) ON DELETE SET NULL,  -- 소속 법무법인 ID
     case_id INTEGER REFERENCES cases(id) ON DELETE CASCADE,           -- 연결된 사건 ID
-    category_id INTEGER REFERENCES evidence_categories(id) ON DELETE SET NULL  -- 카테고리 ID
+    category_id INTEGER REFERENCES evidence_categories(id) ON DELETE SET NULL,  -- 카테고리 ID
+    content TEXT,                             -- OCR/STT로 추출된 텍스트 내용
+    doc_type VARCHAR                          -- 문서 유형 (카카오톡, 계약서, 영수증 등)
 );
 ```
 
@@ -433,19 +507,106 @@ CREATE TABLE evidence_categories (
 );
 ```
 
-### Case_Evidence_Mappings 테이블
+### Case_Evidence_Mappings 테이블 (사건-증거 관계)
 
 ```sql
 CREATE TABLE case_evidence_mappings (
     id SERIAL PRIMARY KEY,
     case_id INTEGER,                 -- 사건 ID
     evidence_id INTEGER,             -- 증거 ID
+    evidence_date VARCHAR(20),       -- 증거 발생일 (이 사건에서의 관련 날짜)
+    description TEXT,                -- 증거 설명 (이 사건에서의 맥락)
     created_at TIMESTAMP DEFAULT NOW(),
     UNIQUE(case_id, evidence_id)     -- 중복 매핑 방지
 );
+
+CREATE INDEX idx_case_evidence_mappings_evidence_date ON case_evidence_mappings(evidence_date);
 ```
 
-테이블은 `/db-init` 엔드포인트 호출 시 자동으로 생성됩니다.
+- **evidence_date**: 증거 발생일 (이 사건에서의 관련 날짜, YYYY-MM-DD 형식 또는 "미상")
+  - 예: 대화가 발생한 날짜, 계약서 작성일, 사건 발생일
+  - 증거 파일의 업로드일(`created_at`)이 아닌, 증거가 실제로 발생한 날짜
+- **description**: 증거 설명 (이 사건에서의 맥락 및 의미)
+  - 예: "최초 협박 대화", "허위 계약서 원본", "추가 명예훼손 증거"
+  - 같은 증거가 여러 사건에 연결될 때 각 사건별로 다른 설명 가능
+
+**N:N 관계의 특성:**
+- 하나의 증거는 여러 사건에 연결 가능
+- 하나의 사건은 여러 증거를 포함 가능
+- `evidence_date`와 `description`은 **관계의 속성**으로, 같은 증거라도 사건마다 다른 값을 가질 수 있음
+
+### Evidence_Analyses 테이블 (AI 분석 결과 저장)
+
+```sql
+CREATE TABLE evidence_analyses (
+    id SERIAL PRIMARY KEY,
+    evidence_id INTEGER,                    -- 증거 ID
+    summary TEXT,                           -- STT 결과 또는 요약문
+    legal_relevance TEXT,                   -- 법적 관련성 분석
+    risk_level VARCHAR(20),                 -- 위험 수준 (high, medium, low)
+    ai_model VARCHAR(50),                   -- 사용한 AI 모델 (예: openai-whisper)
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+- **summary**: 오디오 파일의 STT(Speech-to-Text) 변환 결과 또는 문서 요약
+- **legal_relevance**: AI가 분석한 법적 관련성 및 중요 포인트
+- **risk_level**: AI가 판단한 법적 위험 수준
+- **ai_model**: 분석에 사용된 AI 모델명
+
+### Timelines 테이블 (사건 타임라인)
+
+```sql
+CREATE TABLE timelines (
+    id SERIAL PRIMARY KEY,
+    case_id INTEGER NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
+    firm_id INTEGER REFERENCES law_firms(id) ON DELETE SET NULL,  -- 소속 법무법인/사무실 ID (멀티테넌트 데이터 격리)
+    date VARCHAR(20) NOT NULL,              -- 발생 날짜 (YYYY-MM-DD 또는 "미상")
+    time VARCHAR(10) NOT NULL,              -- 발생 시각 (HH:MM)
+    title VARCHAR(200) NOT NULL,            -- 타임라인 제목
+    description TEXT,                       -- 상세 설명
+    type VARCHAR(20) NOT NULL,              -- 타입 (의뢰인, 상대방, 증거, 기타)
+    actor VARCHAR(100),                     -- 관련 인물명 또는 증거명
+    order_index INTEGER DEFAULT 0,          -- 표시 순서 (낮을수록 먼저 표시)
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 인덱스
+CREATE INDEX idx_timelines_case_id ON timelines(case_id);
+CREATE INDEX idx_timelines_firm_id ON timelines(firm_id);
+CREATE INDEX idx_timelines_date ON timelines(date);
+CREATE INDEX idx_timelines_order_index ON timelines(order_index);
+```
+
+- **case_id**: 연결된 사건 ID (외래키, CASCADE 삭제)
+- **firm_id**: 소속 법무법인/사무실 ID (멀티테넌트 데이터 격리, 외래키, SET NULL 삭제)
+- **date**: 이벤트 발생 날짜 (YYYY-MM-DD 형식, 날짜 미상인 경우 "미상")
+- **time**: 이벤트 발생 시각 (HH:MM 형식, 24시간 표기)
+- **title**: 타임라인 이벤트 제목 (예: "단톡방 첫 비방 발언")
+- **description**: 이벤트에 대한 상세 설명
+- **type**: 이벤트 타입
+  - **의뢰인**: 의뢰인(피해자)이 취한 행동
+  - **상대방**: 상대방(피고소인/가해자)의 행동
+  - **증거**: 증거 확보/발견 관련
+  - **기타**: 법률 상담, 소송 제기 등 기타 사건
+- **actor**: 관련 인물명 또는 증거명 (예: "박OO (피고소인)", "카카오톡 대화 캡처본")
+- **order_index**: 동일 날짜/시간 내 이벤트의 정렬 순서
+
+**타임라인 자동 생성 (AI 활용 가능):**
+
+- LLM을 사용하여 사건 개요, 사실관계, 증거 목록에서 시간순 이벤트 자동 추출
+- 날짜/시간 정보를 자연어에서 파싱하여 구조화
+- 이벤트 타입 자동 분류 (의뢰인/상대방/증거/기타)
+- 사용자가 직접 타임라인 이벤트 추가/수정/삭제 가능 (CRUD)
+
+**멀티테넌트 데이터 격리:**
+
+- `firm_id` 필드를 통한 법무법인/사무실별 타임라인 데이터 격리
+- Evidence 모델과 동일한 패턴으로 `case_id`와 `firm_id` 모두 포함
+- 같은 법무법인 소속만 타임라인 데이터 접근 가능 (추후 인증 로직 구현 시)
+
+테이블은 `/db-init` 엔드포인트 호출 시 자동으로 생성되며, SQL 파일은 `backend/sql/create_timelines_table.sql`에서 확인할 수 있습니다.
 
 ## 🔐 보안
 
@@ -467,7 +628,7 @@ CREATE TABLE case_evidence_mappings (
 
 ### Supabase Storage 보안
 - **Service Role Key 사용**: RLS 정책 우회하여 서버에서만 업로드 가능
-- **Signed URL**: 60분 제한 임시 URL로 파일 접근 제어
+- **Signed URL**: 60초 제한 임시 URL로 파일 접근 제어
 - **파일 경로 관리**: `firm_id/YYYYMMDD/unique_filename` 구조로 파일 저장
 - **UUID 파일명**: 파일명 중복 방지 및 보안 강화
 

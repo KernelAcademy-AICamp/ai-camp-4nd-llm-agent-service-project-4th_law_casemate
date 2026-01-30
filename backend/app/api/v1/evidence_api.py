@@ -1,11 +1,15 @@
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from supabase import create_client, Client
 from dotenv import load_dotenv
 from datetime import datetime
 from pydantic import BaseModel
 import os
 import uuid
+import time
+from app.services.evidence_processor import EvidenceProcessor
+from openai import AsyncOpenAI
 
 from tool.database import get_db
 from tool.security import get_current_user
@@ -51,7 +55,7 @@ async def upload_file(
     **응답:**
     - evidence_id: 생성된 증거 ID
     - file_name: 원본 파일명 (한글 포함)
-    - url: Signed URL (60분 유효)
+    - url: Signed URL (60초 유효)
     """
     print("=" * 50)
     print(f"🎉 Upload Evidence endpoint called!")
@@ -84,8 +88,8 @@ async def upload_file(
         if hasattr(upload_response, 'error') and upload_response.error:
             raise HTTPException(status_code=500, detail=f"Supabase 업로드 실패: {upload_response.error}")
 
-        # 4. Signed URL 생성 (60분 유효)
-        signed_url_response = supabase.storage.from_("Evidences").create_signed_url(file_path, 3600)
+        # 4. Signed URL 생성 (60초 유효)
+        signed_url_response = supabase.storage.from_("Evidences").create_signed_url(file_path, 60)
         signed_url = signed_url_response.get('signedURL') if signed_url_response else ""
         print(f"🔗 Signed URL: {signed_url}")
 
@@ -104,6 +108,82 @@ async def upload_file(
         db.add(new_evidence)
         db.commit()
         db.refresh(new_evidence)
+
+        # 6. 증거 파일 처리 (AUDIO, PDF, IMAGE)
+        try:
+            print(f"🔍 파일 처리 시작: {file.filename}")
+
+            # 파일 내용으로 새 UploadFile 객체 생성
+            from io import BytesIO
+            from fastapi import UploadFile
+
+            file_for_processing = BytesIO(file_content)
+            upload_file = UploadFile(
+                file=file_for_processing,
+                filename=file.filename,
+                headers={"content-type": file.content_type}
+            )
+
+            # EvidenceProcessor로 파일 처리
+            processor = EvidenceProcessor()
+            result = await processor.process(upload_file, detail="high")
+
+            # 처리 결과 로그 출력
+            if result.get("success"):
+                print(f"✅ 파일 처리 완료 (evidence_id={new_evidence.id})")
+                print(f"📋 타입: {result.get('type')}, 방법: {result.get('method')}")
+                print(f"💰 비용 추정: {result.get('cost_estimate')}")
+
+                if result.get("text"):
+                    text = result["text"]
+                    print(f"📝 추출된 텍스트: {text[:200]}..." if len(text) > 200 else f"📝 추출된 텍스트: {text}")
+                    print(f"📊 총 글자 수: {result.get('char_count')}자")
+
+                    # OCR/STT 결과를 DB에 저장
+                    try:
+                        # 1. 텍스트 저장
+                        new_evidence.content = text
+
+                        # 2. 문서 유형 분류 (Vision API 사용 시에만)
+                        # IMAGE + Vision API 사용 시 → doc_type 포함
+                        # 그 외 (AUDIO, PDF, 로컬 OCR) → doc_type NULL
+                        method = result.get("method", "")
+                        if result.get("type") == "IMAGE" and method.startswith("openai-vision"):
+                            # Vision API가 doc_type을 이미 반환한 경우
+                            doc_type = result.get("doc_type", None)
+                            new_evidence.doc_type = doc_type
+                            print(f"📋 Vision API에서 문서 유형 추출: {doc_type}")
+                        else:
+                            # 로컬 OCR, PDF, AUDIO → doc_type 비움
+                            new_evidence.doc_type = None
+                            print(f"📋 문서 유형: 미분류 (Vision API 미사용)")
+
+                        # 3. DB 업데이트
+                        db.commit()
+                        doc_type_str = new_evidence.doc_type if new_evidence.doc_type else "미분류"
+                        print(f"💾 OCR 결과 저장 완료: content={len(text)}자, doc_type={doc_type_str}")
+
+                    except Exception as classify_error:
+                        print(f"⚠️ 문서 분류/저장 실패: {str(classify_error)}")
+                        # 분류 실패해도 텍스트는 저장
+                        new_evidence.content = text
+                        new_evidence.doc_type = None
+                        db.commit()
+
+                # PDF 세부 정보
+                if result.get("type") == "PDF":
+                    print(f"📄 총 페이지: {result.get('total_pages')}")
+                    if result.get("text_pages"):
+                        print(f"📝 텍스트 페이지: {result.get('text_pages')}")
+                    if result.get("image_pages"):
+                        print(f"🖼️ 이미지 페이지: {result.get('image_pages')}")
+            else:
+                print(f"⚠️ 파일 처리 실패 (evidence_id={new_evidence.id})")
+                print(f"❌ 에러: {result.get('error')}")
+
+        except Exception as processing_error:
+            print(f"⚠️ 파일 처리 실패 (업로드는 성공): {str(processing_error)}")
+            # 처리 실패해도 업로드는 성공으로 처리
 
         return {
             "message": "업로드 성공",
@@ -335,38 +415,63 @@ async def get_evidence_list(
     - category_id: (선택) 특정 카테고리의 파일만 필터링
     - 최신순 정렬 (created_at DESC)
     """
-    print(f"📋 증거 목록 조회: user_id={current_user.id}, firm_id={current_user.firm_id}, case_id={case_id}, category_id={category_id}")
+    # 시작 시간 측정
+    start_time = time.time()
+    start_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+
+    print(f"\n{'='*80}")
+    print(f"📋 [증거 목록 조회] 시작 - {start_datetime}")
+    print(f"📋 파라미터: user_id={current_user.id}, firm_id={current_user.firm_id}, case_id={case_id}, category_id={category_id}")
+    print(f"{'='*80}")
 
     try:
-        # 쿼리 시작: 현재 사용자의 law_firm_id로 필터링
-        query = db.query(models.Evidence).filter(
+        # DB 쿼리 시작 (JOIN 사용으로 1번의 쿼리로 통합)
+        query_start = time.time()
+        print(f"⏱️  [DB 쿼리 + JOIN] 시작 - {datetime.now().strftime('%H:%M:%S.%f')[:-3]}")
+
+        # LEFT JOIN + GROUP BY로 증거와 연결된 사건 ID를 한 번에 조회
+        query = db.query(
+            models.Evidence,
+            func.array_agg(models.CaseEvidenceMapping.case_id).label('linked_case_ids')
+        ).outerjoin(
+            models.CaseEvidenceMapping,
+            models.Evidence.id == models.CaseEvidenceMapping.evidence_id
+        ).filter(
             models.Evidence.law_firm_id == current_user.firm_id
         )
 
-        # case_id가 제공되면 CaseEvidenceMapping을 통해 필터링
+        # case_id가 제공되면 HAVING 절로 필터링
         if case_id is not None:
-            query = query.join(
-                models.CaseEvidenceMapping,
-                models.Evidence.id == models.CaseEvidenceMapping.evidence_id
-            ).filter(models.CaseEvidenceMapping.case_id == case_id)
+            # 특정 case_id가 연결된 증거만 조회
+            query = query.filter(models.CaseEvidenceMapping.case_id == case_id)
 
         # category_id가 제공되면 추가 필터링
         if category_id is not None:
             query = query.filter(models.Evidence.category_id == category_id)
 
+        # GROUP BY로 증거별로 집계
+        query = query.group_by(models.Evidence.id)
+
         # 최신순 정렬
-        evidences = query.order_by(models.Evidence.created_at.desc()).all()
+        results = query.order_by(models.Evidence.created_at.desc()).all()
 
-        print(f"✅ 조회된 증거 파일 수: {len(evidences)}")
+        query_end = time.time()
+        query_duration = (query_end - query_start) * 1000  # 밀리초로 변환
+        print(f"✅ [DB 쿼리 + JOIN] 완료 - {datetime.now().strftime('%H:%M:%S.%f')[:-3]} (소요: {query_duration:.2f}ms)")
+        print(f"📊 조회된 증거 파일 수: {len(results)}")
+        print(f"🚀 성능 개선: 1번의 쿼리로 모든 데이터 조회 (기존 N+1 문제 해결)")
 
-        # 응답 데이터 구성
+        # 응답 데이터 구성 시작
+        mapping_start = time.time()
+        print(f"⏱️  [응답 데이터 구성] 시작 - {datetime.now().strftime('%H:%M:%S.%f')[:-3]}")
+
         evidence_list = []
-        for evidence in evidences:
-            # 연결된 모든 사건 ID 가져오기
-            case_mappings = db.query(models.CaseEvidenceMapping).filter(
-                models.CaseEvidenceMapping.evidence_id == evidence.id
-            ).all()
-            linked_case_ids = [mapping.case_id for mapping in case_mappings]
+        for idx, (evidence, linked_case_ids) in enumerate(results):
+            # None 값 필터링 (연결된 사건이 없는 경우)
+            case_ids = [cid for cid in (linked_case_ids or []) if cid is not None]
+
+            if idx < 5:
+                print(f"   └─ 증거 #{idx+1} (id={evidence.id}): 연결된 사건 {len(case_ids)}개")
 
             evidence_list.append({
                 "evidence_id": evidence.id,
@@ -375,11 +480,29 @@ async def get_evidence_list(
                 "file_size": evidence.size if evidence.size else 0,
                 "file_path": evidence.file_path,
                 "starred": evidence.starred if evidence.starred is not None else False,
-                "linked_case_ids": linked_case_ids,  # 연결된 사건 ID 배열
+                "linked_case_ids": case_ids,  # 연결된 사건 ID 배열
                 "category_id": evidence.category_id,
                 "created_at": evidence.created_at.isoformat() if evidence.created_at else None,
                 "uploader_id": evidence.uploader_id
             })
+
+        mapping_end = time.time()
+        mapping_duration = (mapping_end - mapping_start) * 1000
+        print(f"✅ [응답 데이터 구성] 완료 - {datetime.now().strftime('%H:%M:%S.%f')[:-3]} (소요: {mapping_duration:.2f}ms)")
+
+        # 전체 완료
+        end_time = time.time()
+        total_duration = (end_time - start_time) * 1000
+        end_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+
+        print(f"\n{'='*80}")
+        print(f"🎉 [증거 목록 조회] 완료 - {end_datetime}")
+        print(f"📊 총 소요 시간: {total_duration:.2f}ms ({total_duration/1000:.3f}초)")
+        print(f"   ├─ DB 쿼리 (JOIN): {query_duration:.2f}ms ({query_duration/total_duration*100:.1f}%)")
+        print(f"   └─ 응답 구성: {mapping_duration:.2f}ms ({mapping_duration/total_duration*100:.1f}%)")
+        print(f"📦 반환 데이터: {len(evidence_list)}개 파일")
+        print(f"✨ 최적화: N+1 문제 해결 (기존 {len(evidence_list)+1}번 쿼리 → 1번 쿼리)")
+        print(f"{'='*80}\n")
 
         return {
             "total": len(evidence_list),
@@ -387,7 +510,11 @@ async def get_evidence_list(
         }
 
     except Exception as e:
-        print(f"❌ 증거 목록 조회 실패: {str(e)}")
+        error_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        print(f"\n{'='*80}")
+        print(f"❌ [증거 목록 조회] 실패 - {error_time}")
+        print(f"❌ 에러: {str(e)}")
+        print(f"{'='*80}\n")
         raise HTTPException(status_code=500, detail=f"목록 조회 실패: {str(e)}")
 
 @router.post("/{evidence_id}/link-case/{case_id}")
@@ -503,7 +630,7 @@ async def get_signed_url(
     증거파일의 임시 접근 URL 생성
 
     - evidence_id: 증거 ID
-    - 60분간 유효한 signed URL 반환
+    - 60초간 유효한 signed URL 반환
     - 보안: 같은 law_firm_id 사용자만 접근 가능
     """
     print(f"🔐 Signed URL 요청: evidence_id={evidence_id}, user_id={current_user.id}")
@@ -518,11 +645,11 @@ async def get_signed_url(
     if evidence.law_firm_id != current_user.firm_id:
         raise HTTPException(status_code=403, detail="해당 증거에 접근할 권한이 없습니다")
 
-    # 3. Signed URL 생성 (60분 유효)
+    # 3. Signed URL 생성 (60초 유효)
     try:
         signed_url_response = supabase.storage.from_("Evidences").create_signed_url(
             evidence.file_path,
-            3600  # 60분 = 3600초
+            60  # 60초
         )
 
         signed_url = signed_url_response.get('signedURL')
@@ -536,9 +663,231 @@ async def get_signed_url(
             "evidence_id": evidence_id,
             "file_name": evidence.file_name,
             "signed_url": signed_url,
-            "expires_in": 3600
+            "expires_in": 60
         }
     except Exception as e:
         print(f"❌ Signed URL 생성 실패: {str(e)}")
         raise HTTPException(status_code=500, detail=f"URL 생성 실패: {str(e)}")
+
+@router.get("/{evidence_id}/analysis")
+async def get_evidence_analysis(
+    evidence_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    증거 분석 정보 조회
+
+    - evidence_id: 증거 ID
+    - 해당 증거의 분석 정보 반환 (없으면 null)
+    """
+    print(f"📊 분석 정보 조회: evidence_id={evidence_id}, user_id={current_user.id}")
+
+    try:
+        # 1. 증거 조회 및 권한 확인
+        evidence = db.query(models.Evidence).filter(models.Evidence.id == evidence_id).first()
+        if not evidence:
+            raise HTTPException(status_code=404, detail="증거를 찾을 수 없습니다")
+
+        if evidence.law_firm_id != current_user.firm_id:
+            raise HTTPException(status_code=403, detail="해당 증거에 접근할 권한이 없습니다")
+
+        # 2. 분석 정보 조회 (최신 것만)
+        analysis = db.query(models.EvidenceAnalysis).filter(
+            models.EvidenceAnalysis.evidence_id == evidence_id
+        ).order_by(models.EvidenceAnalysis.created_at.desc()).first()
+
+        if not analysis:
+            print(f"📊 분석 정보 없음: evidence_id={evidence_id}")
+            return {
+                "has_analysis": False,
+                "analysis": None
+            }
+
+        print(f"✅ 분석 정보 조회 완료: analysis_id={analysis.id}")
+
+        return {
+            "has_analysis": True,
+            "analysis": {
+                "id": analysis.id,
+                "summary": analysis.summary,
+                "legal_relevance": analysis.legal_relevance,
+                "risk_level": analysis.risk_level,
+                "ai_model": analysis.ai_model,
+                "created_at": analysis.created_at.isoformat() if analysis.created_at else None
+            }
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ 분석 정보 조회 실패: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"분석 정보 조회 실패: {str(e)}")
+
+@router.post("/{evidence_id}/analyze")
+async def analyze_evidence(
+    evidence_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    증거 분석 수행
+
+    - evidence_id: 증거 ID
+    - 증거의 content를 AI로 분석하여 요약, 법적 관련성, 위험도 평가
+    - 결과를 evidence_analyses 테이블에 저장
+    """
+    print(f"🤖 증거 분석 시작: evidence_id={evidence_id}, user_id={current_user.id}")
+
+    try:
+        # 1. 증거 조회 및 권한 확인
+        evidence = db.query(models.Evidence).filter(models.Evidence.id == evidence_id).first()
+        if not evidence:
+            raise HTTPException(status_code=404, detail="증거를 찾을 수 없습니다")
+
+        if evidence.law_firm_id != current_user.firm_id:
+            raise HTTPException(status_code=403, detail="해당 증거에 접근할 권한이 없습니다")
+
+        # 2. content 확인
+        if not evidence.content or len(evidence.content.strip()) < 20:
+            raise HTTPException(
+                status_code=400,
+                detail="분석할 텍스트가 없습니다. 먼저 텍스트 추출을 수행해주세요."
+            )
+
+        # 3. AI 분석 수행
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            raise HTTPException(status_code=500, detail="OPENAI_API_KEY가 설정되지 않았습니다")
+
+        client = AsyncOpenAI(api_key=api_key)
+
+        print(f"🤖 AI 분석 중... (텍스트 길이: {len(evidence.content)}자)")
+
+        # 분석 프롬프트
+        prompt = f"""당신은 법률 전문가입니다. 다음 증거 자료를 분석해주세요.
+
+**파일명:** {evidence.file_name}
+**문서 유형:** {evidence.doc_type if evidence.doc_type else '미분류'}
+
+**내용:**
+{evidence.content}
+
+---
+
+다음 형식으로 JSON 응답을 작성해주세요:
+
+```json
+{{
+  "summary": "증거 내용을 3-5문장으로 요약",
+  "legal_relevance": "이 증거가 법적으로 어떤 의미를 가지는지, 어떤 주장을 뒷받침하는지 분석 (3-5문장)",
+  "risk_level": "high, medium, low 중 하나 (상대방에게 불리한 정도)"
+}}
+```
+
+**주의사항:**
+- summary: 핵심 내용만 간결하게 요약
+- legal_relevance: 법적 쟁점, 증거 가치, 활용 방안을 구체적으로 작성
+- risk_level: 상대방 입장에서 불리한 정도를 평가 (높을수록 우리에게 유리)
+"""
+
+        response = await client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "당신은 법률 증거 분석 전문가입니다."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.3,
+            max_tokens=1500
+        )
+
+        content = response.choices[0].message.content or ""
+
+        # JSON 파싱
+        import json
+        import re
+
+        try:
+            # JSON 코드블록 제거
+            json_match = re.search(r'```json\s*(.*?)\s*```', content, re.DOTALL)
+            if json_match:
+                json_str = json_match.group(1)
+            else:
+                json_str = content
+
+            parsed = json.loads(json_str)
+            summary = parsed.get("summary", "")
+            legal_relevance = parsed.get("legal_relevance", "")
+            risk_level = parsed.get("risk_level", "medium")
+
+            print(f"✅ AI 분석 완료: risk_level={risk_level}")
+
+        except (json.JSONDecodeError, AttributeError) as e:
+            print(f"⚠️ JSON 파싱 실패: {str(e)}")
+            # 파싱 실패 시 전체 응답을 summary로 사용
+            summary = content[:500]
+            legal_relevance = "자동 분석 실패"
+            risk_level = "medium"
+
+        # 4. DB 저장 (기존 분석이 있으면 업데이트, 없으면 생성)
+        existing_analysis = db.query(models.EvidenceAnalysis).filter(
+            models.EvidenceAnalysis.evidence_id == evidence_id
+        ).first()
+
+        if existing_analysis:
+            # 기존 분석 업데이트
+            existing_analysis.summary = summary
+            existing_analysis.legal_relevance = legal_relevance
+            existing_analysis.risk_level = risk_level
+            existing_analysis.ai_model = "gpt-4o-mini"
+            existing_analysis.created_at = func.now()
+            db.commit()
+            db.refresh(existing_analysis)
+
+            print(f"✅ 분석 업데이트 완료: analysis_id={existing_analysis.id}")
+
+            return {
+                "message": "분석 완료 (업데이트)",
+                "analysis": {
+                    "id": existing_analysis.id,
+                    "summary": existing_analysis.summary,
+                    "legal_relevance": existing_analysis.legal_relevance,
+                    "risk_level": existing_analysis.risk_level,
+                    "ai_model": existing_analysis.ai_model,
+                    "created_at": existing_analysis.created_at.isoformat()
+                }
+            }
+        else:
+            # 새 분석 생성
+            new_analysis = models.EvidenceAnalysis(
+                evidence_id=evidence_id,
+                summary=summary,
+                legal_relevance=legal_relevance,
+                risk_level=risk_level,
+                ai_model="gpt-4o-mini"
+            )
+            db.add(new_analysis)
+            db.commit()
+            db.refresh(new_analysis)
+
+            print(f"✅ 분석 생성 완료: analysis_id={new_analysis.id}")
+
+            return {
+                "message": "분석 완료",
+                "analysis": {
+                    "id": new_analysis.id,
+                    "summary": new_analysis.summary,
+                    "legal_relevance": new_analysis.legal_relevance,
+                    "risk_level": new_analysis.risk_level,
+                    "ai_model": new_analysis.ai_model,
+                    "created_at": new_analysis.created_at.isoformat()
+                }
+            }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        print(f"❌ 증거 분석 실패: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"증거 분석 실패: {str(e)}")
 
