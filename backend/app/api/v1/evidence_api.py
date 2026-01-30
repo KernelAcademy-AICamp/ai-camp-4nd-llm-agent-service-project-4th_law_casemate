@@ -1,11 +1,13 @@
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from supabase import create_client, Client
 from dotenv import load_dotenv
 from datetime import datetime
 from pydantic import BaseModel
 import os
 import uuid
+import time
 from app.services.evidence_processor import EvidenceProcessor
 
 from tool.database import get_db
@@ -412,38 +414,63 @@ async def get_evidence_list(
     - category_id: (선택) 특정 카테고리의 파일만 필터링
     - 최신순 정렬 (created_at DESC)
     """
-    print(f"📋 증거 목록 조회: user_id={current_user.id}, firm_id={current_user.firm_id}, case_id={case_id}, category_id={category_id}")
+    # 시작 시간 측정
+    start_time = time.time()
+    start_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+
+    print(f"\n{'='*80}")
+    print(f"📋 [증거 목록 조회] 시작 - {start_datetime}")
+    print(f"📋 파라미터: user_id={current_user.id}, firm_id={current_user.firm_id}, case_id={case_id}, category_id={category_id}")
+    print(f"{'='*80}")
 
     try:
-        # 쿼리 시작: 현재 사용자의 law_firm_id로 필터링
-        query = db.query(models.Evidence).filter(
+        # DB 쿼리 시작 (JOIN 사용으로 1번의 쿼리로 통합)
+        query_start = time.time()
+        print(f"⏱️  [DB 쿼리 + JOIN] 시작 - {datetime.now().strftime('%H:%M:%S.%f')[:-3]}")
+
+        # LEFT JOIN + GROUP BY로 증거와 연결된 사건 ID를 한 번에 조회
+        query = db.query(
+            models.Evidence,
+            func.array_agg(models.CaseEvidenceMapping.case_id).label('linked_case_ids')
+        ).outerjoin(
+            models.CaseEvidenceMapping,
+            models.Evidence.id == models.CaseEvidenceMapping.evidence_id
+        ).filter(
             models.Evidence.law_firm_id == current_user.firm_id
         )
 
-        # case_id가 제공되면 CaseEvidenceMapping을 통해 필터링
+        # case_id가 제공되면 HAVING 절로 필터링
         if case_id is not None:
-            query = query.join(
-                models.CaseEvidenceMapping,
-                models.Evidence.id == models.CaseEvidenceMapping.evidence_id
-            ).filter(models.CaseEvidenceMapping.case_id == case_id)
+            # 특정 case_id가 연결된 증거만 조회
+            query = query.filter(models.CaseEvidenceMapping.case_id == case_id)
 
         # category_id가 제공되면 추가 필터링
         if category_id is not None:
             query = query.filter(models.Evidence.category_id == category_id)
 
+        # GROUP BY로 증거별로 집계
+        query = query.group_by(models.Evidence.id)
+
         # 최신순 정렬
-        evidences = query.order_by(models.Evidence.created_at.desc()).all()
+        results = query.order_by(models.Evidence.created_at.desc()).all()
 
-        print(f"✅ 조회된 증거 파일 수: {len(evidences)}")
+        query_end = time.time()
+        query_duration = (query_end - query_start) * 1000  # 밀리초로 변환
+        print(f"✅ [DB 쿼리 + JOIN] 완료 - {datetime.now().strftime('%H:%M:%S.%f')[:-3]} (소요: {query_duration:.2f}ms)")
+        print(f"📊 조회된 증거 파일 수: {len(results)}")
+        print(f"🚀 성능 개선: 1번의 쿼리로 모든 데이터 조회 (기존 N+1 문제 해결)")
 
-        # 응답 데이터 구성
+        # 응답 데이터 구성 시작
+        mapping_start = time.time()
+        print(f"⏱️  [응답 데이터 구성] 시작 - {datetime.now().strftime('%H:%M:%S.%f')[:-3]}")
+
         evidence_list = []
-        for evidence in evidences:
-            # 연결된 모든 사건 ID 가져오기
-            case_mappings = db.query(models.CaseEvidenceMapping).filter(
-                models.CaseEvidenceMapping.evidence_id == evidence.id
-            ).all()
-            linked_case_ids = [mapping.case_id for mapping in case_mappings]
+        for idx, (evidence, linked_case_ids) in enumerate(results):
+            # None 값 필터링 (연결된 사건이 없는 경우)
+            case_ids = [cid for cid in (linked_case_ids or []) if cid is not None]
+
+            if idx < 5:
+                print(f"   └─ 증거 #{idx+1} (id={evidence.id}): 연결된 사건 {len(case_ids)}개")
 
             evidence_list.append({
                 "evidence_id": evidence.id,
@@ -452,11 +479,29 @@ async def get_evidence_list(
                 "file_size": evidence.size if evidence.size else 0,
                 "file_path": evidence.file_path,
                 "starred": evidence.starred if evidence.starred is not None else False,
-                "linked_case_ids": linked_case_ids,  # 연결된 사건 ID 배열
+                "linked_case_ids": case_ids,  # 연결된 사건 ID 배열
                 "category_id": evidence.category_id,
                 "created_at": evidence.created_at.isoformat() if evidence.created_at else None,
                 "uploader_id": evidence.uploader_id
             })
+
+        mapping_end = time.time()
+        mapping_duration = (mapping_end - mapping_start) * 1000
+        print(f"✅ [응답 데이터 구성] 완료 - {datetime.now().strftime('%H:%M:%S.%f')[:-3]} (소요: {mapping_duration:.2f}ms)")
+
+        # 전체 완료
+        end_time = time.time()
+        total_duration = (end_time - start_time) * 1000
+        end_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+
+        print(f"\n{'='*80}")
+        print(f"🎉 [증거 목록 조회] 완료 - {end_datetime}")
+        print(f"📊 총 소요 시간: {total_duration:.2f}ms ({total_duration/1000:.3f}초)")
+        print(f"   ├─ DB 쿼리 (JOIN): {query_duration:.2f}ms ({query_duration/total_duration*100:.1f}%)")
+        print(f"   └─ 응답 구성: {mapping_duration:.2f}ms ({mapping_duration/total_duration*100:.1f}%)")
+        print(f"📦 반환 데이터: {len(evidence_list)}개 파일")
+        print(f"✨ 최적화: N+1 문제 해결 (기존 {len(evidence_list)+1}번 쿼리 → 1번 쿼리)")
+        print(f"{'='*80}\n")
 
         return {
             "total": len(evidence_list),
@@ -464,7 +509,11 @@ async def get_evidence_list(
         }
 
     except Exception as e:
-        print(f"❌ 증거 목록 조회 실패: {str(e)}")
+        error_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        print(f"\n{'='*80}")
+        print(f"❌ [증거 목록 조회] 실패 - {error_time}")
+        print(f"❌ 에러: {str(e)}")
+        print(f"{'='*80}\n")
         raise HTTPException(status_code=500, detail=f"목록 조회 실패: {str(e)}")
 
 @router.post("/{evidence_id}/link-case/{case_id}")
