@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
   type CaseData,
@@ -129,7 +129,7 @@ export function CaseDetailPage({
   const [similarCasesLoading, setSimilarCasesLoading] = useState(false);
 
   // 유사 판례 검색 (overviewData 기반, 캐시 사용)
-  const fetchSimilarCases = async () => {
+  const fetchSimilarCases = useCallback(async () => {
     const caseId = caseData.id;
 
     // 1. 캐시에 있으면 캐시된 결과 사용
@@ -171,10 +171,10 @@ export function CaseDetailPage({
     } finally {
       setSimilarCasesLoading(false);
     }
-  };
+  }, [caseData.id, overviewData.summary, overviewData.facts, overviewData.claims, getSimilarCases, cacheSimilarCases]);
 
   // 타임라인 데이터 가져오기
-  const fetchTimeline = async () => {
+  const fetchTimeline = useCallback(async () => {
     setTimelineLoading(true);
     try {
       const response = await fetch(`http://localhost:8000/api/v1/timeline/${caseData.id}`);
@@ -189,7 +189,7 @@ export function CaseDetailPage({
     } finally {
       setTimelineLoading(false);
     }
-  };
+  }, [caseData.id]);
 
   // 타임라인 생성 (샘플 데이터)
   const generateTimeline = async () => {
@@ -232,7 +232,7 @@ export function CaseDetailPage({
   useEffect(() => {
     fetchSimilarCases();
     fetchTimeline();
-  }, [caseData.id]);
+  }, [fetchSimilarCases, fetchTimeline]);
 
   // 날짜 포맷 (20200515 → 2020.05.15)
   const formatJudgmentDate = (dateStr: string) => {
