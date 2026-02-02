@@ -1,4 +1,4 @@
-from app.models.tiemline import TimeLine
+from app.models.timeline import TimeLine
 
 
 class Case:

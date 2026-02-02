@@ -4,7 +4,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from app.services.timeline_service import TimeLineService
 from app.models.case import Case
-from app.models.tiemline import TimeLine
+from app.models.timeline import TimeLine
 from tool.database import SessionLocal
 
 router = APIRouter(prefix="/timeline", tags=["timeline"])

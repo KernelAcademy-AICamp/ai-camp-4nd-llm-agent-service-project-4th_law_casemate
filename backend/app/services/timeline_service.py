@@ -2,7 +2,7 @@ import json
 import re
 from typing import List, Optional
 from app.models.case import Case
-from app.models.tiemline import TimeLine
+from app.models.timeline import TimeLine
 from app.models.evidence import Evidence
 from app.prompts.timeline_prompt import create_timeline_prompt
 
