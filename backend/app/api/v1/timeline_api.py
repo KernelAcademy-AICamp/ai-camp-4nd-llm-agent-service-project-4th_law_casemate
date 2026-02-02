@@ -3,7 +3,6 @@ from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from app.services.timeline_service import TimeLineService
-from app.models.case import Case
 from app.models.timeline import TimeLine
 from tool.database import SessionLocal
 
@@ -51,24 +50,28 @@ class TimelineResponse(BaseModel):
 @router.get("/{case_id}", response_model=List[TimelineResponse])
 async def get_timelines(case_id: str, db: Session = Depends(get_db)):
     """
-    사건의 타임라인 목록 조회
+    사건의 타임라인 목록 조회 (자동 생성 포함)
+
+    Process:
+    1. 타임라인이 이미 존재하면 바로 반환
+    2. 타임라인이 없으면 자동 생성 후 반환
 
     Args:
-        case_id: 사건 ID (문자열 "CASE-001" 형식)
+        case_id: 사건 ID (문자열 "CASE-001" 형식 또는 숫자)
         db: 데이터베이스 세션
 
     Returns:
         타임라인 목록 (시간순 정렬)
     """
     try:
-        # case_id가 "CASE-002" 형식이면 숫자만 추출 (임시 처리)
-        # 실제 DB의 case_id는 integer이므로
+        # case_id 파싱
         if isinstance(case_id, str) and case_id.startswith("CASE-"):
             numeric_case_id = int(case_id.split("-")[1])
         else:
             numeric_case_id = int(case_id)
 
-        timelines = db.query(TimeLine).filter(
+        # Step 1: 기존 타임라인 확인
+        existing_timelines = db.query(TimeLine).filter(
             TimeLine.case_id == numeric_case_id
         ).order_by(
             TimeLine.date.asc(),
@@ -76,15 +79,35 @@ async def get_timelines(case_id: str, db: Session = Depends(get_db)):
             TimeLine.order_index.asc()
         ).all()
 
-        # case_id를 문자열 형식으로 변환하여 반환
+        # Step 2: 타임라인이 이미 존재하면 바로 반환
+        if existing_timelines:
+            result = []
+            for timeline in existing_timelines:
+                tl_dict = timeline.to_dict()
+                tl_dict["case_id"] = f"CASE-{tl_dict['case_id']:03d}"
+                result.append(tl_dict)
+            return result
+
+        # Step 3: 타임라인이 없으면 자동 생성
+        print(f"[Timeline GET] 타임라인 없음 - 자동 생성 시작: case_id={numeric_case_id}")
+
+        timeline_service = TimeLineService(db=db, case_id=numeric_case_id)
+        generated_timelines = await timeline_service.generate_timeline_auto()
+
+        # Step 4: 생성된 타임라인을 응답 형식으로 변환
         result = []
-        for timeline in timelines:
+        for timeline in generated_timelines:
             tl_dict = timeline.to_dict()
-            tl_dict["case_id"] = f"CASE-{tl_dict['case_id']:03d}"  # 2 -> "CASE-002"
+            tl_dict["case_id"] = f"CASE-{tl_dict['case_id']:03d}"
             result.append(tl_dict)
 
+        print(f"[Timeline GET] 자동 생성 완료: {len(result)}개")
         return result
+
+    except HTTPException:
+        raise
     except Exception as e:
+        print(f"[Timeline GET] 에러: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -215,94 +238,63 @@ async def delete_timeline(timeline_id: int, db: Session = Depends(get_db)):
 @router.post("/{case_id}/generate", response_model=List[TimelineResponse])
 async def generate_timeline(
     case_id: str,
-    use_llm: bool = False,
-    firm_id: Optional[int] = None,
+    force: bool = True,
     db: Session = Depends(get_db)
 ):
     """
-    AI를 사용하여 타임라인 자동 생성
+    타임라인 강제 재생성
+
+    기존 타임라인을 삭제하고 새로 생성합니다.
+    GET 엔드포인트는 자동 생성하므로, 이 엔드포인트는 "재생성"이 필요할 때 사용합니다.
 
     Args:
-        case_id: 사건 ID
-        use_llm: LLM 사용 여부 (기본값: False, 샘플 데이터 사용)
-        firm_id: 소속 법무법인/사무실 ID (옵션)
+        case_id: 사건 ID (문자열 "CASE-001" 형식 또는 숫자)
+        force: 기존 타임라인 삭제 여부 (기본값: True)
         db: 데이터베이스 세션
 
     Returns:
         생성된 타임라인 목록
     """
-    print(f"\n[Timeline Generate API] 시작")
-    print(f"[Timeline Generate API] case_id: {case_id}")
-    print(f"[Timeline Generate API] use_llm: {use_llm}")
-    print(f"[Timeline Generate API] firm_id: {firm_id}")
+    print(f"\n[Timeline Generate API] 재생성 시작: case_id={case_id}, force={force}")
 
     try:
-        # case_id 변환
+        # case_id 파싱
         if isinstance(case_id, str) and case_id.startswith("CASE-"):
             numeric_case_id = int(case_id.split("-")[1])
         else:
             numeric_case_id = int(case_id)
 
-        print(f"[Timeline Generate API] numeric_case_id: {numeric_case_id}")
+        # Step 1: 기존 타임라인 삭제 (force=True인 경우)
+        if force:
+            deleted_count = db.query(TimeLine).filter(
+                TimeLine.case_id == numeric_case_id
+            ).delete()
+            db.commit()
+            print(f"[Timeline Generate API] 기존 타임라인 삭제: {deleted_count}개")
 
-        # TODO: 실제로는 DB에서 Case 정보와 증거 목록을 가져와야 함
-        # case = db.query(Case).filter(Case.id == numeric_case_id).first()
-        # evidences = db.query(Evidence).filter(Evidence.case_id == numeric_case_id).all()
+        # Step 2: 새 타임라인 생성
+        print(f"[Timeline Generate API] TimeLineService 초기화")
+        timeline_service = TimeLineService(db=db, case_id=numeric_case_id)
 
-        # 임시: 샘플 데이터 생성
-        print(f"[Timeline Generate API] Case 객체 생성 중...")
-        case = Case()
-        print(f"[Timeline Generate API] Case 객체 생성 완료: {case}")
+        print(f"[Timeline Generate API] 타임라인 생성 실행")
+        generated_timelines = await timeline_service.generate_timeline_auto()
 
-        print(f"[Timeline Generate API] TimeLineService 초기화 중...")
-        timeline_service = TimeLineService(case, use_llm=use_llm)
-        print(f"[Timeline Generate API] TimeLineService 초기화 완료")
+        print(f"[Timeline Generate API] 생성 완료: {len(generated_timelines)}개")
 
-        print(f"[Timeline Generate API] 타임라인 생성 실행 중...")
-        timelines = timeline_service.execute()
-        print(f"[Timeline Generate API] 생성된 타임라인 개수: {len(timelines)}")
-
-        # DB에 저장
-        print(f"[Timeline Generate API] DB 저장 시작...")
-        saved_timelines = []
-        for i, tl in enumerate(timelines):
-            print(f"[Timeline Generate API] 타임라인 {i+1} 저장 중: {tl.title}")
-            timeline = TimeLine(
-                case_id=numeric_case_id,
-                firm_id=firm_id,
-                date=tl.date,
-                time=tl.time,
-                title=tl.title,
-                description=tl.description,
-                type=tl.type,
-                actor=tl.actor,
-                order_index=len(saved_timelines)
-            )
-            db.add(timeline)
-            saved_timelines.append(timeline)
-
-        print(f"[Timeline Generate API] DB commit 중...")
-        db.commit()
-        print(f"[Timeline Generate API] DB commit 완료")
-
-        # 저장된 타임라인 반환
-        print(f"[Timeline Generate API] 타임라인 refresh 중...")
-        for timeline in saved_timelines:
-            db.refresh(timeline)
-
+        # Step 3: 응답 형식으로 변환
         result = []
-        for timeline in saved_timelines:
+        for timeline in generated_timelines:
             tl_dict = timeline.to_dict()
             tl_dict["case_id"] = f"CASE-{tl_dict['case_id']:03d}"
             result.append(tl_dict)
 
-        print(f"[Timeline Generate API] 반환할 타임라인 개수: {len(result)}")
         print(f"[Timeline Generate API] 완료\n")
-
         return result
+
+    except HTTPException:
+        raise
     except Exception as e:
-        print(f"[Timeline Generate API] 에러 발생: {type(e).__name__}")
-        print(f"[Timeline Generate API] 에러 메시지: {str(e)}")
+        print(f"[Timeline Generate API] 에러: {type(e).__name__} - {str(e)}")
         import traceback
         print(f"[Timeline Generate API] 트레이스백:\n{traceback.format_exc()}")
         db.rollback()
