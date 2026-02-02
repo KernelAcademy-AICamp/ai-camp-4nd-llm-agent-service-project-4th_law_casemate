@@ -6,7 +6,6 @@ import {
   type CaseData,
   type EvidenceData,
   type PrecedentData,
-  sampleEvidenceByDate,
 } from "@/lib/sample-data";
 import { useSearch, type SimilarCaseResult } from "@/contexts/search-context";
 import { Loader2 } from "lucide-react";
@@ -156,7 +155,9 @@ export function CaseDetailPage({
   const [originalDescription, setOriginalDescription] = useState("");
   const [isSaving, setIsSaving] = useState(false);
 
-  const allEvidence = Object.values(sampleEvidenceByDate).flat();
+  // 증거 파일 상태 (API에서 가져옴)
+  const [allEvidence, setAllEvidence] = useState<EvidenceData[]>([]);
+  const [evidenceLoading, setEvidenceLoading] = useState(false);
 
   // 유사 판례 상태
   const [similarCases, setSimilarCases] = useState<SimilarCaseResult[]>([]);
@@ -270,6 +271,61 @@ export function CaseDetailPage({
 
     fetchCase();
   }, [id, propCaseData]);
+
+  // 증거 파일 목록 가져오기
+  useEffect(() => {
+    if (!caseData?.id) return;
+
+    const fetchEvidences = async () => {
+      setEvidenceLoading(true);
+      try {
+        const token = localStorage.getItem('access_token');
+        if (!token) return;
+
+        const response = await fetch(
+          `http://localhost:8000/api/v1/evidence/list?case_id=${caseData.id}`,
+          {
+            headers: {
+              'Authorization': `Bearer ${token}`
+            }
+          }
+        );
+
+        if (response.ok) {
+          const data = await response.json();
+
+          // API 응답을 EvidenceData 형식으로 변환
+          const evidenceList: EvidenceData[] = data.files.map((file: any) => ({
+            id: String(file.evidence_id),
+            name: file.file_name,
+            type: file.file_type || '문서',
+            status: '제출완료',
+            date: file.created_at ? new Date(file.created_at).toISOString().split('T')[0] : '',
+            time: file.created_at ? new Date(file.created_at).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }) : '',
+            category: '증거',
+            aiSummary: '',
+            images: [],
+          }));
+
+          setAllEvidence(evidenceList);
+
+          // 사건 데이터에 증거 개수 업데이트
+          if (caseData) {
+            setCaseData({
+              ...caseData,
+              evidenceCount: evidenceList.length
+            });
+          }
+        }
+      } catch (error) {
+        console.error('증거 파일 조회 실패:', error);
+      } finally {
+        setEvidenceLoading(false);
+      }
+    };
+
+    fetchEvidences();
+  }, [caseData?.id]);
 
   // AI 분석 결과 저장 (summary, facts, claims)
   const saveSummary = async () => {

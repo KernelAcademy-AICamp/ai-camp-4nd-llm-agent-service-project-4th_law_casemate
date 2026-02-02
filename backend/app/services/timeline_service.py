@@ -157,9 +157,9 @@ class TimeLineService:
             TimeLine 객체 리스트
         """
         timelines = []
-        for i, item in enumerate(data, 1):
+        for item in data:
             timeline = TimeLine()
-            timeline.id = str(i)
+            # ID는 DB에서 자동 생성 (get_time_id() 함수)
             timeline.date = item.get("date", "미상")
             timeline.time = item.get("time", "00:00")
             timeline.title = item.get("title", "제목 없음")
@@ -256,7 +256,7 @@ class TimeLineService:
 
         for data in sample_data:
             timeline = TimeLine()
-            timeline.id = data["id"]
+            # ID는 DB에서 자동 생성 (get_time_id() 함수)
             timeline.date = data["date"]
             timeline.time = data["time"]
             timeline.title = data["title"]

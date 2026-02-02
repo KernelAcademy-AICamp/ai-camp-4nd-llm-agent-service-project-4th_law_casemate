@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey
+from sqlalchemy import Column, BigInteger, Integer, String, Text, DateTime, ForeignKey, text
 from sqlalchemy.sql import func
 from tool.database import Base
 
@@ -7,9 +7,9 @@ class TimeLine(Base):
     """타임라인 테이블 모델"""
     __tablename__ = "timelines"
 
-    id = Column(Integer, primary_key=True, index=True)
-    case_id = Column(Integer, ForeignKey('cases.id', ondelete='CASCADE'), nullable=False)
-    firm_id = Column(Integer, ForeignKey('law_firms.id', ondelete='SET NULL'), nullable=True)  # 소속 법무법인/사무실 ID
+    id = Column(BigInteger, primary_key=True, index=True, autoincrement=False, server_default=text('get_time_id()'))  # DB DEFAULT로 시간 기반 ID 생성
+    case_id = Column(BigInteger, ForeignKey('cases.id', ondelete='CASCADE'), nullable=False)
+    firm_id = Column(BigInteger, ForeignKey('law_firms.id', ondelete='SET NULL'), nullable=True)  # 소속 법무법인/사무실 ID
 
     # 날짜/시간 정보
     date = Column(String(20), nullable=False)  # YYYY-MM-DD 또는 "미상"
