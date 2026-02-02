@@ -4,6 +4,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from app.services.timeline_service import TimeLineService
 from app.models.timeline import TimeLine
+from app.models.evidence import Evidence
 from tool.database import SessionLocal
 
 router = APIRouter(prefix="/timeline", tags=["timeline"])
@@ -18,6 +19,35 @@ def get_db():
         db.close()
 
 
+def format_timeline_with_evidence(timeline: TimeLine, db: Session) -> dict:
+    """
+    타임라인을 응답 형식으로 변환하고 증거 정보 포함
+
+    Args:
+        timeline: TimeLine 객체
+        db: 데이터베이스 세션
+
+    Returns:
+        타임라인 딕셔너리 (증거 정보 포함)
+    """
+    tl_dict = timeline.to_dict()
+    tl_dict["case_id"] = f"CASE-{tl_dict['case_id']:03d}"
+
+    # 증거 정보 가져오기
+    if timeline.evidence_id:
+        evidence = db.query(Evidence).filter(Evidence.id == timeline.evidence_id).first()
+        if evidence:
+            tl_dict["evidence"] = {
+                "id": str(evidence.id),
+                "file_name": evidence.file_name,
+                "file_url": evidence.file_url,
+                "doc_type": evidence.doc_type,
+                "content": evidence.content[:200] + "..." if evidence.content and len(evidence.content) > 200 else evidence.content
+            }
+
+    return tl_dict
+
+
 class TimelineRequest(BaseModel):
     """타임라인 생성/수정 요청"""
     date: str
@@ -28,6 +58,16 @@ class TimelineRequest(BaseModel):
     actor: Optional[str] = ""
     order_index: Optional[int] = 0
     firm_id: Optional[int] = None  # 소속 법무법인/사무실 ID
+    evidence_id: Optional[int] = None  # 연관된 증거 ID
+
+
+class EvidenceInfo(BaseModel):
+    """증거 정보 (타임라인에 포함)"""
+    id: str
+    file_name: str
+    file_url: str
+    doc_type: Optional[str] = None
+    content: Optional[str] = None
 
 
 class TimelineResponse(BaseModel):
@@ -35,6 +75,7 @@ class TimelineResponse(BaseModel):
     id: str
     case_id: str
     firm_id: Optional[int] = None
+    evidence_id: Optional[str] = None
     date: str
     time: str
     title: str
@@ -42,6 +83,7 @@ class TimelineResponse(BaseModel):
     type: str
     actor: str
     order_index: int
+    evidence: Optional[EvidenceInfo] = None  # 연관된 증거 정보
 
     class Config:
         from_attributes = True
@@ -79,13 +121,11 @@ async def get_timelines(case_id: str, db: Session = Depends(get_db)):
             TimeLine.order_index.asc()
         ).all()
 
-        # Step 2: 타임라인이 이미 존재하면 바로 반환
+        # Step 2: 타임라인이 이미 존재하면 바로 반환 (증거 정보 포함)
         if existing_timelines:
             result = []
             for timeline in existing_timelines:
-                tl_dict = timeline.to_dict()
-                tl_dict["case_id"] = f"CASE-{tl_dict['case_id']:03d}"
-                result.append(tl_dict)
+                result.append(format_timeline_with_evidence(timeline, db))
             return result
 
         # Step 3: 타임라인이 없으면 자동 생성
@@ -94,12 +134,10 @@ async def get_timelines(case_id: str, db: Session = Depends(get_db)):
         timeline_service = TimeLineService(db=db, case_id=numeric_case_id)
         generated_timelines = await timeline_service.generate_timeline_auto()
 
-        # Step 4: 생성된 타임라인을 응답 형식으로 변환
+        # Step 4: 생성된 타임라인을 응답 형식으로 변환 (증거 정보 포함)
         result = []
         for timeline in generated_timelines:
-            tl_dict = timeline.to_dict()
-            tl_dict["case_id"] = f"CASE-{tl_dict['case_id']:03d}"
-            result.append(tl_dict)
+            result.append(format_timeline_with_evidence(timeline, db))
 
         print(f"[Timeline GET] 자동 생성 완료: {len(result)}개")
         return result
@@ -139,6 +177,7 @@ async def create_timeline(
         timeline = TimeLine(
             case_id=numeric_case_id,
             firm_id=request.firm_id,
+            evidence_id=request.evidence_id,
             date=request.date,
             time=request.time,
             title=request.title,
@@ -152,9 +191,7 @@ async def create_timeline(
         db.commit()
         db.refresh(timeline)
 
-        result = timeline.to_dict()
-        result["case_id"] = f"CASE-{result['case_id']:03d}"
-        return result
+        return format_timeline_with_evidence(timeline, db)
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
@@ -185,6 +222,7 @@ async def update_timeline(
 
         # 업데이트
         timeline.firm_id = request.firm_id
+        timeline.evidence_id = request.evidence_id
         timeline.date = request.date
         timeline.time = request.time
         timeline.title = request.title
@@ -196,9 +234,7 @@ async def update_timeline(
         db.commit()
         db.refresh(timeline)
 
-        result = timeline.to_dict()
-        result["case_id"] = f"CASE-{result['case_id']:03d}"
-        return result
+        return format_timeline_with_evidence(timeline, db)
     except HTTPException:
         raise
     except Exception as e:
@@ -281,12 +317,10 @@ async def generate_timeline(
 
         print(f"[Timeline Generate API] 생성 완료: {len(generated_timelines)}개")
 
-        # Step 3: 응답 형식으로 변환
+        # Step 3: 응답 형식으로 변환 (증거 정보 포함)
         result = []
         for timeline in generated_timelines:
-            tl_dict = timeline.to_dict()
-            tl_dict["case_id"] = f"CASE-{tl_dict['case_id']:03d}"
-            result.append(tl_dict)
+            result.append(format_timeline_with_evidence(timeline, db))
 
         print(f"[Timeline Generate API] 완료\n")
         return result

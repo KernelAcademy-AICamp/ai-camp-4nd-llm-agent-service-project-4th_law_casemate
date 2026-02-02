@@ -10,6 +10,7 @@ class TimeLine(Base):
     id = Column(BigInteger, primary_key=True, index=True, autoincrement=False, server_default=text('get_time_id()'))  # DB DEFAULT로 시간 기반 ID 생성
     case_id = Column(BigInteger, ForeignKey('cases.id', ondelete='CASCADE'), nullable=False)
     firm_id = Column(BigInteger, ForeignKey('law_firms.id', ondelete='SET NULL'), nullable=True)  # 소속 법무법인/사무실 ID
+    evidence_id = Column(BigInteger, ForeignKey('evidences.id', ondelete='SET NULL'), nullable=True)  # 연관된 증거 ID
 
     # 날짜/시간 정보
     date = Column(String(20), nullable=False)  # YYYY-MM-DD 또는 "미상"
@@ -34,6 +35,7 @@ class TimeLine(Base):
             "id": str(self.id),
             "case_id": self.case_id,
             "firm_id": self.firm_id,
+            "evidence_id": str(self.evidence_id) if self.evidence_id else None,
             "date": self.date,
             "time": self.time,
             "title": self.title,

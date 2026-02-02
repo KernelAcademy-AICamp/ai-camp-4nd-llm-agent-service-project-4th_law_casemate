@@ -8,7 +8,7 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 # DB 모델들 (반드시 evidence.py에서 import!)
-from app.models.evidence import Case, Evidence, CaseSummary
+from app.models.evidence import Case, Evidence, CaseSummary, CaseEvidenceMapping
 from app.models.timeline import TimeLine
 from app.prompts.timeline_prompt import create_timeline_prompt
 
@@ -58,8 +58,8 @@ class TimeLineService:
         logger.info(f"[Timeline Auto-Gen] 시작: case_id={self.case_id}")
 
         # 1. DB에서 데이터 조회
-        case, evidences, case_summary = self._fetch_case_and_evidences()
-        logger.info(f"[Timeline Auto-Gen] 데이터 조회 완료: evidences={len(evidences)}개")
+        case, evidences, case_summary, evidence_mappings = self._fetch_case_and_evidences()
+        logger.info(f"[Timeline Auto-Gen] 데이터 조회 완료: evidences={len(evidences)}개, mappings={len(evidence_mappings)}개")
 
         # 2. Case Summary에서 데이터 추출 (또는 fallback)
         if case_summary:
@@ -75,7 +75,7 @@ class TimeLineService:
             logger.warning(f"[Timeline Auto-Gen] Case Summary 캐시 미스 - fallback 사용")
 
         # 3. LLM으로 타임라인 생성
-        timeline_data = await self._generate_with_llm(summary, facts, claims, evidences)
+        timeline_data = await self._generate_with_llm(summary, facts, claims, evidences, evidence_mappings)
 
         if not timeline_data:
             logger.warning(f"[Timeline Auto-Gen] LLM 응답 파싱 실패 - 샘플 타임라인 사용")
@@ -84,8 +84,8 @@ class TimeLineService:
 
         logger.info(f"[Timeline Auto-Gen] 타임라인 생성 완료: {len(timeline_data)}개 이벤트")
 
-        # 4. DB에 저장
-        saved_timelines = self._save_timelines_to_db(timeline_data, firm_id=case.law_firm_id)
+        # 4. DB에 저장 (증거 연결 포함)
+        saved_timelines = self._save_timelines_to_db(timeline_data, firm_id=case.law_firm_id, evidences=evidences)
         logger.info(f"[Timeline Auto-Gen] DB 저장 완료: {len(saved_timelines)}개")
 
         return saved_timelines
@@ -95,7 +95,7 @@ class TimeLineService:
         DB에서 case 데이터와 evidence 목록 조회
 
         Returns:
-            tuple: (case: Case, evidences: List[Evidence], case_summary: CaseSummary | None)
+            tuple: (case: Case, evidences: List[Evidence], case_summary: CaseSummary | None, evidence_mappings: dict)
 
         Raises:
             HTTPException: 사건을 찾을 수 없을 때
@@ -120,15 +120,30 @@ class TimeLineService:
             CaseSummary.case_id == self.case_id
         ).first()
 
-        return case, evidences, case_summary
+        # CaseEvidenceMapping 조회 (증거 날짜와 설명 정보)
+        mappings = self.db.query(CaseEvidenceMapping).filter(
+            CaseEvidenceMapping.case_id == self.case_id
+        ).all()
 
-    def _save_timelines_to_db(self, timeline_data: List[dict], firm_id: int = None) -> List[TimeLine]:
+        # evidence_id를 키로 하는 매핑 딕셔너리 생성
+        evidence_mappings = {
+            mapping.evidence_id: {
+                "evidence_date": mapping.evidence_date,
+                "description": mapping.description
+            }
+            for mapping in mappings
+        }
+
+        return case, evidences, case_summary, evidence_mappings
+
+    def _save_timelines_to_db(self, timeline_data: List[dict], firm_id: int = None, evidences: List[Evidence] = None) -> List[TimeLine]:
         """
         타임라인 데이터를 DB에 저장
 
         Args:
             timeline_data: LLM이 반환한 타임라인 딕셔너리 리스트
             firm_id: 법무법인 ID (선택)
+            evidences: 증거 목록 (증거 링크용)
 
         Returns:
             List[TimeLine]: 저장된 TimeLine 객체 리스트
@@ -136,9 +151,27 @@ class TimeLineService:
         saved_timelines = []
 
         for idx, item in enumerate(timeline_data):
+            # 증거 연결 시도
+            evidence_id = None
+            if item.get("type") == "증거" and evidences:
+                # actor 필드에서 증거 파일명 추출 시도
+                actor = item.get("actor", "")
+                for evidence in evidences:
+                    # 파일명이 actor에 포함되어 있는지 확인
+                    if evidence.file_name and evidence.file_name in actor:
+                        evidence_id = evidence.id
+                        logger.info(f"[Timeline Save] 증거 연결: {evidence.file_name} (ID: {evidence_id})")
+                        break
+                    # 또는 타이틀에 파일명이 포함되어 있는지 확인
+                    elif evidence.file_name and evidence.file_name in item.get("title", ""):
+                        evidence_id = evidence.id
+                        logger.info(f"[Timeline Save] 증거 연결 (제목 기반): {evidence.file_name} (ID: {evidence_id})")
+                        break
+
             timeline = TimeLine(
                 case_id=self.case_id,
                 firm_id=firm_id,
+                evidence_id=evidence_id,
                 date=item.get("date", "미상"),
                 time=item.get("time", "00:00"),
                 title=item.get("title", "제목 없음"),
@@ -164,7 +197,8 @@ class TimeLineService:
         summary: str,
         facts: str,
         claims: str,
-        evidences: List[Evidence]
+        evidences: List[Evidence],
+        evidence_mappings: dict
     ) -> List[dict]:
         """
         LLM을 사용하여 타임라인 자동 생성
@@ -174,6 +208,7 @@ class TimeLineService:
             facts: 사실관계
             claims: 청구 내용
             evidences: 증거 목록
+            evidence_mappings: 증거 ID별 매핑 정보 (날짜, 설명)
 
         Returns:
             List[dict]: 타임라인 데이터 리스트
@@ -182,7 +217,7 @@ class TimeLineService:
             HTTPException: OpenAI API 실패 시
         """
         # 증거 목록을 텍스트로 변환
-        evidence_text = self._format_evidences(evidences)
+        evidence_text = self._format_evidences(evidences, evidence_mappings)
 
         # LLM 프롬프트 생성
         prompt = create_timeline_prompt(
@@ -230,12 +265,13 @@ class TimeLineService:
                 detail=f"타임라인 생성 서비스에 일시적인 문제가 발생했습니다. 잠시 후 다시 시도해주세요."
             )
 
-    def _format_evidences(self, evidences: Optional[List[Evidence]]) -> str:
+    def _format_evidences(self, evidences: Optional[List[Evidence]], evidence_mappings: dict = None) -> str:
         """
         증거 목록을 텍스트로 포맷팅
 
         Args:
             evidences: 증거 목록
+            evidence_mappings: 증거 ID별 매핑 정보 (날짜, 설명)
 
         Returns:
             str: 포맷팅된 증거 목록 텍스트
@@ -256,6 +292,18 @@ class TimeLineService:
             # 문서 유형 명시
             if evidence.doc_type:
                 line += f"\n문서 유형: {evidence.doc_type}"
+
+            # CaseEvidenceMapping 정보 추가
+            if evidence_mappings and evidence.id in evidence_mappings:
+                mapping = evidence_mappings[evidence.id]
+
+                # 증거 발생일
+                if mapping.get("evidence_date"):
+                    line += f"\n증거 발생일: {mapping['evidence_date']}"
+
+                # 증거 설명 (사건 맥락)
+                if mapping.get("description"):
+                    line += f"\n증거 설명: {mapping['description']}"
 
             # 등록일
             if evidence.created_at:
