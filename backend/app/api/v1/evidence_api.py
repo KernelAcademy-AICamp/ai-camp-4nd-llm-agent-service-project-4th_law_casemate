@@ -109,8 +109,35 @@ async def upload_file(
         db.commit()
         db.refresh(new_evidence)
 
-        # 참고: 자동 파일 처리(STT/OCR/VLM)는 제거됨
-        # 수동 버튼 클릭 시 별도 엔드포인트에서 처리 예정
+        # 자동 텍스트 추출 (STT/OCR/VLM)
+        print(f"🤖 텍스트 추출 시작: evidence_id={new_evidence.id}")
+        try:
+            # 파일 포인터를 처음으로 이동
+            await file.seek(0)
+
+            # EvidenceProcessor를 사용하여 텍스트 추출
+            processor = EvidenceProcessor()
+            result = await processor.process(file, detail="high")
+
+            if result.get("success"):
+                extracted_text = result.get("text", "")
+                doc_type = result.get("doc_type")
+
+                # DB에 추출된 텍스트와 문서 유형 저장
+                new_evidence.content = extracted_text
+                if doc_type:
+                    new_evidence.doc_type = doc_type
+
+                db.commit()
+                db.refresh(new_evidence)
+
+                print(f"✅ 텍스트 추출 완료: {len(extracted_text)}자, doc_type={doc_type}")
+                print(f"📝 추출 방법: {result.get('method')}, 비용 추정: {result.get('cost_estimate')}")
+            else:
+                print(f"⚠️ 텍스트 추출 실패: {result.get('error')}")
+        except Exception as extract_error:
+            # 텍스트 추출 실패해도 업로드는 성공으로 처리
+            print(f"⚠️ 텍스트 추출 중 오류 (업로드는 성공): {str(extract_error)}")
 
         return {
             "message": "업로드 성공",
@@ -118,7 +145,9 @@ async def upload_file(
             "file_name": file.filename,
             "url": signed_url,
             "case_id": new_evidence.case_id,
-            "category_id": new_evidence.category_id
+            "category_id": new_evidence.category_id,
+            "content_extracted": bool(new_evidence.content),
+            "doc_type": new_evidence.doc_type
         }
 
     except Exception as e:
