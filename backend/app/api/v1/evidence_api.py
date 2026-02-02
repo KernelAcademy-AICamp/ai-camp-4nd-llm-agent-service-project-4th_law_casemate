@@ -109,81 +109,8 @@ async def upload_file(
         db.commit()
         db.refresh(new_evidence)
 
-        # 6. 증거 파일 처리 (AUDIO, PDF, IMAGE)
-        try:
-            print(f"🔍 파일 처리 시작: {file.filename}")
-
-            # 파일 내용으로 새 UploadFile 객체 생성
-            from io import BytesIO
-            from fastapi import UploadFile
-
-            file_for_processing = BytesIO(file_content)
-            upload_file = UploadFile(
-                file=file_for_processing,
-                filename=file.filename,
-                headers={"content-type": file.content_type}
-            )
-
-            # EvidenceProcessor로 파일 처리
-            processor = EvidenceProcessor()
-            result = await processor.process(upload_file, detail="high")
-
-            # 처리 결과 로그 출력
-            if result.get("success"):
-                print(f"✅ 파일 처리 완료 (evidence_id={new_evidence.id})")
-                print(f"📋 타입: {result.get('type')}, 방법: {result.get('method')}")
-                print(f"💰 비용 추정: {result.get('cost_estimate')}")
-
-                if result.get("text"):
-                    text = result["text"]
-                    print(f"📝 추출된 텍스트: {text[:200]}..." if len(text) > 200 else f"📝 추출된 텍스트: {text}")
-                    print(f"📊 총 글자 수: {result.get('char_count')}자")
-
-                    # OCR/STT 결과를 DB에 저장
-                    try:
-                        # 1. 텍스트 저장
-                        new_evidence.content = text
-
-                        # 2. 문서 유형 분류 (Vision API 사용 시에만)
-                        # IMAGE + Vision API 사용 시 → doc_type 포함
-                        # 그 외 (AUDIO, PDF, 로컬 OCR) → doc_type NULL
-                        method = result.get("method", "")
-                        if result.get("type") == "IMAGE" and method.startswith("openai-vision"):
-                            # Vision API가 doc_type을 이미 반환한 경우
-                            doc_type = result.get("doc_type", None)
-                            new_evidence.doc_type = doc_type
-                            print(f"📋 Vision API에서 문서 유형 추출: {doc_type}")
-                        else:
-                            # 로컬 OCR, PDF, AUDIO → doc_type 비움
-                            new_evidence.doc_type = None
-                            print(f"📋 문서 유형: 미분류 (Vision API 미사용)")
-
-                        # 3. DB 업데이트
-                        db.commit()
-                        doc_type_str = new_evidence.doc_type if new_evidence.doc_type else "미분류"
-                        print(f"💾 OCR 결과 저장 완료: content={len(text)}자, doc_type={doc_type_str}")
-
-                    except Exception as classify_error:
-                        print(f"⚠️ 문서 분류/저장 실패: {str(classify_error)}")
-                        # 분류 실패해도 텍스트는 저장
-                        new_evidence.content = text
-                        new_evidence.doc_type = None
-                        db.commit()
-
-                # PDF 세부 정보
-                if result.get("type") == "PDF":
-                    print(f"📄 총 페이지: {result.get('total_pages')}")
-                    if result.get("text_pages"):
-                        print(f"📝 텍스트 페이지: {result.get('text_pages')}")
-                    if result.get("image_pages"):
-                        print(f"🖼️ 이미지 페이지: {result.get('image_pages')}")
-            else:
-                print(f"⚠️ 파일 처리 실패 (evidence_id={new_evidence.id})")
-                print(f"❌ 에러: {result.get('error')}")
-
-        except Exception as processing_error:
-            print(f"⚠️ 파일 처리 실패 (업로드는 성공): {str(processing_error)}")
-            # 처리 실패해도 업로드는 성공으로 처리
+        # 참고: 자동 파일 처리(STT/OCR/VLM)는 제거됨
+        # 수동 버튼 클릭 시 별도 엔드포인트에서 처리 예정
 
         return {
             "message": "업로드 성공",
@@ -555,6 +482,82 @@ async def link_evidence_to_case(
         new_mapping = models.CaseEvidenceMapping(
             evidence_id=evidence_id,
             case_id=case_id
+        )
+        db.add(new_mapping)
+        db.commit()
+        db.refresh(new_mapping)
+
+        print(f"✅ 증거-사건 연결 완료: mapping_id={new_mapping.id}")
+
+        return {
+            "message": "연결 성공",
+            "mapping_id": new_mapping.id,
+            "evidence_id": evidence_id,
+            "case_id": case_id
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        print(f"❌ 증거-사건 연결 실패: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"연결 실패: {str(e)}")
+
+@router.post("/{evidence_id}/link-case-with-details/{case_id}")
+async def link_evidence_to_case_with_details(
+    evidence_id: int,
+    case_id: int,
+    evidence_date: str | None = None,
+    description: str | None = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    증거를 사건에 연결 (날짜 및 설명 포함)
+
+    - evidence_id: 증거 ID
+    - case_id: 사건 ID
+    - evidence_date: (선택) 증거 발생일
+    - description: (선택) 증거 설명
+    - 같은 law_firm_id 사용자만 연결 가능
+    """
+    print(f"🔗 증거-사건 연결 (상세): evidence_id={evidence_id}, case_id={case_id}, date={evidence_date}, desc={description}")
+
+    try:
+        # 1. 증거 조회 및 권한 확인
+        evidence = db.query(models.Evidence).filter(models.Evidence.id == evidence_id).first()
+        if not evidence:
+            raise HTTPException(status_code=404, detail="증거를 찾을 수 없습니다")
+
+        if evidence.law_firm_id != current_user.firm_id:
+            raise HTTPException(status_code=403, detail="해당 증거에 접근할 권한이 없습니다")
+
+        # 2. 이미 연결되어 있는지 확인
+        existing_mapping = db.query(models.CaseEvidenceMapping).filter(
+            models.CaseEvidenceMapping.evidence_id == evidence_id,
+            models.CaseEvidenceMapping.case_id == case_id
+        ).first()
+
+        if existing_mapping:
+            # 이미 존재하면 날짜와 설명 업데이트
+            existing_mapping.evidence_date = evidence_date
+            existing_mapping.description = description
+            db.commit()
+            db.refresh(existing_mapping)
+            print(f"✅ 기존 매핑 업데이트: mapping_id={existing_mapping.id}")
+            return {
+                "message": "기존 연결 정보 업데이트",
+                "mapping_id": existing_mapping.id,
+                "evidence_id": evidence_id,
+                "case_id": case_id
+            }
+
+        # 3. 새 매핑 생성
+        new_mapping = models.CaseEvidenceMapping(
+            evidence_id=evidence_id,
+            case_id=case_id,
+            evidence_date=evidence_date,
+            description=description
         )
         db.add(new_mapping)
         db.commit()
