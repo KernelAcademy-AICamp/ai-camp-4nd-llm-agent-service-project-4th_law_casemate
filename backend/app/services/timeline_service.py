@@ -253,15 +253,17 @@ class TimeLineService:
         for i, evidence in enumerate(evidences_with_content, 1):
             line = f"**증거 {i}: {evidence.file_name}**"
 
+            # 문서 유형 명시
             if evidence.doc_type:
-                line += f" ({evidence.doc_type})"
+                line += f"\n문서 유형: {evidence.doc_type}"
+
+            # 등록일
+            if evidence.created_at:
+                line += f"\n등록일: {evidence.created_at.strftime('%Y-%m-%d %H:%M')}"
 
             # 전체 content 포함 (LLM이 필요한 만큼 사용)
             if evidence.content:
-                line += f"\n내용:\n{evidence.content}"
-
-            if evidence.created_at:
-                line += f"\n등록일: {evidence.created_at.strftime('%Y-%m-%d %H:%M')}"
+                line += f"\n\n내용:\n{evidence.content}"
 
             evidence_lines.append(line)
 
