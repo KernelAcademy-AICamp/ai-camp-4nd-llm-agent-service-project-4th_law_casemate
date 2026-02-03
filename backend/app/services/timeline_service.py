@@ -55,7 +55,7 @@ class TimeLineService:
         Raises:
             HTTPException: 사건을 찾을 수 없거나 OpenAI API 실패 시
         """
-        logger.info(f"[Timeline Auto-Gen] 시작: case_id={self.case_id}")
+        logger.info(f"[Timeline Generation] 시작: case_id={self.case_id}")
 
         # 0. 중복 생성 방지: 타임라인이 이미 존재하는지 다시 확인
         existing_timelines = self.db.query(TimeLine).filter(
@@ -63,26 +63,26 @@ class TimeLineService:
         ).all()
 
         if existing_timelines:
-            print(f"[Timeline Auto-Gen] ⚠️  이미 존재함 (중복 생성 방지): {len(existing_timelines)}개")
-            logger.info(f"[Timeline Auto-Gen] 이미 존재함 (중복 생성 방지): {len(existing_timelines)}개")
+            print(f"[Timeline Generation] ⚠️  이미 존재함 (중복 생성 방지): {len(existing_timelines)}개")
+            logger.info(f"[Timeline Generation] 이미 존재함 (중복 생성 방지): {len(existing_timelines)}개")
             return existing_timelines
 
         # 1. DB에서 데이터 조회
         case, evidences, case_summary, evidence_mappings = self._fetch_case_and_evidences()
-        logger.info(f"[Timeline Auto-Gen] 데이터 조회 완료: evidences={len(evidences)}개, mappings={len(evidence_mappings)}개")
+        logger.info(f"[Timeline Generation] 데이터 조회 완료: evidences={len(evidences)}개, mappings={len(evidence_mappings)}개")
 
         # 2. Case Summary에서 데이터 추출 (또는 fallback)
         if case_summary:
             summary = case_summary.summary or case.title or "사건 요약 없음"
             facts = case_summary.facts or case.description or "사실관계 없음"
             claims = case_summary.claims or "청구내용 없음"
-            logger.info(f"[Timeline Auto-Gen] Case Summary 캐시 히트")
+            logger.info(f"[Timeline Generation] Case Summary 캐시 히트")
         else:
             # Fallback
             summary = case.title or "사건 요약 없음"
             facts = case.description or "사실관계 없음"
             claims = "청구내용 없음"
-            logger.warning(f"[Timeline Auto-Gen] Case Summary 캐시 미스 - fallback 사용")
+            logger.warning(f"[Timeline Generation] Case Summary 캐시 미스 - fallback 사용")
 
         # 3. LLM으로 타임라인 생성 (의뢰인 정보 포함)
         timeline_data = await self._generate_with_llm(
@@ -92,15 +92,17 @@ class TimeLineService:
         )
 
         if not timeline_data:
-            logger.warning(f"[Timeline Auto-Gen] LLM 응답 파싱 실패 - 샘플 타임라인 사용")
-            # Fallback: 샘플 타임라인 사용
-            timeline_data = self._get_sample_timeline_data()
+            logger.error(f"[Timeline Generation] LLM 응답 파싱 실패 - 타임라인 생성 불가")
+            raise HTTPException(
+                status_code=500,
+                detail="타임라인 생성에 실패했습니다. LLM 응답을 파싱할 수 없습니다."
+            )
 
-        logger.info(f"[Timeline Auto-Gen] 타임라인 생성 완료: {len(timeline_data)}개 이벤트")
+        logger.info(f"[Timeline Generation] 타임라인 생성 완료: {len(timeline_data)}개 이벤트")
 
         # 4. DB에 저장 (증거 연결 포함)
         saved_timelines = self._save_timelines_to_db(timeline_data, firm_id=case.law_firm_id, evidences=evidences)
-        logger.info(f"[Timeline Auto-Gen] DB 저장 완료: {len(saved_timelines)}개")
+        logger.info(f"[Timeline Generation] DB 저장 완료: {len(saved_timelines)}개")
 
         return saved_timelines
 
@@ -402,76 +404,3 @@ class TimeLineService:
             logger.debug(f"[Parse] 응답 내용 (처음 500자): {llm_response[:500]}")
             return []
 
-    def _get_sample_timeline_data(self) -> List[dict]:
-        """
-        샘플 타임라인 데이터 반환 (fallback용)
-
-        Returns:
-            List[dict]: 샘플 타임라인 데이터
-        """
-        return [
-            {
-                "date": "2025-11-15",
-                "time": "09:30",
-                "title": "단톡방 첫 비방 발언",
-                "description": "피고소인 박OO가 34명 단체 카카오톡 채팅방에서 의뢰인에 대해 '업무능력이 없다'는 발언을 최초로 함. [쟁점] 명예훼손죄의 '사실 적시' 요건 충족 여부",
-                "type": "상대방",
-                "actor": "박OO (피고소인)",
-            },
-            {
-                "date": "2025-11-15",
-                "time": "14:32",
-                "title": "단톡방 대화 캡처 확보",
-                "description": "의뢰인이 명예훼손 발언이 담긴 카카오톡 대화를 캡처하여 증거로 확보",
-                "type": "증거",
-                "actor": "캡처 이미지",
-            },
-            {
-                "date": "2025-11-20",
-                "time": "10:15",
-                "title": "횡령 허위사실 유포",
-                "description": "피고소인이 '회사 돈을 횡령했다'는 허위사실을 단톡방에 유포. [쟁점] 허위사실 유포에 따른 명예훼손죄 성립 여부",
-                "type": "상대방",
-                "actor": "박OO (피고소인)",
-            },
-            {
-                "date": "2025-11-25",
-                "time": "11:00",
-                "title": "의뢰인 해명 시도",
-                "description": "의뢰인 김OO가 단톡방에서 허위사실에 대해 해명을 시도하였으나 추가 비방을 받음",
-                "type": "의뢰인",
-                "actor": "김OO (의뢰인)",
-            },
-            {
-                "date": "2025-12-01",
-                "time": "15:20",
-                "title": "회식 자리 녹취 확보",
-                "description": "회식 자리에서 피고소인의 추가 모욕 발언이 녹취됨. '사기꾼' 발언 포함",
-                "type": "증거",
-                "actor": "음성 녹취",
-            },
-            {
-                "date": "2025-12-01",
-                "time": "19:30",
-                "title": "공개적 모욕 발언",
-                "description": "피고소인이 회식 자리(15명 참석)에서 의뢰인을 '사기꾼'이라고 공개적으로 모욕. [쟁점] 모욕죄의 '공연성' 요건 충족 여부",
-                "type": "상대방",
-                "actor": "박OO (피고소인)",
-            },
-            {
-                "date": "2025-12-10",
-                "time": "10:00",
-                "title": "목격자 진술 확보",
-                "description": "의뢰인이 동료 2명으로부터 피고소인의 발언을 목격했다는 진술서를 확보",
-                "type": "증거",
-                "actor": "진술서",
-            },
-            {
-                "date": "2026-01-05",
-                "time": "14:00",
-                "title": "법률 상담 진행",
-                "description": "의뢰인이 명예훼손 피해에 대한 법률 상담을 진행하고 사건 수임 결정",
-                "type": "의뢰인",
-                "actor": "김OO (의뢰인)",
-            }
-        ]
