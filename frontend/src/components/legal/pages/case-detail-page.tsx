@@ -1371,10 +1371,18 @@ export function CaseDetailPage({
               </div>
             </CardHeader>
             <CardContent className="p-0">
-              <RelationshipEditor
-                clientName={caseData.client}
-                opponentName={caseData.opponent}
-              />
+              {caseData?.id ? (
+                <RelationshipEditor
+                  caseId={String(caseData.id)}
+                />
+              ) : (
+                <div className="flex items-center justify-center h-[600px] text-muted-foreground">
+                  <div className="text-center">
+                    <Loader2 className="h-12 w-12 mx-auto mb-3 animate-spin" />
+                    <p className="text-sm">사건 정보를 불러오는 중...</p>
+                  </div>
+                </div>
+              )}
             </CardContent>
           </Card>
         </TabsContent>

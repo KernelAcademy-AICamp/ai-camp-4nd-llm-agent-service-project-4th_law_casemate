@@ -371,21 +371,28 @@ class RelationshipService:
         person_id_map = {}  # name -> id 매핑
         saved_persons = []
 
-        for person_data in relationship_data["persons"]:
+        # 자동 좌표 분산 (3열 그리드)
+        for index, person_data in enumerate(relationship_data["persons"]):
+            # 3열 그리드 형태로 배치 (300px 간격)
+            col = index % 3
+            row = index // 3
+            auto_x = 150 + (col * 250)  # 150, 400, 650
+            auto_y = 150 + (row * 180)  # 150, 330, 510, ...
+
             person = CasePerson(
                 case_id=self.case_id,
                 firm_id=firm_id,
                 name=person_data["name"],
                 role=person_data["role"],
                 description=person_data.get("description", ""),
-                position_x=0,  # 프론트엔드에서 설정
-                position_y=0   # 프론트엔드에서 설정
+                position_x=auto_x,
+                position_y=auto_y
             )
             self.db.add(person)
             self.db.flush()  # ID 생성
             person_id_map[person_data["name"]] = person.id
             saved_persons.append(person)
-            logger.info(f"[Relationship Save] 인물 저장: {person.name} (ID: {person.id})")
+            logger.info(f"[Relationship Save] 인물 저장: {person.name} (ID: {person.id}, 좌표: {auto_x}, {auto_y})")
 
         # 관계 저장
         saved_relationships = []

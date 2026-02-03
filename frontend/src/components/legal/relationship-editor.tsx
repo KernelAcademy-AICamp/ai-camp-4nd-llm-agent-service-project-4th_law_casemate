@@ -61,8 +61,7 @@ export interface RelationshipEdge {
 }
 
 interface RelationshipEditorProps {
-  clientName?: string;
-  opponentName?: string;
+  caseId: string;
 }
 
 const roleConfig: Record<
@@ -102,58 +101,118 @@ const roleConfig: Record<
 };
 
 export function RelationshipEditor({
-  clientName = "김OO",
-  opponentName = "박OO",
+  caseId,
 }: RelationshipEditorProps) {
-  // Initial nodes based on case data
-  const [nodes, setNodes] = useState<PersonNode[]>([
-    { id: "1", name: clientName, role: "피해자", x: 150, y: 200 },
-    { id: "2", name: opponentName, role: "가해자", x: 550, y: 200 },
-    { id: "3", name: "이OO", role: "증인", x: 350, y: 100 },
-    { id: "4", name: "정OO", role: "동료", x: 350, y: 320 },
-    { id: "5", name: "미확인 상사", role: "미확인", x: 550, y: 380 },
-  ]);
+  // State
+  const [nodes, setNodes] = useState<PersonNode[]>([]);
+  const [edges, setEdges] = useState<RelationshipEdge[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  const [edges, setEdges] = useState<RelationshipEdge[]>([
-    {
-      id: "e1",
-      sourceId: "2",
-      targetId: "1",
-      label: "명예훼손",
-      memo: "단톡방 비방 발언",
-      directed: true,
-    },
-    {
-      id: "e2",
-      sourceId: "3",
-      targetId: "1",
-      label: "목격",
-      memo: "회식 자리 목격자",
-      directed: true,
-    },
-    {
-      id: "e3",
-      sourceId: "4",
-      targetId: "1",
-      label: "동료",
-      directed: false,
-    },
-    {
-      id: "e4",
-      sourceId: "4",
-      targetId: "2",
-      label: "동료",
-      directed: false,
-    },
-    {
-      id: "e5",
-      sourceId: "5",
-      targetId: "2",
-      label: "상사 관계",
-      memo: "지시자 가능성 조사 필요",
-      directed: true,
-    },
-  ]);
+  // Load relationship data from API
+  useEffect(() => {
+    const loadRelationships = async () => {
+      try {
+        setLoading(true);
+        setError(null);
+
+        console.log("[RelationshipEditor] Loading relationships for caseId:", caseId);
+
+        const response = await fetch(
+          `http://localhost:8000/api/v1/relationships/${caseId}`
+        );
+
+        console.log("[RelationshipEditor] Response status:", response.status);
+
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({}));
+          throw new Error(errorData.detail || "관계도를 불러오는데 실패했습니다");
+        }
+
+        const data = await response.json();
+        console.log("[RelationshipEditor] Received data:", data);
+
+        // Validate response data
+        if (!data || !Array.isArray(data.persons) || !Array.isArray(data.relationships)) {
+          throw new Error("잘못된 응답 형식입니다");
+        }
+
+        // Valid role mapping
+        const validRoles: PersonRole[] = ["피해자", "가해자", "증인", "동료", "미확인"];
+        const normalizeRole = (role: string): PersonRole => {
+          if (validRoles.includes(role as PersonRole)) {
+            return role as PersonRole;
+          }
+          // Map common alternative roles
+          const roleMap: Record<string, PersonRole> = {
+            "원고": "피해자",
+            "피고": "가해자",
+            "피고소인": "가해자",
+            "상사": "동료",
+            "관련자": "미확인",
+          };
+          return roleMap[role] || "미확인";
+        };
+
+        // Convert backend format to frontend format with validation
+        const convertedNodes: PersonNode[] = data.persons
+          .filter((person: any) => person && person.id && person.name && person.role)
+          .map((person: any, index: number) => ({
+            id: String(person.id),
+            name: person.name,
+            role: normalizeRole(person.role),
+            x: person.position_x ?? (300 + (index % 3) * 200),
+            y: person.position_y ?? (200 + Math.floor(index / 3) * 150),
+          }));
+
+        // Create a set of valid person IDs
+        const validPersonIds = new Set(convertedNodes.map(node => node.id));
+
+        const convertedEdges: RelationshipEdge[] = data.relationships
+          .filter((rel: any) => {
+            if (!rel || !rel.id || !rel.source_person_id || !rel.target_person_id) {
+              console.warn("[RelationshipEditor] Invalid relationship:", rel);
+              return false;
+            }
+            // Check if source and target persons exist
+            const sourceId = String(rel.source_person_id);
+            const targetId = String(rel.target_person_id);
+            if (!validPersonIds.has(sourceId) || !validPersonIds.has(targetId)) {
+              console.warn("[RelationshipEditor] Relationship references non-existent person:", rel);
+              return false;
+            }
+            return true;
+          })
+          .map((rel: any) => ({
+            id: String(rel.id),
+            sourceId: String(rel.source_person_id),
+            targetId: String(rel.target_person_id),
+            label: rel.label || rel.relationship_type || "관계",
+            memo: rel.memo || "",
+            directed: rel.is_directed ?? true,
+          }));
+
+        console.log("[RelationshipEditor] Converted nodes:", convertedNodes.length);
+        console.log("[RelationshipEditor] Converted edges:", convertedEdges.length);
+
+        setNodes(convertedNodes);
+        setEdges(convertedEdges);
+      } catch (err) {
+        console.error("[RelationshipEditor] Failed to load relationships:", err);
+        setError(err instanceof Error ? err.message : "알 수 없는 오류가 발생했습니다");
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    if (caseId) {
+      loadRelationships();
+    } else {
+      console.warn("[RelationshipEditor] No caseId provided");
+      setLoading(false);
+      setError("사건 ID가 필요합니다");
+    }
+  }, [caseId]);
 
   // State for interactions
   const [draggingNode, setDraggingNode] = useState<string | null>(null);
@@ -227,7 +286,7 @@ export function RelationshipEditor({
 
   // Handle mouse up
   const handleMouseUp = useCallback(
-    (e: React.MouseEvent) => {
+    async (e: React.MouseEvent) => {
       if (connecting && canvasRef.current) {
         const rect = canvasRef.current.getBoundingClientRect();
         const x = e.clientX - rect.left;
@@ -271,10 +330,30 @@ export function RelationshipEditor({
         }
       }
 
+      // Save node position to DB after dragging
+      if (draggingNode) {
+        const draggedNode = nodes.find((n) => n.id === draggingNode);
+        if (draggedNode) {
+          try {
+            const response = await fetch(
+              `http://localhost:8000/api/v1/relationships/${caseId}/persons/${draggingNode}/position?position_x=${Math.round(draggedNode.x)}&position_y=${Math.round(draggedNode.y)}`,
+              { method: "PATCH" }
+            );
+            if (!response.ok) {
+              console.error("[RelationshipEditor] Failed to save position");
+            } else {
+              console.log(`[RelationshipEditor] Position saved: ${draggedNode.name} (${Math.round(draggedNode.x)}, ${Math.round(draggedNode.y)})`);
+            }
+          } catch (err) {
+            console.error("[RelationshipEditor] Error saving position:", err);
+          }
+        }
+      }
+
       setDraggingNode(null);
       setConnecting(null);
     },
-    [connecting, nodes, edges]
+    [connecting, nodes, edges, draggingNode, caseId]
   );
 
   // Start dragging node
@@ -667,8 +746,37 @@ export function RelationshipEditor({
           );
         })}
 
+        {/* Loading state */}
+        {loading && (
+          <div className="absolute inset-0 flex items-center justify-center text-muted-foreground bg-background/80">
+            <div className="text-center">
+              <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto mb-3" />
+              <p className="text-sm">관계도를 불러오는 중...</p>
+              <p className="text-xs mt-1 text-muted-foreground/60">AI가 인물 관계를 분석하고 있습니다</p>
+            </div>
+          </div>
+        )}
+
+        {/* Error state */}
+        {error && !loading && (
+          <div className="absolute inset-0 flex items-center justify-center text-muted-foreground">
+            <div className="text-center">
+              <AlertCircle className="h-12 w-12 mx-auto mb-3 text-destructive opacity-50" />
+              <p className="text-sm text-destructive">{error}</p>
+              <Button
+                size="sm"
+                variant="outline"
+                className="mt-3 bg-transparent"
+                onClick={() => window.location.reload()}
+              >
+                다시 시도
+              </Button>
+            </div>
+          </div>
+        )}
+
         {/* Empty state hint */}
-        {nodes.length === 0 && (
+        {!loading && !error && nodes.length === 0 && (
           <div className="absolute inset-0 flex items-center justify-center text-muted-foreground">
             <div className="text-center">
               <Users className="h-12 w-12 mx-auto mb-3 opacity-30" />

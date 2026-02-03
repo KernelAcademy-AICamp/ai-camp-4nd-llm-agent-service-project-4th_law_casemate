@@ -48,10 +48,10 @@ async def get_relationships(
     db: Session = Depends(get_db)
 ):
     """
-    관계도 조회
+    관계도 조회 (자동 생성 포함)
 
     - case_id에 해당하는 관계도 반환
-    - 관계도가 없으면 404 반환
+    - 관계도가 없으면 자동으로 생성 후 반환
 
     Returns:
         {
@@ -72,11 +72,25 @@ async def get_relationships(
     service = RelationshipService(db=db, case_id=numeric_case_id)
 
     try:
+        # 기존 관계도 조회 시도
         relationship_data = service.get_relationship()
         print(f"[Relationship API] 조회 성공: {len(relationship_data['persons'])}명, {len(relationship_data['relationships'])}개 관계")
+        print(f"[Relationship API] 응답 데이터: {relationship_data}")
         return relationship_data
-    except HTTPException:
-        raise
+    except HTTPException as e:
+        # 404 (관계도 없음)인 경우 자동 생성
+        if e.status_code == 404:
+            print(f"[Relationship API] 관계도 없음 - 자동 생성 시작")
+            try:
+                relationship_data = await service.generate_relationship()
+                print(f"[Relationship API] 자동 생성 성공: {len(relationship_data['persons'])}명, {len(relationship_data['relationships'])}개 관계")
+                return relationship_data
+            except Exception as gen_error:
+                print(f"[Relationship API] 자동 생성 실패: {str(gen_error)}")
+                raise HTTPException(status_code=500, detail=f"관계도 자동 생성 실패: {str(gen_error)}")
+        else:
+            # 다른 에러는 그대로 전달
+            raise
     except Exception as e:
         print(f"[Relationship API] 조회 실패: {str(e)}")
         raise HTTPException(status_code=500, detail=f"관계도 조회 실패: {str(e)}")
