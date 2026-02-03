@@ -39,9 +39,16 @@ interface RelatedLawResult {
   score: number;
 }
 
+interface ExtractedLegalIssues {
+  keywords: string[];
+  laws: string[];
+  search_query: string;
+}
+
 interface RelatedLawsResponse {
   total: number;
   results: RelatedLawResult[];
+  extracted?: ExtractedLegalIssues;
 }
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -163,6 +170,7 @@ export function CaseDetailPage({
   // 관련 법령 상태
   const [relatedLaws, setRelatedLaws] = useState<RelatedLawResult[]>([]);
   const [relatedLawsLoading, setRelatedLawsLoading] = useState(false);
+  const [extractedIssues, setExtractedIssues] = useState<ExtractedLegalIssues | null>(null);
 
   // 수동 추가 법령 태그 상태
   const [manualLawTags, setManualLawTags] = useState<string[]>([]);
@@ -348,7 +356,7 @@ export function CaseDetailPage({
 
       console.log("✅ AI 분석 결과 저장 완료");
       // 저장 후 관련 법령 재검색
-      fetchRelatedLaws(`${overviewData.summary} ${overviewData.facts}`);
+      fetchRelatedLaws();
     } catch (err) {
       console.error("AI 분석 결과 저장 실패:", err);
       alert("저장에 실패했습니다.");
@@ -540,24 +548,18 @@ export function CaseDetailPage({
     fetchSimilarCases();
     fetchTimeline();
   }, [fetchSimilarCases, fetchTimeline]);
-  // 관련 법령 검색 (overviewData 기반)
-  const fetchRelatedLaws = async (customQuery?: string) => {
-    const query = customQuery ?? `${overviewData.summary} ${overviewData.facts}`;
-
-    if (!query.trim()) return;
+  // 관련 법령 검색 (2단계 파이프라인: 법적 쟁점 추출 → 검색)
+  const fetchRelatedLaws = async () => {
+    if (!id) return;
 
     setRelatedLawsLoading(true);
     try {
-      const response = await fetch("/api/v1/laws/search", {
+      const response = await fetch(`/api/v1/laws/search-by-case/${id}`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-          query: query,
-          limit: 5,
-          score_threshold: 0.3,
-        }),
+        body: JSON.stringify({ limit: 8 }),
       });
 
       if (!response.ok) {
@@ -566,9 +568,15 @@ export function CaseDetailPage({
 
       const data: RelatedLawsResponse = await response.json();
       setRelatedLaws(data.results);
+
+      // 추출된 법적 쟁점 저장
+      if (data.extracted) {
+        setExtractedIssues(data.extracted);
+      }
     } catch (err) {
       console.error("관련 법령 검색 실패:", err);
       setRelatedLaws([]);
+      setExtractedIssues(null);
     } finally {
       setRelatedLawsLoading(false);
     }
@@ -584,6 +592,222 @@ export function CaseDetailPage({
   const formatJudgmentDate = (dateStr: string) => {
     if (!dateStr || dateStr.length !== 8) return dateStr || "";
     return `${dateStr.slice(0, 4)}.${dateStr.slice(4, 6)}.${dateStr.slice(6, 8)}`;
+  };
+
+  // 사실 관계 포맷팅: 배열 또는 문자열 → 불렛 + 날짜 + 말투 변환
+  const formatFacts = (facts: string | string[]) => {
+    if (!facts) return "";
+
+    // 배열이면 그대로 사용, 문자열이면 줄바꿈으로 분리
+    let items: string[] = [];
+    if (Array.isArray(facts)) {
+      items = facts;
+    } else {
+      // JSON 배열 문자열인지 확인
+      try {
+        const parsed = JSON.parse(facts);
+        if (Array.isArray(parsed)) {
+          items = parsed;
+        } else {
+          items = facts.split('\n').filter(line => line.trim());
+        }
+      } catch {
+        items = facts.split('\n').filter(line => line.trim());
+      }
+    }
+
+    // 복합 문장 분리 (1문장 = 1사실)
+    const splitCompoundSentence = (sentence: string): string[] => {
+      // "~하고,", "~하였고,", "~하며,", "또한," 등으로 분리
+      const parts = sentence.split(/(?:,\s*(?:또한|그리고)\s*|(?:하였고|했고|하고|하며|되었고|됐고|되고|되며)[,\s]+)/);
+      return parts.map(p => p.trim()).filter(p => p.length > 0);
+    };
+
+    // 모든 항목을 분리
+    const allItems: string[] = [];
+    for (const item of items) {
+      const cleaned = String(item).trim().replace(/^[•\-\*\d.]+\s*/, '').trim();
+      if (cleaned) {
+        const split = splitCompoundSentence(cleaned);
+        allItems.push(...split);
+      }
+    }
+
+    // 각 항목 처리
+    return allItems.map(item => {
+      let content = item.trim();
+      if (!content) return '';
+
+      // 말투 변환: 보고서 말투 (-임, -함, -음)
+      content = content
+        // -시켰다 계열 → -시킴
+        .replace(/시켰습니다\.?$/g, '시킴').replace(/시켰다\.?$/g, '시킴')
+        .replace(/시킨다\.?$/g, '시킴').replace(/시켰음\.?$/g, '시킴')
+        // -하였다/-했다 계열 → -함
+        .replace(/하였습니다\.?$/g, '함').replace(/했습니다\.?$/g, '함')
+        .replace(/하였다\.?$/g, '함').replace(/했다\.?$/g, '함')
+        .replace(/합니다\.?$/g, '함').replace(/한다\.?$/g, '함')
+        .replace(/하였음\.?$/g, '함').replace(/했음\.?$/g, '함')
+        // -되었다/-됐다 계열 → -됨
+        .replace(/되었습니다\.?$/g, '됨').replace(/됐습니다\.?$/g, '됨')
+        .replace(/되었다\.?$/g, '됨').replace(/됐다\.?$/g, '됨')
+        .replace(/된다\.?$/g, '됨').replace(/되었음\.?$/g, '됨')
+        // -있다 계열 → -있음
+        .replace(/있습니다\.?$/g, '있음').replace(/있다\.?$/g, '있음')
+        .replace(/있었다\.?$/g, '있었음').replace(/없다\.?$/g, '없음')
+        // -이다 계열 → -임
+        .replace(/입니다\.?$/g, '임').replace(/이다\.?$/g, '임')
+        // 기타 동사 → -ㅁ
+        .replace(/났다\.?$/g, '남').replace(/났음\.?$/g, '남')
+        .replace(/받았다\.?$/g, '받음').replace(/받다\.?$/g, '받음')
+        .replace(/주었다\.?$/g, '줌').replace(/줬다\.?$/g, '줌')
+        .replace(/왔다\.?$/g, '옴').replace(/갔다\.?$/g, '감')
+        .replace(/냈다\.?$/g, '냄').replace(/썼다\.?$/g, '씀')
+        .replace(/봤다\.?$/g, '봄').replace(/알았다\.?$/g, '앎')
+        .replace(/모았다\.?$/g, '모음').replace(/샀다\.?$/g, '삼')
+        .replace(/팔았다\.?$/g, '팖').replace(/만들었다\.?$/g, '만듦')
+        // 마지막 마침표 제거
+        .replace(/\.$/g, '');
+
+      // 한글 날짜 → [ YYYY-MM-DD ]
+      const koreanDateMatch = content.match(/^(\d{4})년\s*(\d{1,2})월\s*(\d{1,2})일[부터까지]?\s*(.*)/);
+      if (koreanDateMatch) {
+        const [, year, month, day, rest] = koreanDateMatch;
+        return `• [ ${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')} ] ${rest.trim()}`;
+      }
+
+      // [ YYYY-MM-DD ] 형식이 이미 있는 경우
+      const bracketDateMatch = content.match(/^\[\s*(\d{4})-(\d{2})-(\d{2})\s*\]\s*[,，]?\s*(.*)/);
+      if (bracketDateMatch) {
+        const [, year, month, day, rest] = bracketDateMatch;
+        return `• [ ${year}-${month}-${day} ] ${rest.replace(/^[,，\s]+/, '').trim()}`;
+      }
+
+      // 날짜 없으면 바로 불렛
+      return `• ${content}`;
+    }).filter(Boolean).join('\n');
+  };
+
+  // 청구 내용 포맷팅: 객체 또는 문자열 → • 형사 / • 민사 형태
+  const formatClaims = (claims: string | Record<string, string[]>) => {
+    if (!claims) return "";
+
+    const categories = ['형사', '민사', '행정', '가정', '가사', '기타'];
+    const result: string[] = [];
+
+    // 항목 내 • 분리 및 정리 헬퍼
+    const splitAndClean = (item: string): string[] => {
+      return String(item)
+        .split(/\s*•\s*/)
+        .map(s => s.replace(/^[-•*\d.]+\s*/, '').trim())
+        .filter(s => s.length > 0);
+    };
+
+    // 카테고리별 항목 추가 헬퍼
+    const addCategoryItems = (cat: string, items: string[]) => {
+      if (!items || items.length === 0) return;
+      const allItems: string[] = [];
+      for (const item of items) {
+        allItems.push(...splitAndClean(item));
+      }
+      if (allItems.length > 0) {
+        result.push(`• ${cat}`);
+        for (const cleanItem of allItems) {
+          result.push(`  - ${cleanItem}`);
+        }
+      }
+    };
+
+    // 1) 객체 형태 직접 처리
+    if (typeof claims === 'object' && claims !== null && !Array.isArray(claims)) {
+      for (const cat of categories) {
+        const items = (claims as Record<string, string[]>)[cat];
+        if (items && Array.isArray(items)) {
+          addCategoryItems(cat, items);
+        }
+      }
+      // 정의된 카테고리 외의 키도 처리
+      for (const key of Object.keys(claims)) {
+        if (!categories.includes(key)) {
+          const items = (claims as Record<string, string[]>)[key];
+          if (items && Array.isArray(items)) {
+            addCategoryItems(key, items);
+          }
+        }
+      }
+      if (result.length > 0) return result.join('\n');
+    }
+
+    // 2) 문자열인 경우 JSON 파싱 시도
+    if (typeof claims === 'string') {
+      const claimsStr = claims.trim();
+
+      // JSON 객체 파싱 시도
+      if (claimsStr.startsWith('{')) {
+        try {
+          const parsed = JSON.parse(claimsStr);
+          if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+            for (const cat of categories) {
+              const items = parsed[cat];
+              if (items && Array.isArray(items)) {
+                addCategoryItems(cat, items);
+              }
+            }
+            // 정의된 카테고리 외의 키도 처리
+            for (const key of Object.keys(parsed)) {
+              if (!categories.includes(key)) {
+                const items = parsed[key];
+                if (items && Array.isArray(items)) {
+                  addCategoryItems(key, items);
+                }
+              }
+            }
+            if (result.length > 0) return result.join('\n');
+          }
+        } catch {
+          // JSON 파싱 실패 - 텍스트로 처리
+        }
+      }
+
+      // 3) 텍스트 형태 처리 (fallback)
+      const cleaned = claimsStr
+        .replace(/[{}\[\]"]/g, '')
+        .replace(/\n/g, ' ')
+        .trim();
+
+      const categorized: Record<string, string[]> = {};
+      categories.forEach(c => categorized[c] = []);
+
+      // "형사:" 또는 "민사:" 패턴으로 분리
+      const parts = cleaned.split(/(?=형사\s*[:：]|민사\s*[:：]|행정\s*[:：]|가정\s*[:：]|가사\s*[:：]|기타\s*[:：])/);
+
+      for (const part of parts) {
+        const trimmed = part.trim();
+        if (!trimmed) continue;
+        const catMatch = categories.find(cat => trimmed.startsWith(cat));
+        if (catMatch) {
+          const content = trimmed.replace(new RegExp(`^${catMatch}\\s*[:：]?\\s*`), '').trim();
+          if (content) {
+            // • 또는 , 로 분리
+            const items = content.split(/\s*[•,，]\s*/).map(s => s.trim()).filter(Boolean);
+            categorized[catMatch].push(...items);
+          }
+        }
+      }
+
+      for (const cat of categories) {
+        if (categorized[cat].length > 0) {
+          result.push(`• ${cat}`);
+          for (const item of categorized[cat]) {
+            result.push(`  - ${item.replace(/^[-•*\d.]+\s*/, '').trim()}`);
+          }
+        }
+      }
+
+      return result.join('\n') || cleaned;
+    }
+
+    return String(claims);
   };
 
   const handleSaveEvent = () => {
@@ -902,7 +1126,7 @@ export function CaseDetailPage({
                     />
                   ) : (
                     <div className="p-4 bg-secondary/30 rounded-lg border border-border/60">
-                      <p className="text-sm text-muted-foreground whitespace-pre-wrap leading-relaxed">
+                      <p className="text-sm text-muted-foreground whitespace-pre-wrap leading-[1.8]">
                         {originalDescription || "원문이 입력되지 않았습니다."}
                       </p>
                     </div>
@@ -932,9 +1156,9 @@ export function CaseDetailPage({
                   </div>
 
                   {/* Editable Fields */}
-                  <div className="space-y-4">
+                  <div className="space-y-7">
                     <div className="space-y-2">
-                      <Label className="text-sm font-medium">사건 요약</Label>
+                      <Label className="text-sm font-semibold">사건 요약</Label>
                       {isEditingOverview ? (
                         <Textarea
                           value={overviewData.summary}
@@ -948,14 +1172,14 @@ export function CaseDetailPage({
                           className="text-sm"
                         />
                       ) : (
-                        <p className="text-sm text-muted-foreground leading-relaxed">
+                        <p className="text-sm text-muted-foreground leading-[1.8]">
                           {overviewData.summary}
                         </p>
                       )}
                     </div>
 
                     <div className="space-y-2">
-                      <Label className="text-sm font-medium">사실관계</Label>
+                      <Label className="text-sm font-semibold">사실 관계</Label>
                       {isEditingOverview ? (
                         <Textarea
                           value={overviewData.facts}
@@ -969,14 +1193,30 @@ export function CaseDetailPage({
                           className="text-sm"
                         />
                       ) : (
-                        <p className="text-sm text-muted-foreground leading-relaxed">
-                          {overviewData.facts}
+                        <p className="text-sm text-muted-foreground leading-[1.8] whitespace-pre-line">
+                          {formatFacts(overviewData.facts)}
                         </p>
                       )}
                     </div>
 
+                    {/* AI 분석 법적 쟁점 (항상 읽기 전용) */}
+                    {extractedIssues?.keywords && extractedIssues.keywords.length > 0 && (
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-[11px] text-gray-400 italic">AI 분석 법적 쟁점</span>
+                        {extractedIssues.keywords.map((keyword, index) => (
+                          <Badge
+                            key={`keyword-${index}`}
+                            variant="default"
+                            className="font-normal text-xs bg-primary/10 text-primary"
+                          >
+                            {keyword}
+                          </Badge>
+                        ))}
+                      </div>
+                    )}
+
                     <div className="space-y-2">
-                      <Label className="text-sm font-medium">청구 내용</Label>
+                      <Label className="text-sm font-semibold">청구 내용</Label>
                       {isEditingOverview ? (
                         <Textarea
                           value={overviewData.claims}
@@ -990,14 +1230,14 @@ export function CaseDetailPage({
                           className="text-sm"
                         />
                       ) : (
-                        <p className="text-sm text-muted-foreground leading-relaxed whitespace-pre-line">
-                          {overviewData.claims}
-                        </p>
+                        <div className="text-sm text-muted-foreground leading-[1.8] whitespace-pre-wrap">
+                          {formatClaims(overviewData.claims)}
+                        </div>
                       )}
                     </div>
 
                     <div className="space-y-2">
-                      <Label className="text-sm font-medium">적용 법률</Label>
+                      <Label className="text-sm font-semibold">적용 법률</Label>
                       {isEditingOverview ? (
                         <div className="space-y-2">
                           {/* 수동 추가된 태그 표시 */}
@@ -1037,7 +1277,7 @@ export function CaseDetailPage({
                       ) : (
                         <div className="flex flex-wrap gap-2">
                           {relatedLawsLoading ? (
-                            <span className="text-sm text-muted-foreground">검색 중...</span>
+                            <span className="text-sm text-muted-foreground">관련 법령 검색 중...</span>
                           ) : (
                             <>
                               {/* 수동 추가 태그 */}
@@ -1302,7 +1542,7 @@ export function CaseDetailPage({
                                 </h4>
 
                                 {/* Description */}
-                                <p className="text-sm text-muted-foreground leading-relaxed mb-3">
+                                <p className="text-sm text-muted-foreground leading-[1.8] mb-3">
                                   {event.description}
                                 </p>
 

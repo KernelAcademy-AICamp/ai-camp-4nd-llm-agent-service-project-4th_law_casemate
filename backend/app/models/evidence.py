@@ -91,5 +91,7 @@ class CaseSummary(Base):
     summary = Column(Text, nullable=True)  # 사건 요약
     facts = Column(Text, nullable=True)  # 사실관계
     claims = Column(Text, nullable=True)  # 청구내용
+    legal_keywords = Column(Text, nullable=True)  # 법적 쟁점 키워드 (JSON)
+    legal_laws = Column(Text, nullable=True)  # 관련 법조문 (JSON)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())

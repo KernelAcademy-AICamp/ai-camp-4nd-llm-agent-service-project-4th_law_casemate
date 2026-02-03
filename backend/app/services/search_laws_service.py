@@ -7,9 +7,14 @@ v2.0 업데이트:
 - Parent/Child 구조 기반 중복 제거
 - 동일 조문에서 최대 2개 Child만 반환
 - limit 기본값 8로 조정 (정확도/다양성 균형)
+
+v3.0 업데이트:
+- 2단계 파이프라인: 법적 쟁점 추출 → 법령 검색
+- 일상 언어 → 법률 용어 변환으로 검색 정확도 향상
 """
 
 import os
+import json
 import logging
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
@@ -17,6 +22,7 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
+from openai import OpenAI
 from dotenv import load_dotenv
 
 # 임베딩 서비스 재활용
@@ -66,6 +72,7 @@ class SearchLawsService:
             port=int(os.getenv("QDRANT_PORT", "6333"))
         )
         self.sparse_model = get_sparse_model()
+        self.openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
         # 하이브리드 컬렉션 존재 여부 확인
         self._use_hybrid = self._check_hybrid_collection()
@@ -73,6 +80,189 @@ class SearchLawsService:
             logger.info("법령 검색: 하이브리드 모드 (laws_hybrid)")
         else:
             logger.info("법령 검색: Dense-only 모드 (laws)")
+
+    # ==================== 법적 쟁점 추출 (2단계 파이프라인 1단계) ====================
+
+    def extract_legal_issues(
+        self,
+        description: str,
+        summary: Optional[str] = None,
+        facts: Optional[str] = None,
+        case_type: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        사건 내용에서 법적 쟁점과 관련 법조문을 추출
+
+        Args:
+            description: 상담 기록 원문
+            summary: AI 생성 사건 요약 (선택)
+            facts: AI 생성 사실관계 (선택)
+            case_type: 사건 유형 (민사/형사/가사 등)
+
+        Returns:
+            {
+                "keywords": ["모욕죄", "명예훼손", ...],
+                "laws": ["형법 제311조", "형법 제307조", ...],
+                "search_query": "모욕죄 명예훼손 형법 제311조 ..."
+            }
+        """
+        # 입력 텍스트 구성
+        input_parts = []
+        if description:
+            input_parts.append(f"[상담 기록 원문]\n{description}")
+        if summary:
+            input_parts.append(f"[사건 요약]\n{summary}")
+        if facts:
+            input_parts.append(f"[사실관계]\n{facts}")
+
+        input_text = "\n\n".join(input_parts)
+
+        if not input_text.strip():
+            return {"keywords": [], "laws": [], "search_query": ""}
+
+        system_prompt = """너는 법률 전문가다. 사건 내용을 분석하여 적용 가능한 법적 쟁점과 관련 법조문을 추출하라.
+
+[출력 규칙]
+1. keywords: 이 사건에 적용될 수 있는 법적 쟁점/죄명/청구원인 (3~7개)
+2. laws: 관련될 수 있는 구체적 법조문 (3~7개)
+   - 형식: "법령명 제N조" (예: "형법 제307조", "민법 제750조")
+3. 확실하지 않은 것은 제외하고, 명확히 관련된 것만 포함
+
+[주요 법령 참고]
+- 형사: 형법, 정보통신망법, 성폭력처벌법, 특정범죄가중처벌법
+- 민사: 민법, 상법, 근로기준법, 주택임대차보호법
+- 가사: 민법(가족법), 가사소송법
+
+JSON 형식으로만 출력하라:
+{"keywords": ["...", "..."], "laws": ["...", "..."]}"""
+
+        user_prompt = input_text
+        if case_type:
+            user_prompt = f"[사건 유형: {case_type}]\n\n{input_text}"
+
+        try:
+            response = self.openai_client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=0.1,
+                max_tokens=500,
+            )
+
+            result_text = response.choices[0].message.content.strip()
+
+            # JSON 파싱 (마크다운 코드블록 제거)
+            if result_text.startswith("```"):
+                result_text = result_text.split("```")[1]
+                if result_text.startswith("json"):
+                    result_text = result_text[4:]
+            result_text = result_text.strip()
+
+            result = json.loads(result_text)
+            keywords = result.get("keywords", [])
+            laws = result.get("laws", [])
+
+            # 검색 쿼리 생성 (키워드 + 법조문 결합)
+            search_query = " ".join(keywords + laws)
+
+            logger.info(f"법적 쟁점 추출 완료: keywords={keywords}, laws={laws}")
+
+            return {
+                "keywords": keywords,
+                "laws": laws,
+                "search_query": search_query,
+            }
+
+        except json.JSONDecodeError as e:
+            logger.error(f"법적 쟁점 추출 JSON 파싱 실패: {e}")
+            return {"keywords": [], "laws": [], "search_query": ""}
+        except Exception as e:
+            logger.error(f"법적 쟁점 추출 실패: {e}")
+            return {"keywords": [], "laws": [], "search_query": ""}
+
+    def search_laws_with_extraction(
+        self,
+        description: str,
+        summary: Optional[str] = None,
+        facts: Optional[str] = None,
+        case_type: Optional[str] = None,
+        limit: int = 8,
+    ) -> Dict[str, Any]:
+        """
+        2단계 파이프라인: 법적 쟁점 추출 → 법령 검색
+
+        Args:
+            description: 상담 기록 원문
+            summary: AI 생성 사건 요약
+            facts: AI 생성 사실관계
+            case_type: 사건 유형
+            limit: 반환할 최대 결과 수
+
+        Returns:
+            {
+                "total": N,
+                "results": [...],
+                "extracted": {"keywords": [...], "laws": [...], "search_query": "..."}
+            }
+        """
+        # 1단계: 법적 쟁점 추출
+        extracted = self.extract_legal_issues(
+            description=description,
+            summary=summary,
+            facts=facts,
+            case_type=case_type,
+        )
+
+        search_query = extracted.get("search_query", "")
+
+        # 추출 실패 시 폴백: 요약 + 사실관계 사용
+        if not search_query:
+            logger.warning("법적 쟁점 추출 실패, 폴백 쿼리 사용")
+            fallback_parts = []
+            if summary:
+                fallback_parts.append(summary)
+            if facts:
+                fallback_parts.append(facts)
+            search_query = " ".join(fallback_parts)
+
+        if not search_query:
+            return {"total": 0, "results": [], "extracted": extracted}
+
+        # 2단계: 법령 검색
+        search_results = self.search_laws(query=search_query, limit=limit)
+
+        # 추출 결과 포함하여 반환
+        search_results["extracted"] = extracted
+
+        return search_results
+
+    def search_laws_with_cached_extraction(
+        self,
+        keywords: List[str],
+        laws: List[str],
+        limit: int = 8,
+    ) -> Dict[str, Any]:
+        """
+        캐시된 법적 쟁점으로 법령 검색 (AI 추출 단계 생략)
+
+        Args:
+            keywords: 캐시된 법적 쟁점 키워드
+            laws: 캐시된 관련 법조문
+            limit: 반환할 최대 결과 수
+
+        Returns:
+            검색 결과 딕셔너리
+        """
+        # 검색 쿼리 생성
+        search_query = " ".join(keywords + laws)
+
+        if not search_query:
+            return {"total": 0, "results": []}
+
+        # 법령 검색
+        return self.search_laws(query=search_query, limit=limit)
 
     def _check_hybrid_collection(self) -> bool:
         """하이브리드 컬렉션이 존재하고 사용 가능한지 확인"""
