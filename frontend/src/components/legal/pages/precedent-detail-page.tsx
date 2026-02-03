@@ -99,6 +99,9 @@ export function PrecedentDetailPage({ }: PrecedentDetailPageProps) {
     const fetchCaseDetail = async () => {
       if (!id) return;
 
+      // 페이지 전환 시 에러 상태 초기화 (캐시 확인 전에 수행)
+      setError(null);
+
       // 캐시 확인
       const cached = getCachedDetail(id);
       if (cached) {
@@ -109,7 +112,6 @@ export function PrecedentDetailPage({ }: PrecedentDetailPageProps) {
       }
 
       setLoading(true);
-      setError(null);
       setSummary(null);
 
       try {
