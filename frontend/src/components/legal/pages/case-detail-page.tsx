@@ -78,15 +78,12 @@ import {
   Users,
   Calendar,
   FileText,
-  AlertTriangle,
   Clock,
   TrendingUp,
-  CheckCircle2,
   XCircle,
-  ChevronUp,
-  ChevronDown,
 } from "lucide-react";
 import { RelationshipEditor } from "@/components/legal/relationship-editor";
+import { DocumentEditor } from "@/components/legal/document-editor";
 
 interface CaseDetailPageProps {
   caseData?: CaseData;
@@ -170,8 +167,6 @@ export function CaseDetailPage({
   // 수동 추가 법령 태그 상태
   const [manualLawTags, setManualLawTags] = useState<string[]>([]);
   const [lawTagInput, setLawTagInput] = useState("");
-
-  const [bottomSectionOpen, setBottomSectionOpen] = useState(false);
 
   // API에서 사건 상세 조회
   useEffect(() => {
@@ -759,8 +754,8 @@ export function CaseDetailPage({
           <TabsTrigger value="relations" className="text-sm">
             관계도
           </TabsTrigger>
-          <TabsTrigger value="dashboard" className="text-sm">
-            대시보드
+          <TabsTrigger value="documents" className="text-sm">
+            문서작성
           </TabsTrigger>
         </TabsList>
 
@@ -1387,318 +1382,16 @@ export function CaseDetailPage({
           </Card>
         </TabsContent>
 
-        {/* ===== 대시보드 탭 (법적 리스크 분석) ===== */}
-        <TabsContent value="dashboard" className="mt-6 space-y-6">
-          {/* TOP: Risk Summary Strip */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            {/* 인과관계 */}
-            <Card className="border-border/60">
-              <CardContent className="p-4">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-sm font-medium text-muted-foreground">인과관계</span>
-                  <Badge variant="outline" className="bg-amber-50 text-amber-700 border-amber-200">
-                    <AlertTriangle className="h-3 w-3 mr-1" />
-                    주의
-                  </Badge>
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  2023년 6월~12월 증거 공백으로 인과관계 입증 취약
-                </p>
-              </CardContent>
-            </Card>
-
-            {/* 과실 */}
-            <Card className="border-border/60">
-              <CardContent className="p-4">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-sm font-medium text-muted-foreground">과실</span>
-                  <Badge variant="outline" className="bg-emerald-50 text-emerald-700 border-emerald-200">
-                    <CheckCircle2 className="h-3 w-3 mr-1" />
-                    안정
-                  </Badge>
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  상대방 고의성 입증 자료 충분 (채팅 로그 4건 확보)
-                </p>
-              </CardContent>
-            </Card>
-
-            {/* 손해 */}
-            <Card className="border-border/60">
-              <CardContent className="p-4">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-sm font-medium text-muted-foreground">손해</span>
-                  <Badge variant="outline" className="bg-red-50 text-red-700 border-red-200">
-                    <XCircle className="h-3 w-3 mr-1" />
-                    고위험
-                  </Badge>
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  정신적 피해 입증 자료 부족, 진단서 미확보
-                </p>
-              </CardContent>
-            </Card>
-          </div>
-
-          {/* MAIN: Left Heatmap + Center Matrix + Right Panel */}
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-            {/* LEFT: Time × Evidence Type Heatmap */}
-            <Card className="border-border/60 lg:col-span-4">
-              <CardHeader className="pb-3">
-                <CardTitle className="text-sm font-medium">시간 × 증거유형 히트맵</CardTitle>
-                <p className="text-xs text-muted-foreground">증거 공백 구간 식별</p>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-1">
-                  {/* Header Row */}
-                  <div className="grid grid-cols-7 gap-1 text-xs text-muted-foreground mb-2">
-                    <div className="col-span-1" />
-                    {["1월", "2월", "3월", "4월", "5월", "6월"].map((month) => (
-                      <div key={month} className="text-center text-[10px]">{month}</div>
-                    ))}
-                  </div>
-                  {/* Heatmap Rows */}
-                  {[
-                    { type: "채팅", data: [3, 2, 4, 1, 0, 0] },
-                    { type: "음성", data: [1, 0, 2, 0, 0, 0] },
-                    { type: "문서", data: [2, 1, 1, 2, 1, 0] },
-                    { type: "진술", data: [1, 1, 0, 0, 0, 0] },
-                    { type: "상대측", data: [0, 1, 1, 0, 0, 0] },
-                  ].map((row) => (
-                    <div key={row.type} className="grid grid-cols-7 gap-1 items-center">
-                      <div className="text-xs text-muted-foreground truncate">{row.type}</div>
-                      {row.data.map((value, idx) => (
-                        <div
-                          key={idx}
-                          className={`h-6 rounded-sm flex items-center justify-center text-[10px] font-medium ${value === 0
-                            ? "bg-red-100 text-red-600 border border-red-200"
-                            : value <= 1
-                              ? "bg-amber-100 text-amber-700"
-                              : value <= 2
-                                ? "bg-emerald-100 text-emerald-700"
-                                : "bg-emerald-200 text-emerald-800"
-                            }`}
-                        >
-                          {value}
-                        </div>
-                      ))}
-                    </div>
-                  ))}
-                </div>
-                <div className="mt-4 p-2 rounded bg-red-50 border border-red-100">
-                  <p className="text-xs text-red-700 font-medium">증거 공백 경고</p>
-                  <p className="text-xs text-red-600">5월~6월 전 증거유형 공백</p>
-                </div>
-              </CardContent>
-            </Card>
-
-            {/* CENTER: Issue-Evidence Matrix */}
-            <Card className="border-border/60 lg:col-span-5">
-              <CardHeader className="pb-3">
-                <CardTitle className="text-sm font-medium">쟁점-증거 매트릭스</CardTitle>
-                <p className="text-xs text-muted-foreground">핵심 쟁점별 증거 충족도</p>
-              </CardHeader>
-              <CardContent>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-xs">
-                    <thead>
-                      <tr className="border-b border-border/60">
-                        <th className="text-left py-2 pr-2 font-medium text-muted-foreground">쟁점</th>
-                        <th className="text-center py-2 px-1 font-medium text-muted-foreground">채팅</th>
-                        <th className="text-center py-2 px-1 font-medium text-muted-foreground">음성</th>
-                        <th className="text-center py-2 px-1 font-medium text-muted-foreground">문서</th>
-                        <th className="text-center py-2 px-1 font-medium text-muted-foreground">진술</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {[
-                        { issue: "명예훼손 발언", chat: "sufficient", audio: "partial", doc: "none", statement: "sufficient" },
-                        { issue: "공연성 (다수 인지)", chat: "sufficient", audio: "none", doc: "sufficient", statement: "partial" },
-                        { issue: "허위사실 적시", chat: "partial", audio: "partial", doc: "none", statement: "none" },
-                        { issue: "고의성", chat: "sufficient", audio: "sufficient", doc: "partial", statement: "sufficient" },
-                        { issue: "피해 발생", chat: "none", audio: "none", doc: "none", statement: "partial" },
-                      ].map((row) => (
-                        <tr key={row.issue} className="border-b border-border/40">
-                          <td className="py-2 pr-2 font-medium">{row.issue}</td>
-                          {[row.chat, row.audio, row.doc, row.statement].map((status, idx) => (
-                            <td key={idx} className="text-center py-2 px-1">
-                              {status === "sufficient" ? (
-                                <div className="w-6 h-6 mx-auto rounded bg-emerald-100 flex items-center justify-center">
-                                  <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
-                                </div>
-                              ) : status === "partial" ? (
-                                <div className="w-6 h-6 mx-auto rounded bg-amber-100 flex items-center justify-center">
-                                  <AlertTriangle className="h-3.5 w-3.5 text-amber-600" />
-                                </div>
-                              ) : (
-                                <div className="w-6 h-6 mx-auto rounded bg-red-100 flex items-center justify-center">
-                                  <XCircle className="h-3.5 w-3.5 text-red-500" />
-                                </div>
-                              )}
-                            </td>
-                          ))}
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-                <div className="mt-3 flex items-center gap-4 text-[10px] text-muted-foreground">
-                  <div className="flex items-center gap-1">
-                    <div className="w-3 h-3 rounded bg-emerald-100" /> 충분
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <div className="w-3 h-3 rounded bg-amber-100" /> 부분
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <div className="w-3 h-3 rounded bg-red-100" /> 미확보
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-
-            {/* RIGHT: Action Panel */}
-            <div className="lg:col-span-3 space-y-4">
-              {/* Opponent Claim Risk Alerts */}
-              <Card className="border-border/60">
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-sm font-medium flex items-center gap-2">
-                    <AlertTriangle className="h-4 w-4 text-amber-500" />
-                    상대측 주장 리스크
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-2">
-                  <div className="p-2 rounded bg-amber-50 border border-amber-100">
-                    <p className="text-xs font-medium text-amber-800">허위사실 부인 가능성</p>
-                    <p className="text-[10px] text-amber-700">"사실적시에 불과" 주장 예상</p>
-                  </div>
-                  <div className="p-2 rounded bg-red-50 border border-red-100">
-                    <p className="text-xs font-medium text-red-800">손해 인과관계 부정</p>
-                    <p className="text-[10px] text-red-700">증거 공백기간 악용 우려</p>
-                  </div>
-                </CardContent>
-              </Card>
-
-              {/* Next Actions */}
-              <Card className="border-border/60">
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-sm font-medium">필수 조치사항</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="space-y-2">
-                    {[
-                      { action: "5~6월 증거 공백 보완", priority: "high" },
-                      { action: "정신과 진단서 확보", priority: "high" },
-                      { action: "목격자 진술서 추가 확보", priority: "medium" },
-                    ].map((item, idx) => (
-                      <div key={idx} className="flex items-start gap-2">
-                        <div className={`w-1.5 h-1.5 rounded-full mt-1.5 ${item.priority === "high" ? "bg-red-500" : "bg-amber-500"
-                          }`} />
-                        <p className="text-xs">{item.action}</p>
-                      </div>
-                    ))}
-                  </div>
-                </CardContent>
-              </Card>
-
-              {/* Nearest Deadline */}
-              <Card className="border-red-200 bg-red-50/50">
-                <CardContent className="p-3">
-                  <div className="flex items-center gap-2 mb-1">
-                    <Calendar className="h-3.5 w-3.5 text-red-600" />
-                    <span className="text-xs font-medium text-red-700">최근접 기한</span>
-                  </div>
-                  <p className="text-sm font-semibold text-red-800">2026. 1. 25.</p>
-                  <p className="text-xs text-red-600">내용증명 회신 기한 (D-3)</p>
-                </CardContent>
-              </Card>
+        {/* ===== 문서작성 탭 ===== */}
+        <TabsContent value="documents" className="mt-6">
+          {caseData ? (
+            <DocumentEditor caseData={caseData} />
+          ) : (
+            <div className="flex items-center justify-center h-[600px] text-muted-foreground">
+              <Loader2 className="h-12 w-12 animate-spin" />
+              <p className="text-sm ml-3">사건 정보를 불러오는 중...</p>
             </div>
-          </div>
-
-          {/* BOTTOM: Collapsible Section */}
-          <Card className="border-border/60">
-            <CardHeader className="pb-0">
-              <button
-                type="button"
-                onClick={() => setBottomSectionOpen(!bottomSectionOpen)}
-                className="flex items-center justify-between w-full py-2"
-              >
-                <CardTitle className="text-sm font-medium">예상 판결 범위 (참고용)</CardTitle>
-                {bottomSectionOpen ? (
-                  <ChevronUp className="h-4 w-4 text-muted-foreground" />
-                ) : (
-                  <ChevronDown className="h-4 w-4 text-muted-foreground" />
-                )}
-              </button>
-            </CardHeader>
-            {bottomSectionOpen && (
-              <CardContent className="pt-4">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  {/* Fault Ratio Range Bar */}
-                  <div className="space-y-3">
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-medium">과실 비율 예상 범위</span>
-                      <span className="text-xs text-muted-foreground">유사 판례 기준</span>
-                    </div>
-                    <div className="relative h-8 bg-secondary/50 rounded-lg overflow-hidden">
-                      {/* Full bar background */}
-                      <div className="absolute inset-0 flex items-center px-2">
-                        <div className="flex-1 h-2 bg-muted rounded-full" />
-                      </div>
-                      {/* Range indicator */}
-                      <div
-                        className="absolute top-1/2 -translate-y-1/2 h-4 bg-emerald-500/80 rounded"
-                        style={{ left: "15%", width: "25%" }}
-                      />
-                      {/* Labels */}
-                      <div className="absolute inset-0 flex items-center justify-between px-2 text-[10px]">
-                        <span className="text-muted-foreground">0%</span>
-                        <span className="bg-emerald-100 text-emerald-800 px-1.5 py-0.5 rounded font-medium">
-                          15% ~ 40%
-                        </span>
-                        <span className="text-muted-foreground">100%</span>
-                      </div>
-                    </div>
-                    <p className="text-[10px] text-muted-foreground">
-                      상대방 과실: 현재 증거 기준 60~85% 예상
-                    </p>
-                  </div>
-
-                  {/* Damage Exposure Range */}
-                  <div className="space-y-3">
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-medium">손해배상 인정 범위</span>
-                      <span className="text-xs text-muted-foreground">유사 판례 기준</span>
-                    </div>
-                    <div className="relative h-8 bg-secondary/50 rounded-lg overflow-hidden">
-                      {/* Full bar background */}
-                      <div className="absolute inset-0 flex items-center px-2">
-                        <div className="flex-1 h-2 bg-muted rounded-full" />
-                      </div>
-                      {/* Range indicator */}
-                      <div
-                        className="absolute top-1/2 -translate-y-1/2 h-4 bg-blue-500/80 rounded"
-                        style={{ left: "20%", width: "40%" }}
-                      />
-                      {/* Labels */}
-                      <div className="absolute inset-0 flex items-center justify-between px-2 text-[10px]">
-                        <span className="text-muted-foreground">0원</span>
-                        <span className="bg-blue-100 text-blue-800 px-1.5 py-0.5 rounded font-medium">
-                          500만 ~ 2,000만원
-                        </span>
-                        <span className="text-muted-foreground">5천만원</span>
-                      </div>
-                    </div>
-                    <p className="text-[10px] text-muted-foreground">
-                      정신적 피해 입증 시 상향 가능, 미입증 시 하향 조정
-                    </p>
-                  </div>
-                </div>
-                <p className="text-[10px] text-muted-foreground mt-4 pt-3 border-t border-border/60">
-                  위 범위는 유사 판례를 참고한 예상치이며, 실제 판결은 재판부 판단에 따라 달라질 수 있습니다.
-                </p>
-              </CardContent>
-            )}
-          </Card>
+          )}
         </TabsContent>
       </Tabs>
 
