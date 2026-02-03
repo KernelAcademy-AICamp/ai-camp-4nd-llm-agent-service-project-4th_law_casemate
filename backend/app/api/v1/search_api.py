@@ -3,13 +3,16 @@
 판례/법령 검색 엔드포인트 제공
 """
 
+import logging
 from fastapi import APIRouter, Query, HTTPException
 from pydantic import BaseModel
 from typing import Optional
-from app.services.precedent_search_service import SearchService
+from app.services.precedent_search_service import PrecedentSearchService
 from app.services.similar_search_service import SimilarSearchService
 from app.services.precedent_summary_service import SummaryService
 from app.services.comparison_service import ComparisonService
+
+logger = logging.getLogger(__name__)
 
 
 class SummarizeRequest(BaseModel):
@@ -31,7 +34,7 @@ class CompareRequest(BaseModel):
 router = APIRouter(prefix="/search", tags=["search"])
 
 # 서비스 인스턴스
-search_service = SearchService()
+search_service = PrecedentSearchService()
 similar_search_service = SimilarSearchService()
 summary_service = SummaryService()
 comparison_service = ComparisonService()
@@ -83,11 +86,15 @@ async def get_case_detail(case_number: str):
     판례 상세 조회
 
     - **case_number**: 사건번호 (예: 대법원 2020다12345)
+    - Qdrant에 없으면 법령 API에서 실시간 조회
     """
     try:
-        result = search_service.get_case_detail(case_number=case_number)
+        # Qdrant 우선 조회, 없으면 법령 API fallback (서비스 레이어 통합)
+        result = await search_service.get_case_detail_with_fallback(case_number)
+
         if result is None:
             raise HTTPException(status_code=404, detail="판례를 찾을 수 없습니다.")
+
         return result
     except HTTPException:
         raise

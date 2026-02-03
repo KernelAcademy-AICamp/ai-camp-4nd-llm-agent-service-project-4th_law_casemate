@@ -76,7 +76,7 @@ interface PrecedentDetailPageProps { }
 export function PrecedentDetailPage({ }: PrecedentDetailPageProps) {
   const navigate = useNavigate();
   const { id } = useParams<{ id: string }>();
-  const { searchQuery } = useSearch();
+  const { searchQuery, getCaseDetail: getCachedDetail, setCaseDetail: setCachedDetail, updateCaseSummary } = useSearch();
   const location = useLocation();
   const [searchParams] = useSearchParams();
 
@@ -92,14 +92,27 @@ export function PrecedentDetailPage({ }: PrecedentDetailPageProps) {
 
   const [summary, setSummary] = useState<string | null>(null);
   const [summaryLoading, setSummaryLoading] = useState(false);
+  const [summaryError, setSummaryError] = useState(false);
 
-  // 판례 상세 조회
+  // 판례 상세 조회 (캐시 우선)
   useEffect(() => {
     const fetchCaseDetail = async () => {
       if (!id) return;
 
-      setLoading(true);
+      // 페이지 전환 시 에러 상태 초기화 (캐시 확인 전에 수행)
       setError(null);
+
+      // 캐시 확인
+      const cached = getCachedDetail(id);
+      if (cached) {
+        setCaseDetail(cached);
+        setSummary(cached.summary ?? null);
+        setLoading(false);
+        return;
+      }
+
+      setLoading(true);
+      setSummary(null);
 
       try {
         const response = await fetch(
@@ -115,6 +128,9 @@ export function PrecedentDetailPage({ }: PrecedentDetailPageProps) {
 
         const data: CaseDetail = await response.json();
         setCaseDetail(data);
+
+        // 캐시에 저장
+        setCachedDetail(data.case_number, data);
       } catch (err) {
         setError(err instanceof Error ? err.message : "오류가 발생했습니다.");
       } finally {
@@ -136,9 +152,11 @@ export function PrecedentDetailPage({ }: PrecedentDetailPageProps) {
     // 이미 요약이 있으면 다시 호출하지 않음
     if (summary) return;
 
-    const fetchSummary = async () => {
-      if (!caseDetail?.full_text) return;
+    if (!caseDetail?.full_text) return;
 
+    const abortController = new AbortController();
+
+    const fetchSummary = async () => {
       setSummaryLoading(true);
 
       try {
@@ -151,6 +169,7 @@ export function PrecedentDetailPage({ }: PrecedentDetailPageProps) {
             content: caseDetail.full_text,
             case_number: caseDetail.case_number,
           }),
+          signal: abortController.signal,
         });
 
         if (!response.ok) {
@@ -159,7 +178,16 @@ export function PrecedentDetailPage({ }: PrecedentDetailPageProps) {
 
         const data = await response.json();
         setSummary(data.summary);
+
+        // 캐시에 요약 업데이트
+        if (caseDetail.case_number) {
+          updateCaseSummary(caseDetail.case_number, data.summary);
+        }
       } catch (err) {
+        // 취소된 경우 무시
+        if (err instanceof Error && err.name === "AbortError") {
+          return;
+        }
         setSummary("요약을 불러올 수 없습니다.");
       } finally {
         setSummaryLoading(false);
@@ -167,6 +195,11 @@ export function PrecedentDetailPage({ }: PrecedentDetailPageProps) {
     };
 
     fetchSummary();
+
+    // cleanup: 페이지 나갈 때 API 호출 취소
+    return () => {
+      abortController.abort();
+    };
   }, [caseDetail?.case_number, isFromSimilarCase]);
 
   // 날짜 포맷 (20200515 → 2020.05.15)
@@ -241,7 +274,7 @@ export function PrecedentDetailPage({ }: PrecedentDetailPageProps) {
           {isNotFound ? (
             <div className="space-y-4">
               <p className="text-lg text-muted-foreground">
-                해당 판례는 아직 수집되지 않았습니다
+                해당 판례는 접근이 제한되었습니다.
               </p>
               <p className="text-sm text-muted-foreground/70">
                 사건번호: {id}

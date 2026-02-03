@@ -19,8 +19,8 @@ from qdrant_client import QdrantClient
 from qdrant_client.http import models
 from dotenv import load_dotenv
 
-# 기존 search_service의 임베딩 유틸 재활용
-from app.services.precedent_search_service import (
+# 임베딩 서비스 재활용
+from app.services.precedent_embedding_service import (
     create_dense_embedding_cached,
     get_sparse_model,
 )
