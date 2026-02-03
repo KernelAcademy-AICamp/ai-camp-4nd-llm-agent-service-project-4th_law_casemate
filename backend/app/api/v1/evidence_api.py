@@ -1,4 +1,4 @@
-from fastapi import APIRouter, UploadFile, File, Depends, HTTPException
+from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from supabase import create_client, Client
@@ -36,8 +36,72 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 router = APIRouter()
 
+
+async def process_evidence_in_background(evidence_id: int, file_content: bytes, file_name: str):
+    """
+    백그라운드에서 증거 파일 분석 (STT/VLM/OCR)
+
+    Args:
+        evidence_id: 증거 ID
+        file_content: 파일 내용 (바이트)
+        file_name: 원본 파일명
+    """
+    from tool.database import SessionLocal
+    from io import BytesIO
+
+    print(f"\n{'='*80}")
+    print(f"🤖 [백그라운드] 증거 분석 시작: evidence_id={evidence_id}")
+    print(f"{'='*80}\n")
+
+    db = SessionLocal()
+    try:
+        # 1. 메모리에서 파일 내용 사용 (다운로드 불필요!)
+        print(f"📄 [백그라운드] 파일 크기: {len(file_content)} bytes")
+        file_like = BytesIO(file_content)
+
+        # UploadFile 객체 생성 (processor.process에서 필요)
+        from fastapi import UploadFile
+        upload_file = UploadFile(filename=file_name, file=file_like)
+
+        # 3. EvidenceProcessor로 분석
+        print(f"🔍 [백그라운드] 텍스트 추출 시작...")
+        processor = EvidenceProcessor()
+        result = await processor.process(upload_file, detail="high")
+
+        if result.get("success"):
+            extracted_text = result.get("text", "")
+            doc_type = result.get("doc_type")
+
+            # 4. DB 업데이트
+            evidence = db.query(models.Evidence).filter(models.Evidence.id == evidence_id).first()
+            if evidence:
+                evidence.content = extracted_text
+                if doc_type:
+                    evidence.doc_type = doc_type
+
+                db.commit()
+
+                print(f"✅ [백그라운드] 텍스트 추출 완료!")
+                print(f"   - 추출된 텍스트: {len(extracted_text)}자")
+                print(f"   - 문서 유형: {doc_type}")
+                print(f"   - 추출 방법: {result.get('method')}")
+                print(f"   - 비용 추정: {result.get('cost_estimate')}\n")
+            else:
+                print(f"⚠️ [백그라운드] DB에서 증거를 찾을 수 없음: evidence_id={evidence_id}")
+        else:
+            print(f"⚠️ [백그라운드] 텍스트 추출 실패: {result.get('error')}\n")
+
+    except Exception as e:
+        print(f"❌ [백그라운드] 증거 분석 중 오류: {str(e)}\n")
+        import traceback
+        traceback.print_exc()
+    finally:
+        db.close()
+
+
 @router.post("/upload")
 async def upload_file(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     case_id: int | None = None,  # 선택적: 사건 ID
     category_id: int | None = None,  # 선택적: 카테고리 ID
@@ -109,81 +173,15 @@ async def upload_file(
         db.commit()
         db.refresh(new_evidence)
 
-        # 6. 증거 파일 처리 (AUDIO, PDF, IMAGE)
-        try:
-            print(f"🔍 파일 처리 시작: {file.filename}")
-
-            # 파일 내용으로 새 UploadFile 객체 생성
-            from io import BytesIO
-            from fastapi import UploadFile
-
-            file_for_processing = BytesIO(file_content)
-            upload_file = UploadFile(
-                file=file_for_processing,
-                filename=file.filename,
-                headers={"content-type": file.content_type}
-            )
-
-            # EvidenceProcessor로 파일 처리
-            processor = EvidenceProcessor()
-            result = await processor.process(upload_file, detail="high")
-
-            # 처리 결과 로그 출력
-            if result.get("success"):
-                print(f"✅ 파일 처리 완료 (evidence_id={new_evidence.id})")
-                print(f"📋 타입: {result.get('type')}, 방법: {result.get('method')}")
-                print(f"💰 비용 추정: {result.get('cost_estimate')}")
-
-                if result.get("text"):
-                    text = result["text"]
-                    print(f"📝 추출된 텍스트: {text[:200]}..." if len(text) > 200 else f"📝 추출된 텍스트: {text}")
-                    print(f"📊 총 글자 수: {result.get('char_count')}자")
-
-                    # OCR/STT 결과를 DB에 저장
-                    try:
-                        # 1. 텍스트 저장
-                        new_evidence.content = text
-
-                        # 2. 문서 유형 분류 (Vision API 사용 시에만)
-                        # IMAGE + Vision API 사용 시 → doc_type 포함
-                        # 그 외 (AUDIO, PDF, 로컬 OCR) → doc_type NULL
-                        method = result.get("method", "")
-                        if result.get("type") == "IMAGE" and method.startswith("openai-vision"):
-                            # Vision API가 doc_type을 이미 반환한 경우
-                            doc_type = result.get("doc_type", None)
-                            new_evidence.doc_type = doc_type
-                            print(f"📋 Vision API에서 문서 유형 추출: {doc_type}")
-                        else:
-                            # 로컬 OCR, PDF, AUDIO → doc_type 비움
-                            new_evidence.doc_type = None
-                            print(f"📋 문서 유형: 미분류 (Vision API 미사용)")
-
-                        # 3. DB 업데이트
-                        db.commit()
-                        doc_type_str = new_evidence.doc_type if new_evidence.doc_type else "미분류"
-                        print(f"💾 OCR 결과 저장 완료: content={len(text)}자, doc_type={doc_type_str}")
-
-                    except Exception as classify_error:
-                        print(f"⚠️ 문서 분류/저장 실패: {str(classify_error)}")
-                        # 분류 실패해도 텍스트는 저장
-                        new_evidence.content = text
-                        new_evidence.doc_type = None
-                        db.commit()
-
-                # PDF 세부 정보
-                if result.get("type") == "PDF":
-                    print(f"📄 총 페이지: {result.get('total_pages')}")
-                    if result.get("text_pages"):
-                        print(f"📝 텍스트 페이지: {result.get('text_pages')}")
-                    if result.get("image_pages"):
-                        print(f"🖼️ 이미지 페이지: {result.get('image_pages')}")
-            else:
-                print(f"⚠️ 파일 처리 실패 (evidence_id={new_evidence.id})")
-                print(f"❌ 에러: {result.get('error')}")
-
-        except Exception as processing_error:
-            print(f"⚠️ 파일 처리 실패 (업로드는 성공): {str(processing_error)}")
-            # 처리 실패해도 업로드는 성공으로 처리
+        # 백그라운드에서 텍스트 추출 (STT/OCR/VLM)
+        # 파일 내용을 직접 전달 (재다운로드 불필요!)
+        print(f"📋 백그라운드 분석 작업 등록: evidence_id={new_evidence.id}")
+        background_tasks.add_task(
+            process_evidence_in_background,
+            new_evidence.id,
+            file_content,  # 이미 메모리에 있는 파일 내용
+            file.filename
+        )
 
         return {
             "message": "업로드 성공",
@@ -191,7 +189,9 @@ async def upload_file(
             "file_name": file.filename,
             "url": signed_url,
             "case_id": new_evidence.case_id,
-            "category_id": new_evidence.category_id
+            "category_id": new_evidence.category_id,
+            "processing_status": "분석 진행 중 (백그라운드)",
+            "info": "파일 업로드가 완료되었습니다. 텍스트 추출은 백그라운드에서 진행됩니다."
         }
 
     except Exception as e:
@@ -555,6 +555,82 @@ async def link_evidence_to_case(
         new_mapping = models.CaseEvidenceMapping(
             evidence_id=evidence_id,
             case_id=case_id
+        )
+        db.add(new_mapping)
+        db.commit()
+        db.refresh(new_mapping)
+
+        print(f"✅ 증거-사건 연결 완료: mapping_id={new_mapping.id}")
+
+        return {
+            "message": "연결 성공",
+            "mapping_id": new_mapping.id,
+            "evidence_id": evidence_id,
+            "case_id": case_id
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        print(f"❌ 증거-사건 연결 실패: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"연결 실패: {str(e)}")
+
+@router.post("/{evidence_id}/link-case-with-details/{case_id}")
+async def link_evidence_to_case_with_details(
+    evidence_id: int,
+    case_id: int,
+    evidence_date: str | None = None,
+    description: str | None = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    증거를 사건에 연결 (날짜 및 설명 포함)
+
+    - evidence_id: 증거 ID
+    - case_id: 사건 ID
+    - evidence_date: (선택) 증거 발생일
+    - description: (선택) 증거 설명
+    - 같은 law_firm_id 사용자만 연결 가능
+    """
+    print(f"🔗 증거-사건 연결 (상세): evidence_id={evidence_id}, case_id={case_id}, date={evidence_date}, desc={description}")
+
+    try:
+        # 1. 증거 조회 및 권한 확인
+        evidence = db.query(models.Evidence).filter(models.Evidence.id == evidence_id).first()
+        if not evidence:
+            raise HTTPException(status_code=404, detail="증거를 찾을 수 없습니다")
+
+        if evidence.law_firm_id != current_user.firm_id:
+            raise HTTPException(status_code=403, detail="해당 증거에 접근할 권한이 없습니다")
+
+        # 2. 이미 연결되어 있는지 확인
+        existing_mapping = db.query(models.CaseEvidenceMapping).filter(
+            models.CaseEvidenceMapping.evidence_id == evidence_id,
+            models.CaseEvidenceMapping.case_id == case_id
+        ).first()
+
+        if existing_mapping:
+            # 이미 존재하면 날짜와 설명 업데이트
+            existing_mapping.evidence_date = evidence_date
+            existing_mapping.description = description
+            db.commit()
+            db.refresh(existing_mapping)
+            print(f"✅ 기존 매핑 업데이트: mapping_id={existing_mapping.id}")
+            return {
+                "message": "기존 연결 정보 업데이트",
+                "mapping_id": existing_mapping.id,
+                "evidence_id": evidence_id,
+                "case_id": case_id
+            }
+
+        # 3. 새 매핑 생성
+        new_mapping = models.CaseEvidenceMapping(
+            evidence_id=evidence_id,
+            case_id=case_id,
+            evidence_date=evidence_date,
+            description=description
         )
         db.add(new_mapping)
         db.commit()
