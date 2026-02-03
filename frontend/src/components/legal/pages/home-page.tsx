@@ -131,7 +131,7 @@ export function HomePage({ cases: propCases }: HomePageProps) {
               <div className="flex-1 min-w-0">
                 <h3 className="text-lg font-semibold">판례 검색</h3>
                 <p className="mt-1 text-sm text-muted-foreground line-clamp-2">
-                  유사 판례를 검색하고 법률 분석을 수행합니다.
+                  다양한 판례 검색과 AI 요약 분석을 제공합니다.
                 </p>
               </div>
             </div>

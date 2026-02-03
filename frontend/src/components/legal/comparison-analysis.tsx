@@ -2,7 +2,6 @@
 
 import { useState, useEffect } from "react";
 import {
-  Scale,
   CheckCircle2,
   XCircle,
   Lightbulb,
@@ -10,6 +9,7 @@ import {
   AlertTriangle,
   FileText,
   Gavel,
+  type LucideIcon,
 } from "lucide-react";
 import { useSearch, type ComparisonResult } from "@/contexts/search-context";
 
@@ -18,6 +18,16 @@ interface ComparisonAnalysisProps {
   originFacts: string;
   originClaims: string;
   targetCaseNumber: string;
+}
+
+interface SectionConfig {
+  title: string;
+  icon: LucideIcon;
+  bgColor: string;
+  iconColor: string;
+  bulletColor: string;
+  items: string[];
+  emptyMessage?: string;
 }
 
 export function ComparisonAnalysisContent({
@@ -91,11 +101,52 @@ export function ComparisonAnalysisContent({
       .map((line) => line.replace(/^[-•*]\s*/, ""));
   };
 
+  // 문장 단위로 분리 (줄바꿈 또는 마침표 기준)
+  const parseToSentences = (text: string): string[] => {
+    if (!text) return [];
+    // 먼저 줄바꿈으로 시도
+    const byNewline = text.split("\n").map(line => line.trim()).filter(line => line.length > 0);
+    if (byNewline.length > 1) return byNewline;
+    // 줄바꿈이 없으면 마침표로 분리
+    return text
+      .split(/(?<=[.!?])\s+/)
+      .map(sentence => sentence.trim())
+      .filter(sentence => sentence.length > 0);
+  };
+
   // **텍스트**를 <strong>으로 변환
   const formatBoldText = (text: string): React.ReactNode => {
     const parts = text.split(/\*\*(.+?)\*\*/g);
     return parts.map((part, idx) =>
       idx % 2 === 1 ? <strong key={idx} className="font-semibold text-foreground">{part}</strong> : part
+    );
+  };
+
+  // 불렛 리스트 섹션 컴포넌트
+  const BulletSection = ({ title, icon: Icon, bgColor, iconColor, bulletColor, items, emptyMessage }: SectionConfig) => {
+    if (items.length === 0 && !emptyMessage) return null;
+
+    return (
+      <div className="space-y-3">
+        <div className="flex items-center gap-2">
+          <div className={`w-6 h-6 rounded-full ${bgColor} flex items-center justify-center`}>
+            <Icon className={`h-3.5 w-3.5 ${iconColor}`} />
+          </div>
+          <h4 className="text-sm font-medium">{title}</h4>
+        </div>
+        <div className="pl-8 space-y-2">
+          {items.length > 0 ? (
+            items.map((item, idx) => (
+              <div key={idx} className="flex items-start gap-2">
+                <div className={`w-1.5 h-1.5 rounded-full ${bulletColor} mt-2 shrink-0`} />
+                <p className="text-sm text-muted-foreground leading-relaxed">{formatBoldText(item)}</p>
+              </div>
+            ))
+          ) : (
+            <p className="text-sm text-muted-foreground">{emptyMessage}</p>
+          )}
+        </div>
+      </div>
     );
   };
 
@@ -129,109 +180,58 @@ export function ComparisonAnalysisContent({
   }
 
   const { parsed } = data;
-  const caseOverview = parsed.case_overview || "";
-  const precedentSummary = parsed.precedent_summary || "";
-  const similarities = parseToList(parsed.similarities);
-  const differences = parseToList(parsed.differences);
-  const strategyPoints = parseToList(parsed.strategy_points);
+
+  const sections: SectionConfig[] = [
+    {
+      title: "현재 사건 개요",
+      icon: FileText,
+      bgColor: "bg-slate-100",
+      iconColor: "text-slate-600",
+      bulletColor: "bg-slate-500",
+      items: parseToSentences(parsed.case_overview || ""),
+    },
+    {
+      title: "유사 판례 요약",
+      icon: Gavel,
+      bgColor: "bg-violet-100",
+      iconColor: "text-violet-600",
+      bulletColor: "bg-violet-500",
+      items: parseToSentences(parsed.precedent_summary || ""),
+    },
+    {
+      title: "유사점",
+      icon: CheckCircle2,
+      bgColor: "bg-emerald-100",
+      iconColor: "text-emerald-600",
+      bulletColor: "bg-emerald-500",
+      items: parseToList(parsed.similarities),
+      emptyMessage: "분석된 유사점이 없습니다.",
+    },
+    {
+      title: "차이점",
+      icon: XCircle,
+      bgColor: "bg-amber-100",
+      iconColor: "text-amber-600",
+      bulletColor: "bg-amber-500",
+      items: parseToList(parsed.differences),
+      emptyMessage: "분석된 차이점이 없습니다.",
+    },
+    {
+      title: "전략 포인트",
+      icon: Lightbulb,
+      bgColor: "bg-blue-100",
+      iconColor: "text-blue-600",
+      bulletColor: "bg-blue-500",
+      items: parseToList(parsed.strategy_points),
+      emptyMessage: "분석된 전략 포인트가 없습니다.",
+    },
+  ];
 
   return (
     <div className="space-y-6">
-      {/* 현재 사건 개요 */}
-      {caseOverview && (
-        <div className="space-y-3">
-          <div className="flex items-center gap-2">
-            <div className="w-6 h-6 rounded-full bg-slate-100 flex items-center justify-center">
-              <FileText className="h-3.5 w-3.5 text-slate-600" />
-            </div>
-            <h4 className="text-sm font-medium">현재 사건 개요</h4>
-          </div>
-          <div className="pl-8">
-            <p className="text-sm text-muted-foreground leading-relaxed">{formatBoldText(caseOverview)}</p>
-          </div>
-        </div>
-      )}
-
-      {/* 유사 판례 요약 */}
-      {precedentSummary && (
-        <div className="space-y-3">
-          <div className="flex items-center gap-2">
-            <div className="w-6 h-6 rounded-full bg-violet-100 flex items-center justify-center">
-              <Gavel className="h-3.5 w-3.5 text-violet-600" />
-            </div>
-            <h4 className="text-sm font-medium">유사 판례 요약</h4>
-          </div>
-          <div className="pl-8">
-            <p className="text-sm text-muted-foreground leading-relaxed">{formatBoldText(precedentSummary)}</p>
-          </div>
-        </div>
-      )}
-
-      {/* 유사점 */}
-      <div className="space-y-3">
-        <div className="flex items-center gap-2">
-          <div className="w-6 h-6 rounded-full bg-emerald-100 flex items-center justify-center">
-            <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
-          </div>
-          <h4 className="text-sm font-medium">유사점</h4>
-        </div>
-        <div className="pl-8 space-y-2">
-          {similarities.length > 0 ? (
-            similarities.map((item, idx) => (
-              <div key={idx} className="flex items-start gap-2">
-                <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 mt-2 shrink-0" />
-                <p className="text-sm text-muted-foreground leading-relaxed">{formatBoldText(item)}</p>
-              </div>
-            ))
-          ) : (
-            <p className="text-sm text-muted-foreground">분석된 유사점이 없습니다.</p>
-          )}
-        </div>
-      </div>
-
-      {/* 차이점 */}
-      <div className="space-y-3">
-        <div className="flex items-center gap-2">
-          <div className="w-6 h-6 rounded-full bg-amber-100 flex items-center justify-center">
-            <XCircle className="h-3.5 w-3.5 text-amber-600" />
-          </div>
-          <h4 className="text-sm font-medium">차이점</h4>
-        </div>
-        <div className="pl-8 space-y-2">
-          {differences.length > 0 ? (
-            differences.map((item, idx) => (
-              <div key={idx} className="flex items-start gap-2">
-                <div className="w-1.5 h-1.5 rounded-full bg-amber-500 mt-2 shrink-0" />
-                <p className="text-sm text-muted-foreground leading-relaxed">{formatBoldText(item)}</p>
-              </div>
-            ))
-          ) : (
-            <p className="text-sm text-muted-foreground">분석된 차이점이 없습니다.</p>
-          )}
-        </div>
-      </div>
-
-      {/* 전략 포인트 */}
-      <div className="space-y-3">
-        <div className="flex items-center gap-2">
-          <div className="w-6 h-6 rounded-full bg-blue-100 flex items-center justify-center">
-            <Lightbulb className="h-3.5 w-3.5 text-blue-600" />
-          </div>
-          <h4 className="text-sm font-medium">전략 포인트</h4>
-        </div>
-        <div className="pl-8 space-y-2">
-          {strategyPoints.length > 0 ? (
-            strategyPoints.map((item, idx) => (
-              <div key={idx} className="flex items-start gap-2">
-                <div className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-2 shrink-0" />
-                <p className="text-sm text-muted-foreground leading-relaxed">{formatBoldText(item)}</p>
-              </div>
-            ))
-          ) : (
-            <p className="text-sm text-muted-foreground">분석된 전략 포인트가 없습니다.</p>
-          )}
-        </div>
-      </div>
+      {sections.map((section, idx) => (
+        <BulletSection key={idx} {...section} />
+      ))}
     </div>
   );
 }

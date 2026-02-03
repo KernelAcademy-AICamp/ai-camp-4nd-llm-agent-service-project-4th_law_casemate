@@ -22,11 +22,6 @@ export interface SimilarCaseResult {
   score: number;
 }
 
-// 유사 판례 캐시 (caseId별로 저장)
-interface SimilarCasesCache {
-  [caseId: string]: SimilarCaseResult[];
-}
-
 // 비교 분석 결과 타입
 export interface ComparisonResult {
   success: boolean;
@@ -48,9 +43,17 @@ export interface ComparisonResult {
   error?: string;
 }
 
-// 비교 분석 캐시 (originCaseId_targetCaseNumber 형태의 키)
-interface ComparisonCache {
-  [key: string]: ComparisonResult;
+// 판례 상세 + 요약 캐시 타입
+export interface CaseDetailCache {
+  case_number: string;
+  case_name: string;
+  court_name: string;
+  judgment_date: string;
+  case_type: string;
+  full_text: string;
+  from_api?: boolean;
+  summary?: string | null;
+  cachedAt: number;
 }
 
 // Context 타입
@@ -69,10 +72,29 @@ interface SearchContextType {
   // 비교 분석 캐시
   getComparison: (originCaseId: string, targetCaseNumber: string) => ComparisonResult | null;
   setComparison: (originCaseId: string, targetCaseNumber: string, result: ComparisonResult) => void;
+  // 판례 상세 + 요약 캐시
+  getCaseDetail: (caseNumber: string) => CaseDetailCache | null;
+  setCaseDetail: (caseNumber: string, detail: Omit<CaseDetailCache, "cachedAt">) => void;
+  updateCaseSummary: (caseNumber: string, summary: string) => void;
 }
 
 // Context 생성
 const SearchContext = createContext<SearchContextType | null>(null);
+
+// 캐시 제한 상수
+const MAX_SIMILAR_CACHE = 30;
+const MAX_COMPARISON_CACHE = 20;
+const MAX_CASE_DETAIL_CACHE = 20;
+
+// 캐시 크기 제한 헬퍼 (FIFO 방식)
+function limitCacheSize<T>(cache: Record<string, T>, maxSize: number): Record<string, T> {
+  const keys = Object.keys(cache);
+  if (keys.length <= maxSize) return cache;
+
+  const newCache = { ...cache };
+  delete newCache[keys[0]];
+  return newCache;
+}
 
 // Provider 컴포넌트
 export function SearchProvider({ children }: { children: ReactNode }) {
@@ -81,38 +103,68 @@ export function SearchProvider({ children }: { children: ReactNode }) {
   const [hasSearched, setHasSearched] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
 
-  // 유사 판례 캐시 (caseId별로 저장)
-  const [similarCasesCache, setSimilarCasesCache] = useState<SimilarCasesCache>({});
+  // 유사 판례 캐시
+  const [similarCasesCache, setSimilarCasesCache] = useState<Record<string, SimilarCaseResult[]>>({});
 
-  // 유사 판례 가져오기 (캐시된 경우 반환, 없으면 null)
   const getSimilarCases = (caseId: string): SimilarCaseResult[] | null => {
     return similarCasesCache[caseId] ?? null;
   };
 
-  // 유사 판례 저장 (캐시에 추가)
   const setSimilarCases = (caseId: string, cases: SimilarCaseResult[]) => {
-    setSimilarCasesCache((prev) => ({
-      ...prev,
-      [caseId]: cases,
-    }));
+    setSimilarCasesCache((prev) =>
+      limitCacheSize({ ...prev, [caseId]: cases }, MAX_SIMILAR_CACHE)
+    );
   };
 
-  // 비교 분석 캐시 (originCaseId_targetCaseNumber 형태의 키)
-  const [comparisonCache, setComparisonCache] = useState<ComparisonCache>({});
+  // 비교 분석 캐시
+  const [comparisonCache, setComparisonCache] = useState<Record<string, ComparisonResult>>({});
 
-  // 비교 분석 가져오기 (캐시된 경우 반환, 없으면 null)
   const getComparison = (originCaseId: string, targetCaseNumber: string): ComparisonResult | null => {
     const key = `${originCaseId}_${targetCaseNumber}`;
     return comparisonCache[key] ?? null;
   };
 
-  // 비교 분석 저장 (캐시에 추가)
   const setComparison = (originCaseId: string, targetCaseNumber: string, result: ComparisonResult) => {
     const key = `${originCaseId}_${targetCaseNumber}`;
-    setComparisonCache((prev) => ({
-      ...prev,
-      [key]: result,
-    }));
+    setComparisonCache((prev) =>
+      limitCacheSize({ ...prev, [key]: result }, MAX_COMPARISON_CACHE)
+    );
+  };
+
+  // 판례 상세 + 요약 캐시 (LRU 방식)
+  const [caseDetailCache, setCaseDetailCache] = useState<Record<string, CaseDetailCache>>({});
+
+  const getCaseDetail = (caseNumber: string): CaseDetailCache | null => {
+    return caseDetailCache[caseNumber] ?? null;
+  };
+
+  const setCaseDetail = (caseNumber: string, detail: Omit<CaseDetailCache, "cachedAt">) => {
+    setCaseDetailCache((prev) => {
+      // 이미 있으면 업데이트
+      if (prev[caseNumber]) {
+        return { ...prev, [caseNumber]: { ...detail, cachedAt: Date.now() } };
+      }
+
+      // 최대 개수 초과 시 가장 오래된 것 삭제
+      const keys = Object.keys(prev);
+      if (keys.length >= MAX_CASE_DETAIL_CACHE) {
+        const oldest = keys.reduce((a, b) => (prev[a].cachedAt < prev[b].cachedAt ? a : b));
+        const { [oldest]: _, ...rest } = prev;
+        return { ...rest, [caseNumber]: { ...detail, cachedAt: Date.now() } };
+      }
+
+      return { ...prev, [caseNumber]: { ...detail, cachedAt: Date.now() } };
+    });
+  };
+
+  const updateCaseSummary = (caseNumber: string, summary: string) => {
+    setCaseDetailCache((prev) => {
+      if (!prev[caseNumber]) return prev;
+      return {
+        ...prev,
+        [caseNumber]: { ...prev[caseNumber], summary, cachedAt: Date.now() },
+      };
+    });
   };
 
   return (
@@ -130,6 +182,9 @@ export function SearchProvider({ children }: { children: ReactNode }) {
         setSimilarCases,
         getComparison,
         setComparison,
+        getCaseDetail,
+        setCaseDetail,
+        updateCaseSummary,
       }}
     >
       {children}

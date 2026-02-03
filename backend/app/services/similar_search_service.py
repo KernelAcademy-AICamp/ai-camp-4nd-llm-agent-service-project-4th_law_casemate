@@ -5,29 +5,16 @@
 
 import os
 import logging
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any
 from dataclasses import dataclass
-from concurrent.futures import ThreadPoolExecutor
-from openai import OpenAI
 from qdrant_client import QdrantClient
-from qdrant_client.http import models
-from fastembed import SparseTextEmbedding
 from dotenv import load_dotenv
+
+from app.services.precedent_embedding_service import PrecedentEmbeddingService
 
 logger = logging.getLogger(__name__)
 
 load_dotenv()
-
-# Sparse 임베딩 모델 (싱글톤)
-_sparse_model = None
-
-
-def get_sparse_model():
-    global _sparse_model
-    if _sparse_model is None:
-        logger.info("Sparse 임베딩 모델 로딩 중...")
-        _sparse_model = SparseTextEmbedding(model_name="Qdrant/bm25")
-    return _sparse_model
 
 
 @dataclass
@@ -57,42 +44,37 @@ class SimilarSearchService:
     # RRF 파라미터 (값이 클수록 순위 간 점수 차이가 완만해짐)
     RRF_K = 60
 
+    # 유사도 스케일링 파라미터 (0.3~0.9 → 0~1)
+    SIMILARITY_MIN = 0.3
+    SIMILARITY_MAX = 0.9
+
     def __init__(self):
-        self.openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        # case_summaries 컬렉션은 text-embedding-3-large로 인덱싱됨
+        self.embedding_service = PrecedentEmbeddingService(
+            model=PrecedentEmbeddingService.MODEL_LARGE
+        )
         self.qdrant_client = QdrantClient(
             host=os.getenv("QDRANT_HOST", "localhost"),
             port=int(os.getenv("QDRANT_PORT", "6333"))
         )
-        self.sparse_model = get_sparse_model()
 
-    # ==================== 임베딩 생성 ====================
+    # ==================== 유사도 스케일링 ====================
 
-    def _create_dense_embedding(self, text: str) -> List[float]:
-        """Dense 임베딩 생성 (OpenAI text-embedding-3-large)"""
-        response = self.openai_client.embeddings.create(
-            model="text-embedding-3-large",
-            input=text
-        )
-        return response.data[0].embedding
+    def _scale_similarity(self, raw_score: float) -> float:
+        """
+        Dense 유사도를 0~1 범위로 스케일링
 
-    def _create_sparse_embedding(self, text: str) -> models.SparseVector:
-        """Sparse 임베딩 생성 (BM25)"""
-        sparse_emb = list(self.sparse_model.embed([text]))[0]
-        return models.SparseVector(
-            indices=sparse_emb.indices.tolist(),
-            values=sparse_emb.values.tolist(),
-        )
+        - 0.3 이하 → 0
+        - 0.9 이상 → 1
+        - 0.3~0.9 → 0~1 선형 변환
+        """
+        if raw_score <= self.SIMILARITY_MIN:
+            return 0.0
+        if raw_score >= self.SIMILARITY_MAX:
+            return 1.0
 
-    def _create_embeddings_parallel(self, text: str) -> Tuple[List[float], models.SparseVector]:
-        """Dense와 Sparse 임베딩을 병렬로 생성"""
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            dense_future = executor.submit(self._create_dense_embedding, text)
-            sparse_future = executor.submit(self._create_sparse_embedding, text)
-
-            dense_vector = dense_future.result()
-            sparse_vector = sparse_future.result()
-
-        return dense_vector, sparse_vector
+        scaled = (raw_score - self.SIMILARITY_MIN) / (self.SIMILARITY_MAX - self.SIMILARITY_MIN)
+        return round(scaled, 4)
 
     # ==================== RRF 점수 결합 ====================
 
@@ -104,18 +86,18 @@ class SimilarSearchService:
         """
         Dense와 Sparse 검색 결과를 RRF(Reciprocal Rank Fusion)로 결합
 
-        - 점수가 아닌 순위만 사용하여 결합
-        - 양쪽 검색에서 모두 상위권인 문서가 높은 점수를 받음
-        - score = 1/(k + rank_dense) + 1/(k + rank_sparse)
+        - 순위 기반으로 결합하여 최종 순위 결정
+        - 표시용 점수는 Dense 유사도 사용 (실제 의미 있는 값)
         """
         combined = {}
 
-        # Dense 결과: 순위 기반 RRF 점수
+        # Dense 결과: RRF 점수 + 실제 유사도 저장
         for rank, point in enumerate(dense_points, start=1):
             point_id = str(point.id)
             rrf_score = 1.0 / (self.RRF_K + rank)
             combined[point_id] = {
-                "score": rrf_score,
+                "rrf_score": rrf_score,
+                "dense_similarity": point.score,  # 실제 유사도 저장
                 "payload": point.payload,
             }
 
@@ -124,10 +106,11 @@ class SimilarSearchService:
             point_id = str(point.id)
             rrf_score = 1.0 / (self.RRF_K + rank)
             if point_id in combined:
-                combined[point_id]["score"] += rrf_score
+                combined[point_id]["rrf_score"] += rrf_score
             else:
                 combined[point_id] = {
-                    "score": rrf_score,
+                    "rrf_score": rrf_score,
+                    "dense_similarity": 0,  # Dense에 없었던 결과
                     "payload": point.payload,
                 }
 
@@ -156,7 +139,7 @@ class SimilarSearchService:
             return {"total": 0, "results": []}
 
         # Dense + Sparse 임베딩 병렬 생성
-        dense_vector, sparse_vector = self._create_embeddings_parallel(query)
+        dense_vector, sparse_vector = self.embedding_service.create_both_parallel(query)
 
         # 요약 컬렉션 대상 하이브리드 검색 (1건 = 1판례, 청크 없음)
         search_limit = (limit + 1) * 10
@@ -188,32 +171,40 @@ class SimilarSearchService:
 
         for point_id, data in combined_scores.items():
             payload = data["payload"]
-            score = data["score"]
+            rrf_score = data["rrf_score"]
+            dense_similarity = data["dense_similarity"]
             case_num = payload.get("case_number", "")
 
             # 현재 판례 제외
             if exclude_case_number and case_num == exclude_case_number:
                 continue
 
-            similar_cases.append(SimilarCaseResult(
-                case_number=case_num,
-                case_name=payload.get("case_name", ""),
-                court_name=payload.get("court_name", ""),
-                judgment_date=payload.get("judgment_date", ""),
-                score=score,
-            ))
+            similar_cases.append({
+                "case_number": case_num,
+                "case_name": payload.get("case_name", ""),
+                "court_name": payload.get("court_name", ""),
+                "judgment_date": payload.get("judgment_date", ""),
+                "rrf_score": rrf_score,
+                "dense_similarity": dense_similarity,
+            })
 
-        # 점수순 정렬 후 limit 적용
-        similar_cases.sort(key=lambda x: x.score, reverse=True)
+        # RRF 점수로 순위 결정
+        similar_cases.sort(key=lambda x: x["rrf_score"], reverse=True)
         similar_cases = similar_cases[:limit]
 
-        # RRF 점수를 0~1 스케일로 변환 (표시용)
-        # 이론상 최대: 양쪽 모두 1등 = 2/(k+1)
-        max_rrf_score = 2.0 / (self.RRF_K + 1)
-        for case in similar_cases:
-            case.score = min(case.score / max_rrf_score, 1.0)
+        # 최종 결과: Dense 유사도를 스케일링하여 표시 (0~1 범위)
+        results = [
+            SimilarCaseResult(
+                case_number=case["case_number"],
+                case_name=case["case_name"],
+                court_name=case["court_name"],
+                judgment_date=case["judgment_date"],
+                score=self._scale_similarity(case["dense_similarity"]),
+            )
+            for case in similar_cases
+        ]
 
         return {
-            "total": len(similar_cases),
-            "results": [r.to_dict() for r in similar_cases]
+            "total": len(results),
+            "results": [r.to_dict() for r in results]
         }
