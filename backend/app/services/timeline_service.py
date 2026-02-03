@@ -84,8 +84,12 @@ class TimeLineService:
             claims = "청구내용 없음"
             logger.warning(f"[Timeline Auto-Gen] Case Summary 캐시 미스 - fallback 사용")
 
-        # 3. LLM으로 타임라인 생성
-        timeline_data = await self._generate_with_llm(summary, facts, claims, evidences, evidence_mappings)
+        # 3. LLM으로 타임라인 생성 (의뢰인 정보 포함)
+        timeline_data = await self._generate_with_llm(
+            summary, facts, claims, evidences, evidence_mappings,
+            client_name=case.client_name,
+            client_role=case.client_role
+        )
 
         if not timeline_data:
             logger.warning(f"[Timeline Auto-Gen] LLM 응답 파싱 실패 - 샘플 타임라인 사용")
@@ -212,7 +216,9 @@ class TimeLineService:
         facts: str,
         claims: str,
         evidences: List[Evidence],
-        evidence_mappings: dict
+        evidence_mappings: dict,
+        client_name: str = None,
+        client_role: str = None
     ) -> List[dict]:
         """
         LLM을 사용하여 타임라인 자동 생성
@@ -223,6 +229,8 @@ class TimeLineService:
             claims: 청구 내용
             evidences: 증거 목록
             evidence_mappings: 증거 ID별 매핑 정보 (날짜, 설명)
+            client_name: 의뢰인 이름
+            client_role: 의뢰인 역할
 
         Returns:
             List[dict]: 타임라인 데이터 리스트
@@ -242,12 +250,14 @@ class TimeLineService:
         print(f"증거 텍스트 미리보기 (처음 500자):\n{evidence_text[:500]}")
         print(f"{'='*80}\n")
 
-        # LLM 프롬프트 생성
+        # LLM 프롬프트 생성 (의뢰인 정보 포함)
         prompt = create_timeline_prompt(
             summary=summary,
             facts=facts,
             claims=claims,
-            evidence_list=evidence_text
+            evidence_list=evidence_text,
+            client_name=client_name or "의뢰인",
+            client_role=client_role or "원고"
         )
 
         print(f"\n{'='*80}")

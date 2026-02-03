@@ -37,13 +37,13 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 router = APIRouter()
 
 
-async def process_evidence_in_background(evidence_id: int, file_path: str, file_name: str):
+async def process_evidence_in_background(evidence_id: int, file_content: bytes, file_name: str):
     """
     백그라운드에서 증거 파일 분석 (STT/VLM/OCR)
 
     Args:
         evidence_id: 증거 ID
-        file_path: Supabase Storage 경로
+        file_content: 파일 내용 (바이트)
         file_name: 원본 파일명
     """
     from tool.database import SessionLocal
@@ -55,16 +55,9 @@ async def process_evidence_in_background(evidence_id: int, file_path: str, file_
 
     db = SessionLocal()
     try:
-        # 1. Supabase에서 파일 다운로드
-        print(f"📥 [백그라운드] 파일 다운로드 중: {file_path}")
-        file_data = supabase.storage.from_("Evidences").download(file_path)
-
-        if not file_data:
-            print(f"❌ [백그라운드] 파일 다운로드 실패: {file_path}")
-            return
-
-        # 2. UploadFile 형식으로 변환
-        file_like = BytesIO(file_data)
+        # 1. 메모리에서 파일 내용 사용 (다운로드 불필요!)
+        print(f"📄 [백그라운드] 파일 크기: {len(file_content)} bytes")
+        file_like = BytesIO(file_content)
 
         # UploadFile 객체 생성 (processor.process에서 필요)
         from fastapi import UploadFile
@@ -181,11 +174,12 @@ async def upload_file(
         db.refresh(new_evidence)
 
         # 백그라운드에서 텍스트 추출 (STT/OCR/VLM)
+        # 파일 내용을 직접 전달 (재다운로드 불필요!)
         print(f"📋 백그라운드 분석 작업 등록: evidence_id={new_evidence.id}")
         background_tasks.add_task(
             process_evidence_in_background,
             new_evidence.id,
-            file_path,
+            file_content,  # 이미 메모리에 있는 파일 내용
             file.filename
         )
 
