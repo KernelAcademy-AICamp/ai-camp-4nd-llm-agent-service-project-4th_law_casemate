@@ -57,6 +57,16 @@ class TimeLineService:
         """
         logger.info(f"[Timeline Auto-Gen] 시작: case_id={self.case_id}")
 
+        # 0. 중복 생성 방지: 타임라인이 이미 존재하는지 다시 확인
+        existing_timelines = self.db.query(TimeLine).filter(
+            TimeLine.case_id == self.case_id
+        ).all()
+
+        if existing_timelines:
+            print(f"[Timeline Auto-Gen] ⚠️  이미 존재함 (중복 생성 방지): {len(existing_timelines)}개")
+            logger.info(f"[Timeline Auto-Gen] 이미 존재함 (중복 생성 방지): {len(existing_timelines)}개")
+            return existing_timelines
+
         # 1. DB에서 데이터 조회
         case, evidences, case_summary, evidence_mappings = self._fetch_case_and_evidences()
         logger.info(f"[Timeline Auto-Gen] 데이터 조회 완료: evidences={len(evidences)}개, mappings={len(evidence_mappings)}개")
@@ -108,9 +118,13 @@ class TimeLineService:
                 detail=f"사건 ID {self.case_id}를 찾을 수 없습니다"
             )
 
-        # Evidence 조회 (content가 있는 것만)
-        evidences = self.db.query(Evidence).filter(
-            Evidence.case_id == self.case_id,
+        # Evidence 조회 (CaseEvidenceMapping을 통해 JOIN)
+        # content가 있는 것만 조회
+        evidences = self.db.query(Evidence).join(
+            CaseEvidenceMapping,
+            Evidence.id == CaseEvidenceMapping.evidence_id
+        ).filter(
+            CaseEvidenceMapping.case_id == self.case_id,
             Evidence.content.isnot(None),
             Evidence.content != ""
         ).all()
@@ -219,6 +233,15 @@ class TimeLineService:
         # 증거 목록을 텍스트로 변환
         evidence_text = self._format_evidences(evidences, evidence_mappings)
 
+        # 증거 텍스트 로그 (확인용)
+        print(f"\n{'='*80}")
+        print(f"[증거 텍스트 확인]")
+        print(f"{'='*80}")
+        print(f"증거 개수: {len(evidences)}")
+        print(f"증거 텍스트 길이: {len(evidence_text)} characters")
+        print(f"증거 텍스트 미리보기 (처음 500자):\n{evidence_text[:500]}")
+        print(f"{'='*80}\n")
+
         # LLM 프롬프트 생성
         prompt = create_timeline_prompt(
             summary=summary,
@@ -227,8 +250,14 @@ class TimeLineService:
             evidence_list=evidence_text
         )
 
+        print(f"\n{'='*80}")
+        print(f"[LLM 프롬프트 전체]")
+        print(f"{'='*80}")
+        print(f"프롬프트 길이: {len(prompt)} characters")
+        print(f"\n{prompt}")
+        print(f"{'='*80}\n")
+
         logger.info(f"[LLM] 프롬프트 생성 완료: {len(prompt)} characters")
-        logger.info(f"\n{'='*80}\n[LLM 프롬프트]\n{'='*80}\n{prompt}\n{'='*80}")
 
         # OpenAI API 호출
         try:
