@@ -1,4 +1,4 @@
-from fastapi import APIRouter, UploadFile, File, Depends, HTTPException
+from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from supabase import create_client, Client
@@ -36,8 +36,79 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 router = APIRouter()
 
+
+async def process_evidence_in_background(evidence_id: int, file_path: str, file_name: str):
+    """
+    백그라운드에서 증거 파일 분석 (STT/VLM/OCR)
+
+    Args:
+        evidence_id: 증거 ID
+        file_path: Supabase Storage 경로
+        file_name: 원본 파일명
+    """
+    from tool.database import SessionLocal
+    from io import BytesIO
+
+    print(f"\n{'='*80}")
+    print(f"🤖 [백그라운드] 증거 분석 시작: evidence_id={evidence_id}")
+    print(f"{'='*80}\n")
+
+    db = SessionLocal()
+    try:
+        # 1. Supabase에서 파일 다운로드
+        print(f"📥 [백그라운드] 파일 다운로드 중: {file_path}")
+        file_data = supabase.storage.from_("Evidences").download(file_path)
+
+        if not file_data:
+            print(f"❌ [백그라운드] 파일 다운로드 실패: {file_path}")
+            return
+
+        # 2. UploadFile 형식으로 변환
+        file_like = BytesIO(file_data)
+
+        # UploadFile 객체 생성 (processor.process에서 필요)
+        from fastapi import UploadFile
+        upload_file = UploadFile(filename=file_name, file=file_like)
+
+        # 3. EvidenceProcessor로 분석
+        print(f"🔍 [백그라운드] 텍스트 추출 시작...")
+        processor = EvidenceProcessor()
+        result = await processor.process(upload_file, detail="high")
+
+        if result.get("success"):
+            extracted_text = result.get("text", "")
+            doc_type = result.get("doc_type")
+
+            # 4. DB 업데이트
+            evidence = db.query(models.Evidence).filter(models.Evidence.id == evidence_id).first()
+            if evidence:
+                evidence.content = extracted_text
+                if doc_type:
+                    evidence.doc_type = doc_type
+
+                db.commit()
+
+                print(f"✅ [백그라운드] 텍스트 추출 완료!")
+                print(f"   - 추출된 텍스트: {len(extracted_text)}자")
+                print(f"   - 문서 유형: {doc_type}")
+                print(f"   - 추출 방법: {result.get('method')}")
+                print(f"   - 비용 추정: {result.get('cost_estimate')}\n")
+            else:
+                print(f"⚠️ [백그라운드] DB에서 증거를 찾을 수 없음: evidence_id={evidence_id}")
+        else:
+            print(f"⚠️ [백그라운드] 텍스트 추출 실패: {result.get('error')}\n")
+
+    except Exception as e:
+        print(f"❌ [백그라운드] 증거 분석 중 오류: {str(e)}\n")
+        import traceback
+        traceback.print_exc()
+    finally:
+        db.close()
+
+
 @router.post("/upload")
 async def upload_file(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     case_id: int | None = None,  # 선택적: 사건 ID
     category_id: int | None = None,  # 선택적: 카테고리 ID
@@ -109,35 +180,14 @@ async def upload_file(
         db.commit()
         db.refresh(new_evidence)
 
-        # 자동 텍스트 추출 (STT/OCR/VLM)
-        print(f"🤖 텍스트 추출 시작: evidence_id={new_evidence.id}")
-        try:
-            # 파일 포인터를 처음으로 이동
-            await file.seek(0)
-
-            # EvidenceProcessor를 사용하여 텍스트 추출
-            processor = EvidenceProcessor()
-            result = await processor.process(file, detail="high")
-
-            if result.get("success"):
-                extracted_text = result.get("text", "")
-                doc_type = result.get("doc_type")
-
-                # DB에 추출된 텍스트와 문서 유형 저장
-                new_evidence.content = extracted_text
-                if doc_type:
-                    new_evidence.doc_type = doc_type
-
-                db.commit()
-                db.refresh(new_evidence)
-
-                print(f"✅ 텍스트 추출 완료: {len(extracted_text)}자, doc_type={doc_type}")
-                print(f"📝 추출 방법: {result.get('method')}, 비용 추정: {result.get('cost_estimate')}")
-            else:
-                print(f"⚠️ 텍스트 추출 실패: {result.get('error')}")
-        except Exception as extract_error:
-            # 텍스트 추출 실패해도 업로드는 성공으로 처리
-            print(f"⚠️ 텍스트 추출 중 오류 (업로드는 성공): {str(extract_error)}")
+        # 백그라운드에서 텍스트 추출 (STT/OCR/VLM)
+        print(f"📋 백그라운드 분석 작업 등록: evidence_id={new_evidence.id}")
+        background_tasks.add_task(
+            process_evidence_in_background,
+            new_evidence.id,
+            file_path,
+            file.filename
+        )
 
         return {
             "message": "업로드 성공",
@@ -146,8 +196,8 @@ async def upload_file(
             "url": signed_url,
             "case_id": new_evidence.case_id,
             "category_id": new_evidence.category_id,
-            "content_extracted": bool(new_evidence.content),
-            "doc_type": new_evidence.doc_type
+            "processing_status": "분석 진행 중 (백그라운드)",
+            "info": "파일 업로드가 완료되었습니다. 텍스트 추출은 백그라운드에서 진행됩니다."
         }
 
     except Exception as e:

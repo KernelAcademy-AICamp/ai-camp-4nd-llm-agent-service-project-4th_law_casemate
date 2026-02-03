@@ -228,6 +228,7 @@ class TimeLineService:
         )
 
         logger.info(f"[LLM] 프롬프트 생성 완료: {len(prompt)} characters")
+        logger.info(f"\n{'='*80}\n[LLM 프롬프트]\n{'='*80}\n{prompt}\n{'='*80}")
 
         # OpenAI API 호출
         try:
@@ -249,9 +250,11 @@ class TimeLineService:
 
             llm_response = response.choices[0].message.content
             logger.info(f"[LLM] 응답 수신 완료: {len(llm_response)} characters")
+            logger.info(f"\n{'='*80}\n[LLM 응답]\n{'='*80}\n{llm_response}\n{'='*80}")
 
             # JSON 파싱
             timeline_data = self._parse_llm_response(llm_response)
+            logger.info(f"\n{'='*80}\n[파싱된 타임라인 데이터]\n{'='*80}\n{timeline_data}\n{'='*80}")
 
             if not timeline_data:
                 raise ValueError("LLM이 빈 타임라인을 반환했습니다")
