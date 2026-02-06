@@ -251,8 +251,8 @@ export function PrecedentDetailPage({ }: PrecedentDetailPageProps) {
   // 로딩 상태
   if (loading) {
     return (
-      <div className="flex items-center justify-center py-20">
-        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+      <div className="flex items-center justify-center" style={{ height: 'calc(100vh - 120px)' }}>
+        <video src="/assets/loading-card.mp4" autoPlay loop muted playsInline className="h-20 w-20" style={{ mixBlendMode: 'multiply', opacity: 0.3 }} />
       </div>
     );
   }
@@ -438,7 +438,7 @@ export function PrecedentDetailPage({ }: PrecedentDetailPageProps) {
                   {summaryLoading ? (
                     <div className="py-12">
                       <div className="flex flex-col items-center justify-center gap-3 text-muted-foreground">
-                        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+                        <video src="/assets/loading-card.mp4" autoPlay loop muted playsInline className="h-20 w-20" style={{ mixBlendMode: 'multiply', opacity: 0.3 }} />
                         <p className="text-sm">AI가 판례를 요약하고 있습니다...</p>
                       </div>
                     </div>

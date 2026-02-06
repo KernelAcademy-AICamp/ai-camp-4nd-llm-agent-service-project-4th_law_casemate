@@ -904,8 +904,8 @@ export function CaseDetailPage({
   // 로딩 상태
   if (isLoadingCase) {
     return (
-      <div className="flex items-center justify-center py-16">
-        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+      <div className="flex items-center justify-center" style={{ height: 'calc(100vh - 120px)' }}>
+        <video src="/assets/loading-card.mp4" autoPlay loop muted playsInline className="h-20 w-20" style={{ mixBlendMode: 'multiply', opacity: 0.3 }} />
       </div>
     );
   }
@@ -1382,8 +1382,8 @@ export function CaseDetailPage({
             </CardHeader>
             <CardContent>
               {similarCasesLoading ? (
-                <div className="text-center py-8 text-muted-foreground">
-                  <div className="animate-spin h-6 w-6 border-2 border-primary border-t-transparent rounded-full mx-auto mb-2" />
+                <div className="flex flex-col items-center justify-center py-8 text-muted-foreground">
+                  <video src="/assets/loading-card.mp4" autoPlay loop muted playsInline className="h-20 w-20 mb-2" style={{ mixBlendMode: 'multiply', opacity: 0.3 }} />
                   유사 판례 검색 중...
                 </div>
               ) : similarCases.length === 0 ? (
@@ -1473,8 +1473,8 @@ export function CaseDetailPage({
             </CardHeader>
             <CardContent>
               {timelineLoading ? (
-                <div className="text-center py-12 text-muted-foreground">
-                  <div className="animate-spin h-6 w-6 border-2 border-primary border-t-transparent rounded-full mx-auto mb-2" />
+                <div className="flex flex-col items-center justify-center py-12 text-muted-foreground">
+                  <video src="/assets/loading-card.mp4" autoPlay loop muted playsInline className="h-20 w-20 mb-2" style={{ mixBlendMode: 'multiply', opacity: 0.3 }} />
                   타임라인 데이터 로딩 중...
                 </div>
               ) : timelineEvents.length === 0 ? (
@@ -1611,11 +1611,9 @@ export function CaseDetailPage({
                   caseId={String(caseData.id)}
                 />
               ) : (
-                <div className="flex items-center justify-center h-[600px] text-muted-foreground">
-                  <div className="text-center">
-                    <Loader2 className="h-12 w-12 mx-auto mb-3 animate-spin" />
-                    <p className="text-sm">사건 정보를 불러오는 중...</p>
-                  </div>
+                <div className="flex flex-col items-center justify-center h-[600px] text-muted-foreground">
+                  <video src="/assets/loading-card.mp4" autoPlay loop muted playsInline className="h-20 w-20 mb-3" style={{ mixBlendMode: 'multiply', opacity: 0.3 }} />
+                  <p className="text-sm">사건 정보를 불러오는 중...</p>
                 </div>
               )}
             </CardContent>
@@ -1627,9 +1625,9 @@ export function CaseDetailPage({
           {caseData ? (
             <DocumentEditor caseData={caseData} />
           ) : (
-            <div className="flex items-center justify-center h-[600px] text-muted-foreground">
-              <Loader2 className="h-12 w-12 animate-spin" />
-              <p className="text-sm ml-3">사건 정보를 불러오는 중...</p>
+            <div className="flex flex-col items-center justify-center h-[600px] text-muted-foreground">
+              <video src="/assets/loading-card.mp4" autoPlay loop muted playsInline className="h-20 w-20 mb-3" style={{ mixBlendMode: 'multiply', opacity: 0.3 }} />
+              <p className="text-sm">사건 정보를 불러오는 중...</p>
             </div>
           )}
         </TabsContent>
