@@ -288,55 +288,7 @@ class EvidenceProcessor:
             await file.seek(0)
             file_content = await file.read()
 
-            # 1단계: 로컬 OCR 시도 (EasyOCR)
-            try:
-                import easyocr
-                from io import BytesIO
-                from PIL import Image
-
-                logger.info("🔍 로컬 OCR 시도 (EasyOCR)")
-
-                # EasyOCR Reader 초기화 (한글, 영어)
-                reader = easyocr.Reader(['ko', 'en'], gpu=False, verbose=False)
-
-                # 이미지 바이트를 numpy array로 변환
-                img = Image.open(BytesIO(file_content))
-                import numpy as np
-                img_array = np.array(img)
-
-                # OCR 실행
-                result = reader.readtext(img_array)
-
-                if result and len(result) > 0:
-                    # 결과를 위치별로 정렬 (위→아래, 왼쪽→오른쪽)
-                    sorted_result = sorted(result, key=lambda x: (x[0][0][1], x[0][0][0]))
-                    text = '\n'.join([item[1] for item in sorted_result])
-
-                    # 최소 20자 이상 추출되면 성공으로 간주
-                    if len(text.strip()) >= 20:
-                        logger.info(f"✅ 로컬 OCR 성공: {len(text)}자 추출 (비용 0원)")
-                        logger.debug(f"📝 추출된 텍스트 (처음 200자): {text[:200]}")
-
-                        return {
-                            "success": True,
-                            "type": "IMAGE",
-                            "method": "easyocr-local",
-                            "text": text,
-                            "char_count": len(text),
-                            "cost_estimate": "무료 (로컬 OCR)"
-                        }
-                    else:
-                        logger.warning(f"⚠️ 로컬 OCR 텍스트 부족: {len(text)}자 → Vision API로 전환")
-
-                else:
-                    logger.warning("⚠️ 로컬 OCR 결과 없음 → Vision API로 전환")
-
-            except ImportError:
-                logger.warning("⚠️ EasyOCR 미설치 → Vision API로 전환")
-            except Exception as ocr_error:
-                logger.warning(f"⚠️ 로컬 OCR 실패: {str(ocr_error)} → Vision API로 전환")
-
-            # 2단계: Vision API 호출 (프롬프트 개선)
+            # Vision API 직접 호출 (EasyOCR 단계 생략)
             import base64
 
             logger.info("🌐 OpenAI Vision API 호출")
@@ -435,7 +387,7 @@ class EvidenceProcessor:
 
             logger.info(f"✅ Vision API OCR 완료: {len(text)}자 추출 (detail={detail})")
             logger.info(f"📋 문서 유형: {doc_type}")
-            logger.debug(f"📝 추출된 텍스트 (처음 200자): {text[:200]}")
+            logger.info(f"📝 [Vision API] 추출된 전체 텍스트:\n{text}")
 
             return {
                 "success": True,
