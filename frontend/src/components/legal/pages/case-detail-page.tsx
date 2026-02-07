@@ -1625,7 +1625,7 @@ export function CaseDetailPage({
         {/* ===== 문서작성 탭 ===== */}
         <TabsContent value="documents" className="mt-6">
           {caseData ? (
-            <DocumentEditor caseData={caseData} />
+            <DocumentEditor caseData={caseData} similarCases={similarCases} />
           ) : (
             <div className="flex items-center justify-center h-[600px] text-muted-foreground">
               <Loader2 className="h-12 w-12 animate-spin" />

@@ -1,7 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import type { CaseData } from "@/lib/sample-data";
+import type { CaseData, Party, TimelineEvent } from "@/lib/sample-data";
+import type { SimilarCaseResult } from "@/contexts/search-context";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -27,9 +28,11 @@ import {
   Users,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { ComplaintForm } from "@/components/legal/complaint-form";
 
 interface DocumentEditorProps {
   caseData: CaseData;
+  similarCases?: SimilarCaseResult[];
 }
 
 const templates = [
@@ -127,7 +130,7 @@ const initialDocuments = [
   { id: "2", title: "준비서면 1차", template: "준비서면", updatedAt: "2026-01-25", content: "" },
 ];
 
-export function DocumentEditor({ caseData }: DocumentEditorProps) {
+export function DocumentEditor({ caseData, similarCases = [] }: DocumentEditorProps) {
   const [documents, setDocuments] = useState(initialDocuments);
   const [activeDocId, setActiveDocId] = useState<string | null>(null);
   const [documentTitle, setDocumentTitle] = useState("새 문서");
@@ -135,12 +138,14 @@ export function DocumentEditor({ caseData }: DocumentEditorProps) {
   const [isGenerating, setIsGenerating] = useState(false);
   const [isSaved, setIsSaved] = useState(false);
   const [leftTab, setLeftTab] = useState<"docs" | "templates">("docs");
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null);
 
   const handleNewDocument = () => {
     setActiveDocId(null);
     setDocumentTitle("새 문서");
     setDocumentContent("");
     setIsSaved(false);
+    setSelectedTemplateId(null);
   };
 
   const handleSelectDocument = (doc: (typeof documents)[0]) => {
@@ -148,12 +153,14 @@ export function DocumentEditor({ caseData }: DocumentEditorProps) {
     setDocumentTitle(doc.title);
     setDocumentContent(doc.content);
     setIsSaved(true);
+    setSelectedTemplateId(null);
   };
 
   const handleSelectTemplate = (templateId: string) => {
     const template = templates.find((t) => t.id === templateId);
     if (template) {
       setActiveDocId(null);
+      setSelectedTemplateId(templateId);
       setDocumentTitle(`${template.name} - ${caseData.name}`);
       setDocumentContent(templateContents[templateId] || "");
       setIsSaved(false);
@@ -167,16 +174,16 @@ export function DocumentEditor({ caseData }: DocumentEditorProps) {
     const aiContent = `[AI 생성 초안]
 
 사건명: ${caseData.name}
-사건 유형: ${caseData.category}
+사건 유형: ${caseData.caseType}
 
 1. 사안의 개요
-본 사건은 ${caseData.category}에 관한 건으로, ${caseData.description}
+본 사건은 ${caseData.caseType}에 관한 건으로, ${caseData.description}
 
 2. 당사자 관계
-${(caseData.parties || []).map((p) => `- ${p.name} (${p.role})`).join("\n")}
+${(caseData.parties || []).map((p: Party) => `- ${p.name} (${p.role})`).join("\n")}
 
 3. 주요 사실관계
-${(caseData.timeline || []).map((t) => `- ${t.date}: ${t.event}`).join("\n")}
+${(caseData.timeline || []).map((t: TimelineEvent) => `- ${t.date}: ${t.event}`).join("\n")}
 
 4. 법적 쟁점
 [검토 필요]
@@ -375,15 +382,19 @@ ${(caseData.timeline || []).map((t) => `- ${t.date}: ${t.event}`).join("\n")}
         </CardHeader>
 
         <CardContent className="flex-1 p-0 overflow-hidden">
-          <Textarea
-            value={documentContent}
-            onChange={(e) => {
-              setDocumentContent(e.target.value);
-              setIsSaved(false);
-            }}
-            placeholder="왼쪽에서 템플릿을 선택하거나 AI 초안을 작성하세요."
-            className="h-full w-full resize-none border-none rounded-none focus-visible:ring-0 font-mono text-sm leading-relaxed p-4"
-          />
+          {selectedTemplateId === "complaint" ? (
+            <ComplaintForm caseData={caseData} />
+          ) : (
+            <Textarea
+              value={documentContent}
+              onChange={(e) => {
+                setDocumentContent(e.target.value);
+                setIsSaved(false);
+              }}
+              placeholder="왼쪽에서 템플릿을 선택하거나 AI 초안을 작성하세요."
+              className="h-full w-full resize-none border-none rounded-none focus-visible:ring-0 font-mono text-sm leading-relaxed p-4"
+            />
+          )}
         </CardContent>
       </Card>
 
@@ -401,7 +412,7 @@ ${(caseData.timeline || []).map((t) => `- ${t.date}: ${t.event}`).join("\n")}
                   관계인
                 </h4>
                 <div className="space-y-1">
-                  {(caseData.parties || []).slice(0, 4).map((p, i) => (
+                  {(caseData.parties || []).slice(0, 4).map((p: Party, i: number) => (
                     <div key={i} className="p-1.5 bg-muted rounded text-[10px] flex justify-between">
                       <span>{p.name}</span>
                       <span className="text-muted-foreground">{p.role}</span>
@@ -416,11 +427,15 @@ ${(caseData.timeline || []).map((t) => `- ${t.date}: ${t.event}`).join("\n")}
                   관련 판례
                 </h4>
                 <div className="space-y-1">
-                  {["2023다12345", "2022가합67890"].map((c, i) => (
-                    <div key={i} className="p-1.5 bg-muted rounded text-[10px]">
-                      {c}
-                    </div>
-                  ))}
+                  {similarCases.length > 0 ? (
+                    similarCases.slice(0, 3).map((c, i) => (
+                      <div key={i} className="p-1.5 bg-muted rounded text-[10px]">
+                        {c.case_number}
+                      </div>
+                    ))
+                  ) : (
+                    <p className="text-[10px] text-muted-foreground">유사 판례 없음</p>
+                  )}
                 </div>
               </div>
 

@@ -13,27 +13,22 @@ v3.0 업데이트:
 - 일상 언어 → 법률 용어 변환으로 검색 정확도 향상
 """
 
-import os
 import json
 import logging
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
-from qdrant_client import QdrantClient
 from qdrant_client.http import models
-from openai import OpenAI
-from dotenv import load_dotenv
 
-# 임베딩 서비스 재활용
+from tool.qdrant_client import get_qdrant_client
 from app.services.precedent_embedding_service import (
     create_dense_embedding_cached,
     get_sparse_model,
+    get_openai_client,
 )
 
 logger = logging.getLogger(__name__)
-
-load_dotenv()
 
 
 @dataclass
@@ -67,12 +62,9 @@ class SearchLawsService:
     LAWS_HYBRID_COLLECTION = "laws_hybrid"
 
     def __init__(self):
-        self.qdrant_client = QdrantClient(
-            host=os.getenv("QDRANT_HOST", "localhost"),
-            port=int(os.getenv("QDRANT_PORT", "6333"))
-        )
+        self.qdrant_client = get_qdrant_client()
         self.sparse_model = get_sparse_model()
-        self.openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        self.openai_client = get_openai_client()
 
         # 하이브리드 컬렉션 존재 여부 확인
         self._use_hybrid = self._check_hybrid_collection()

@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 class PrecedentSearchService:
     """판례 하이브리드 검색 서비스"""
 
-    CASES_COLLECTION = "cases"
+    CASES_COLLECTION = "precedents"
 
     # 사건번호 패턴 (컴파일된 정규식)
     CASE_NUMBER_PATTERN = re.compile(r'(\d{2,4}[가-힣]{1,2}\d+)')
@@ -31,27 +31,42 @@ class PrecedentSearchService:
     # 최소 점수 하한선
     MIN_SCORE_THRESHOLD = 0.3
 
-    # 법률 용어 패턴
+    # 법률 용어 (정확한 단어 매칭용)
+    LEGAL_TERMS = {
+        # 기존 용어
+        "명예훼손", "모욕", "비방", "허위사실", "손해배상", "위자료",
+        "불법행위", "인격권", "원고", "피고", "청구",
+        # 추가 법률 용어
+        "채무불이행", "계약해제", "계약위반", "해제", "해지", "취소",
+        "사기", "횡령", "배임", "절도", "강도", "폭행", "상해",
+        "과실", "고의", "위법", "항소", "상고", "기각", "인용",
+        "가처분", "가압류", "압류", "경매", "담보", "저당", "질권",
+        "임대차", "매매", "증여", "상속", "유언", "이혼", "양육권",
+        "근로계약", "해고", "퇴직금", "임금", "산재",
+    }
+
+    # 법률 용어 패턴 (정규식 매칭용)
     LEGAL_PATTERNS = [
-        r'.+법$',
-        r'.+죄$',
-        r'.+권$',
-        r'제\d+조',
-        r'명예훼손',
-        r'모욕',
-        r'비방',
-        r'허위사실',
-        r'손해배상',
-        r'위자료',
-        r'불법행위',
-        r'인격권',
-        r'원고',
-        r'피고',
-        r'청구',
+        r'.+법$',       # ~법 (형법, 민법 등)
+        r'.+죄$',       # ~죄 (사기죄, 절도죄 등)
+        r'.+권$',       # ~권 (재산권, 인격권 등)
+        r'제\d+조',     # 제307조 등
     ]
+
+    # 문장형 쿼리 판단 기준
+    SENTENCE_MIN_LENGTH = 12  # 12자 이상이면 문장으로 간주
+    SENTENCE_PARTICLES = {"이", "가", "을", "를", "은", "는", "에서", "으로", "했", "된", "한", "하는"}
 
     # 불용어
     STOPWORDS = {"의", "가", "이", "은", "는", "을", "를", "에", "에서", "로", "으로", "와", "과", "도", "만", "및", "또는"}
+
+    # 섹션 가중치 (핵심 섹션에 보너스 점수 부여)
+    SECTION_WEIGHTS = {
+        "판시사항": 1.3,
+        "판결요지": 1.3,
+        "사건명": 1.2,
+    }
+    DEFAULT_SECTION_WEIGHT = 1.0
 
     def __init__(self):
         self.embedding_service = PrecedentEmbeddingService()
@@ -69,6 +84,15 @@ class PrecedentSearchService:
         s_range = s_max - s_min if s_max != s_min else 1.0
         return s_min, s_range
 
+    def _get_section_weight(self, section: str) -> float:
+        """섹션에 따른 가중치 반환"""
+        if not section:
+            return self.DEFAULT_SECTION_WEIGHT
+        for key, weight in self.SECTION_WEIGHTS.items():
+            if key in section:
+                return weight
+        return self.DEFAULT_SECTION_WEIGHT
+
     def _combine_weighted_scores(
         self,
         dense_points: List,
@@ -76,7 +100,7 @@ class PrecedentSearchService:
         dense_weight: float = 0.4,
         sparse_weight: float = 0.6,
     ) -> Dict[str, Dict[str, Any]]:
-        """Dense와 Sparse 검색 결과를 가중치 기반으로 결합"""
+        """Dense와 Sparse 검색 결과를 가중치 기반으로 결합 (섹션 가중치 적용)"""
         combined = {}
 
         dense_min, dense_range = self._normalize_scores(dense_points)
@@ -85,8 +109,10 @@ class PrecedentSearchService:
         for point in dense_points:
             point_id = str(point.id)
             normalized_score = (point.score - dense_min) / dense_range
+            section = point.payload.get("section", "")
+            section_weight = self._get_section_weight(section)
             combined[point_id] = {
-                "score": normalized_score * dense_weight,
+                "score": normalized_score * dense_weight * section_weight,
                 "payload": point.payload,
                 "dense_score": normalized_score,
                 "sparse_score": 0,
@@ -95,7 +121,9 @@ class PrecedentSearchService:
         for point in sparse_points:
             point_id = str(point.id)
             normalized_score = (point.score - sparse_min) / sparse_range
-            weighted_score = normalized_score * sparse_weight
+            section = point.payload.get("section", "")
+            section_weight = self._get_section_weight(section)
+            weighted_score = normalized_score * sparse_weight * section_weight
 
             if point_id in combined:
                 combined[point_id]["score"] += weighted_score
@@ -115,10 +143,27 @@ class PrecedentSearchService:
     def _detect_query_type(self, query: str) -> str:
         """쿼리 유형 감지 (keyword / semantic)
 
+        판단 로직:
+        1. 문장형 쿼리 (15자 이상 + 조사 포함) → semantic
+        2. 법률 용어 포함 → keyword
+        3. 그 외 → semantic
+
         Note: 사건번호 패턴은 search_cases에서 먼저 처리되므로 여기서는 체크하지 않음
         """
         query = query.strip()
 
+        # 1. 문장형 쿼리 판단: 길이 + 조사 포함 여부
+        if len(query) >= self.SENTENCE_MIN_LENGTH:
+            has_particle = any(p in query for p in self.SENTENCE_PARTICLES)
+            if has_particle:
+                return "semantic"
+
+        # 2. 법률 용어 정확 매칭 (LEGAL_TERMS)
+        for term in self.LEGAL_TERMS:
+            if term in query:
+                return "keyword"
+
+        # 3. 법률 패턴 매칭 (~법, ~죄, ~권, 제N조)
         for pattern in self.LEGAL_PATTERNS:
             if re.search(pattern, query):
                 return "keyword"
@@ -142,11 +187,54 @@ class PrecedentSearchService:
         content_lower = content.lower()
         return sum(1 for kw in keywords if kw.lower() in content_lower)
 
-    # ==================== 사건번호 검색 ====================
+    # ==================== 사건번호/사건명 검색 ====================
 
     def _is_case_number(self, query: str) -> bool:
         """검색어가 사건번호 패턴인지 확인"""
         return bool(self.CASE_NUMBER_PATTERN.search(query))
+
+    def _find_exact_case_name_matches(self, query: str, limit: int = 5) -> List[Dict[str, Any]]:
+        """사건명이 정확히 일치하는 판례 찾기"""
+        query_clean = query.strip()
+
+        if len(query_clean) < 2:
+            return []
+
+        # case_name 필드에서 정확히 일치하는 것 검색
+        results = self.repository.qdrant_client.scroll(
+            collection_name=self.CASES_COLLECTION,
+            scroll_filter=models.Filter(
+                must=[
+                    models.FieldCondition(
+                        key="case_name",
+                        match=models.MatchValue(value=query_clean)
+                    )
+                ]
+            ),
+            limit=limit * 10,
+            with_payload=True,
+            with_vectors=False,
+        )
+
+        if not results[0]:
+            return []
+
+        # 사건번호별 중복 제거
+        case_data: Dict[str, Dict[str, Any]] = {}
+        for point in results[0]:
+            payload = point.payload
+            case_num = payload.get("case_number", "")
+
+            if case_num and case_num not in case_data:
+                case_data[case_num] = {
+                    "case_number": case_num,
+                    "case_name": payload.get("case_name", ""),
+                    "court_name": payload.get("court_name", ""),
+                    "judgment_date": payload.get("judgment_date", ""),
+                }
+
+        logger.info(f"사건명 정확 매칭: '{query_clean}' → {len(case_data)}건")
+        return list(case_data.values())[:limit]
 
     def _search_by_case_number(self, query: str, limit: int = 30) -> Dict[str, Any]:
         """사건번호로 정확 검색"""
@@ -230,6 +318,10 @@ class PrecedentSearchService:
         if self._is_case_number(query):
             return self._search_by_case_number(query, limit)
 
+        # 1. 사건명 정확 매칭 먼저 확인
+        exact_matches = self._find_exact_case_name_matches(query, limit=5)
+        exact_case_numbers = {m["case_number"] for m in exact_matches}
+
         query_type = self._detect_query_type(query)
         dense_weight, sparse_weight = self._get_weights(query_type)
         logger.info(f"쿼리 유형: {query_type} (Dense: {dense_weight}, Sparse: {sparse_weight})")
@@ -291,6 +383,32 @@ class PrecedentSearchService:
             )
             logger.info(f"키워드 매칭 재정렬 적용: {keywords}")
 
+        # 2. 정확 매칭 결과를 맨 앞에 배치
+        if exact_matches:
+            # 정확 매칭된 사건번호는 벡터 검색 결과에서 제외
+            search_results = [r for r in search_results if r.case_number not in exact_case_numbers]
+
+            # 정확 매칭 결과의 전체 콘텐츠 조회
+            exact_contents = self.repository.get_full_case_contents_batch(list(exact_case_numbers))
+
+            # 정확 매칭 결과를 SearchResult로 변환 (score = 2.0으로 최상위 표시)
+            exact_results = [
+                SearchResult(
+                    case_number=m["case_number"],
+                    case_name=m["case_name"],
+                    court_name=m["court_name"],
+                    judgment_date=m["judgment_date"],
+                    content=exact_contents.get(m["case_number"], ""),
+                    section="전문",
+                    score=2.0,  # 정확 매칭은 최고 점수
+                )
+                for m in exact_matches
+            ]
+
+            # 정확 매칭 + 벡터 검색 결과 합치기
+            search_results = exact_results + search_results
+            logger.info(f"사건명 정확 매칭 {len(exact_results)}건 우선 배치")
+
         search_results = search_results[:limit]
 
         return {
@@ -298,34 +416,43 @@ class PrecedentSearchService:
             "query_type": query_type,
             "weights": {"dense": dense_weight, "sparse": sparse_weight},
             "keywords": keywords,
+            "exact_match_count": len(exact_matches),
             "total": len(search_results),
             "results": [r.to_dict() for r in search_results]
         }
 
     def _merge_case_chunks(self, results: List[SearchResult]) -> List[SearchResult]:
-        """같은 판례의 여러 청크를 병합"""
-        # 사건번호별 최고 점수와 메타데이터 통합 관리
+        """같은 판례의 여러 청크를 병합 (이미 가져온 content 활용, DB 재조회 없음)"""
+        # 사건번호별 데이터 수집
         case_data: Dict[str, Dict[str, Any]] = {}
 
         for result in results:
             case_num = result.case_number
-            if case_num not in case_data or result.score > case_data[case_num]["score"]:
+            if case_num not in case_data:
                 case_data[case_num] = {
                     "score": result.score,
                     "case_name": result.case_name,
                     "court_name": result.court_name,
                     "judgment_date": result.judgment_date,
+                    "contents": [],  # 청크 content 수집
                 }
+            else:
+                # 더 높은 점수로 업데이트
+                if result.score > case_data[case_num]["score"]:
+                    case_data[case_num]["score"] = result.score
 
-        all_contents = self.repository.get_full_case_contents_batch(list(case_data.keys()))
+            # 청크 content 수집 (중복 방지)
+            if result.content and result.content not in case_data[case_num]["contents"]:
+                case_data[case_num]["contents"].append(result.content)
 
+        # 수집된 청크들을 합쳐서 결과 생성
         merged_results = [
             SearchResult(
                 case_number=case_num,
                 case_name=data["case_name"],
                 court_name=data["court_name"],
                 judgment_date=data["judgment_date"],
-                content=all_contents.get(case_num, ""),
+                content="\n\n".join(data["contents"]),  # 청크들을 합침
                 section="전문",
                 score=data["score"],
             )

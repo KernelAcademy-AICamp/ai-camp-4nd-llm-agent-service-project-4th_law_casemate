@@ -1,17 +1,15 @@
 """
 유사 판례 검색 서비스
-쿼리 변환 + 하이브리드 검색 (Dense + Sparse) 기반 유사 판례 검색
+쿼리 변환 + 하이브리드 검색 (Dense + Sparse) + 리랭킹 기반 유사 판례 검색
 """
 
-import os
 import logging
+import numpy as np
 from typing import List, Dict, Any
 from dataclasses import dataclass
-from qdrant_client import QdrantClient
-from openai import OpenAI
-from dotenv import load_dotenv
 
-from app.services.precedent_embedding_service import PrecedentEmbeddingService
+from app.services.precedent_embedding_service import PrecedentEmbeddingService, get_openai_client
+from tool.qdrant_client import get_qdrant_client
 from app.prompts.query_transform_prompt import (
     QUERY_TRANSFORM_SYSTEM_PROMPT,
     QUERY_TRANSFORM_USER_PROMPT,
@@ -19,7 +17,19 @@ from app.prompts.query_transform_prompt import (
 
 logger = logging.getLogger(__name__)
 
-load_dotenv()
+# 리랭커 모델 (Lazy Loading - 최초 사용 시 로드)
+_reranker_model = None
+
+
+def get_reranker_model():
+    """리랭커 모델 싱글톤 로드"""
+    global _reranker_model
+    if _reranker_model is None:
+        from sentence_transformers import CrossEncoder
+        logger.info("리랭커 모델 로딩 중... (BAAI/bge-reranker-v2-m3)")
+        _reranker_model = CrossEncoder("BAAI/bge-reranker-v2-m3", max_length=512)
+        logger.info("리랭커 모델 로드 완료")
+    return _reranker_model
 
 
 @dataclass
@@ -42,23 +52,25 @@ class SimilarCaseResult:
 
 
 class SimilarSearchService:
-    """유사 판례 검색 서비스 (쿼리 변환 + 하이브리드: Dense + Sparse, RRF 기반)"""
+    """유사 판례 검색 서비스 (쿼리 변환 + 하이브리드: Dense + Sparse, RRF + 리랭킹)"""
 
-    SUMMARIES_COLLECTION = "case_summaries"
+    SUMMARIES_COLLECTION = "precedent_summaries"
 
     # RRF 파라미터 (값이 클수록 순위 간 점수 차이가 완만해짐)
-    RRF_K = 60
+    # A/B 테스트 결과 80이 최적 (Dense+Sparse 균형 반영)
+    RRF_K = 80
 
-    def __init__(self):
+    # 리랭킹 설정
+    RERANK_CANDIDATES = 20  # 리랭킹할 후보 수
+
+    def __init__(self, use_reranking: bool = True):
         # case_summaries 컬렉션은 text-embedding-3-large로 인덱싱됨
         self.embedding_service = PrecedentEmbeddingService(
             model=PrecedentEmbeddingService.MODEL_LARGE
         )
-        self.qdrant_client = QdrantClient(
-            host=os.getenv("QDRANT_HOST", "localhost"),
-            port=int(os.getenv("QDRANT_PORT", "6333"))
-        )
-        self.openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        self.qdrant_client = get_qdrant_client()  # 싱글톤 사용
+        self.openai_client = get_openai_client()  # 싱글톤 사용
+        self.use_reranking = use_reranking
 
     # ==================== 쿼리 변환 ====================
 
@@ -131,6 +143,47 @@ class SimilarSearchService:
 
     # ==================== 하이브리드 검색 ====================
 
+    def _fill_missing_dense_scores(
+        self,
+        combined: Dict[str, Dict[str, Any]],
+        query_dense_vector: List[float]
+    ) -> None:
+        """
+        Sparse 전용 결과에 대해 Dense 유사도 계산
+
+        Sparse 검색에서만 발견된 결과는 dense_similarity가 0으로 설정되어 있음.
+        해당 포인트들의 dense 벡터를 가져와 쿼리와의 코사인 유사도를 계산.
+        """
+        # dense_similarity가 0인 포인트들 찾기
+        missing_ids = [
+            point_id for point_id, data in combined.items()
+            if data["dense_similarity"] == 0
+        ]
+
+        if not missing_ids:
+            return
+
+        # 해당 포인트들의 dense 벡터 가져오기
+        points = self.qdrant_client.retrieve(
+            collection_name=self.SUMMARIES_COLLECTION,
+            ids=missing_ids,
+            with_vectors=["dense"]
+        )
+
+        # 코사인 유사도 계산
+        query_vec = np.array(query_dense_vector)
+        query_norm = np.linalg.norm(query_vec)
+
+        for point in points:
+            point_id = str(point.id)
+            if point.vector and "dense" in point.vector:
+                doc_vec = np.array(point.vector["dense"])
+                doc_norm = np.linalg.norm(doc_vec)
+                similarity = float(np.dot(query_vec, doc_vec) / (query_norm * doc_norm))
+                combined[point_id]["dense_similarity"] = similarity
+
+        logger.info(f"Sparse 전용 결과 {len(missing_ids)}개에 Dense 유사도 계산 완료")
+
     def _search_hybrid(self, query: str, search_limit: int) -> Dict[str, Dict[str, Any]]:
         """
         단일 쿼리로 하이브리드 검색 수행 (Dense + Sparse)
@@ -158,7 +211,57 @@ class SimilarSearchService:
         )
 
         # RRF 점수 결합
-        return self._combine_rrf_scores(dense_results.points, sparse_results.points)
+        combined = self._combine_rrf_scores(dense_results.points, sparse_results.points)
+
+        # Sparse 전용 결과에 Dense 유사도 채우기
+        self._fill_missing_dense_scores(combined, dense_vector)
+
+        return combined
+
+    # ==================== 리랭킹 ====================
+
+    def _rerank(
+        self,
+        query: str,
+        candidates: List[Dict[str, Any]],
+        top_k: int
+    ) -> List[Dict[str, Any]]:
+        """
+        Cross-encoder를 사용한 리랭킹
+
+        Args:
+            query: 검색 쿼리
+            candidates: RRF로 정렬된 후보 리스트
+            top_k: 반환할 상위 K개
+
+        Returns:
+            리랭킹된 상위 K개 결과
+        """
+        if not candidates:
+            return []
+
+        reranker = get_reranker_model()
+
+        # (쿼리, 문서) 쌍 생성 - 요약 텍스트를 문서로 사용
+        pairs = []
+        for c in candidates:
+            summary = c.get("summary", "")[:500]  # 최대 500자
+            pairs.append((query[:500], summary))
+
+        # Cross-encoder로 점수 계산
+        scores = reranker.predict(pairs)
+
+        # 점수와 함께 정렬
+        scored_candidates = list(zip(candidates, scores))
+        scored_candidates.sort(key=lambda x: x[1], reverse=True)
+
+        # 리랭크 점수 추가하여 반환
+        reranked = []
+        for candidate, rerank_score in scored_candidates[:top_k]:
+            candidate["rerank_score"] = float(rerank_score)
+            reranked.append(candidate)
+
+        return reranked
 
     # ==================== 유사 판례 검색 (메인) ====================
 
@@ -169,7 +272,7 @@ class SimilarSearchService:
         limit: int = 3
     ) -> Dict[str, Any]:
         """
-        유사 판례 검색 (쿼리 변환 + RRF 하이브리드)
+        유사 판례 검색 (쿼리 변환 + RRF 하이브리드 + 리랭킹)
 
         Args:
             query: 검색 쿼리 (사건 요약 + 사실관계 + 청구내용)
@@ -185,8 +288,8 @@ class SimilarSearchService:
         # 1. 쿼리 변환 (GPT)
         transformed_query = self._transform_query(query)
 
-        # 2. 하이브리드 검색
-        search_limit = (limit + 1) * 10
+        # 2. 하이브리드 검색 (리랭킹 시 더 많은 후보 추출)
+        search_limit = self.RERANK_CANDIDATES * 2 if self.use_reranking else (limit + 1) * 10
         search_results = self._search_hybrid(transformed_query, search_limit)
 
         # 3. 결과 처리 (자기 자신 제외)
@@ -207,22 +310,31 @@ class SimilarSearchService:
                 "case_name": payload.get("case_name", ""),
                 "court_name": payload.get("court_name", ""),
                 "judgment_date": payload.get("judgment_date", ""),
+                "summary": payload.get("summary", ""),  # 리랭킹용
                 "rrf_score": rrf_score,
                 "dense_similarity": dense_similarity,
             })
 
-        # 4. RRF 점수로 순위 결정
+        # 4. RRF 점수로 1차 정렬
         similar_cases.sort(key=lambda x: x["rrf_score"], reverse=True)
-        similar_cases = similar_cases[:limit]
 
-        # 5. 최종 결과: Dense 유사도 그대로 표시
+        # 5. 리랭킹 적용 (옵션)
+        if self.use_reranking and len(similar_cases) > 0:
+            # 상위 N개 후보를 리랭킹
+            top_candidates = similar_cases[:self.RERANK_CANDIDATES]
+            similar_cases = self._rerank(transformed_query, top_candidates, limit)
+            logger.info(f"리랭킹 적용: {self.RERANK_CANDIDATES}개 후보 → {limit}개 선정")
+        else:
+            similar_cases = similar_cases[:limit]
+
+        # 6. 최종 결과
         results = [
             SimilarCaseResult(
                 case_number=case["case_number"],
                 case_name=case["case_name"],
                 court_name=case["court_name"],
                 judgment_date=case["judgment_date"],
-                score=round(case["dense_similarity"], 4),
+                score=round(case["dense_similarity"], 4),  # 항상 Dense 유사도 표시 (정렬은 리랭킹 순서 유지)
             )
             for case in similar_cases
         ]
@@ -230,8 +342,13 @@ class SimilarSearchService:
         # 디버깅 정보
         debug_info = {
             "transformed_query": transformed_query,
-            "top_raw_scores": [
-                {"case": c["case_number"], "raw_dense": round(c["dense_similarity"], 4)}
+            "use_reranking": self.use_reranking,
+            "top_scores": [
+                {
+                    "case": c["case_number"],
+                    "dense": round(c["dense_similarity"], 4),
+                    "rerank": round(c.get("rerank_score", 0), 4) if self.use_reranking else None,
+                }
                 for c in similar_cases
             ]
         }

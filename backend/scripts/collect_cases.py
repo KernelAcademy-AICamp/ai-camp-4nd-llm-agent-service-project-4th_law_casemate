@@ -4,7 +4,6 @@ API에서 키워드로 검색하여 판례를 수집합니다.
 """
 
 import sys
-import time
 import asyncio
 import argparse
 import traceback
@@ -23,53 +22,66 @@ class CaseCollector(BaseCaseCollector):
     """키워드 기반 판례 수집기"""
 
     # 검색 키워드
-    # [ "명예" , "명예훼손", "비방", "모욕", "성희롱","명예훼손 손해배상", "정신적 손해", "징계해고"] "부당해고" 399건 중 183건 수집
-    KEYWORDS = ["허위사실"]
+    # "사이버명예훼손", "정보통신망", "명예훼손”", "부당해고", "협박", "인격권", "초상권", "사생활", "언론중재", "모욕", "허위사실", "출판물명예훼손", "비방", "사기", 
+    # "횡령", "배임", "위자료", "불법행위", "직장", "명예"
+    KEYWORDS = [ "손해배상"]
+
+    def __init__(self):
+        super().__init__()
+        self.api_client: Optional[LawAPIClient] = None
 
     # ==================== 고유 로직: API 검색 ====================
 
     async def fetch_case_list(self, keyword: str, max_pages: int = 100) -> List[Dict[str, Any]]:
-        """키워드로 판례 목록 검색 (페이지네이션)"""
+        """키워드로 판례 목록 검색 (페이지네이션, Rate Limit + Retry 적용)"""
         all_cases = []
 
-        async with LawAPIClient() as client:
-            page = 1
-            while page <= max_pages:
-                result = await client.search_cases(
-                    query=keyword,
-                    display=100,
-                    page=page
-                )
+        page = 1
+        while page <= max_pages:
+            # api_call_with_retry 사용 (Rate Limit + 자동 재시도)
+            result = await self.api_call_with_retry(
+                self.api_client.search_cases,
+                query=keyword,
+                display=100,
+                page=page,
+            )
 
-                prec_search = result.get("PrecSearch", {})
-                cases = prec_search.get("prec", [])
+            if result is None:
+                print(f"    - 페이지 {page} 조회 실패, 중단")
+                break
 
-                if not cases:
-                    break
+            prec_search = result.get("PrecSearch", {})
+            cases = prec_search.get("prec", [])
 
-                if isinstance(cases, dict):
-                    cases = [cases]
+            if not cases:
+                break
 
-                all_cases.extend(cases)
-                total_cnt = int(prec_search.get("totalCnt", 0))
+            if isinstance(cases, dict):
+                cases = [cases]
 
-                if len(all_cases) >= total_cnt:
-                    break
+            all_cases.extend(cases)
+            total_cnt = int(prec_search.get("totalCnt", 0))
 
-                page += 1
-                time.sleep(0.5)
+            if len(all_cases) >= total_cnt:
+                break
+
+            page += 1
 
         return all_cases
 
-    async def fetch_case_detail(self, case_id: str) -> Optional[Dict[str, Any]]:
-        """판례 상세 정보 조회"""
-        async with LawAPIClient() as client:
-            try:
-                result = await client.get_case_detail(case_id)
-                return result.get("PrecService", {})
-            except Exception as e:
-                print(f"    - 판례 {case_id} 조회 실패: {e}")
-                return None
+    async def fetch_case_detail(self, case_id: str, case_number: str = "", keyword: str = "") -> Optional[Dict[str, Any]]:
+        """판례 상세 정보 조회 (Rate Limit + Retry 적용)"""
+        result = await self.api_call_with_retry(
+            self.api_client.get_case_detail,
+            case_id,
+            case_number=case_number,
+            keyword=keyword,
+        )
+
+        if result is None:
+            return None
+
+        return result.get("PrecService", {})
 
     # ==================== 메인 수집 로직 ====================
 
@@ -95,73 +107,85 @@ class CaseCollector(BaseCaseCollector):
         total_cases = 0
         total_summaries = 0
 
-        for keyword in self.KEYWORDS:
-            print(f"\n[{keyword}] 수집 중...")
+        # API 클라이언트 세션 유지 (전체 수집 동안 재사용)
+        async with LawAPIClient() as client:
+            self.api_client = client
 
-            try:
-                case_list = await self.fetch_case_list(keyword)
+            for keyword in self.KEYWORDS:
+                print(f"\n[{keyword}] 수집 중...")
 
-                if not case_list:
-                    print(f"[{keyword}] 검색 결과 없음")
+                try:
+                    case_list = await self.fetch_case_list(keyword)
+
+                    if not case_list:
+                        print(f"[{keyword}] 검색 결과 없음")
+                        continue
+
+                    print(f"[{keyword}] 총 {len(case_list)}건 검색됨")
+
+                    keyword_cases = 0
+                    keyword_saved = 0
+                    duplicates = 0
+
+                    for case in case_list:
+                        case_number = case.get("사건번호", "")
+                        case_id = case.get("판례일련번호", "")
+
+                        # 중복 체크
+                        if self.is_duplicate(case_number):
+                            duplicates += 1
+                            continue
+
+                        # 상세 조회 (Rate Limit + Retry 적용, 실패 시 자동 기록)
+                        detail = await self.fetch_case_detail(
+                            case_id,
+                            case_number=case_number,
+                            keyword=keyword
+                        )
+                        if not detail:
+                            continue
+
+                        # 메타데이터 구성
+                        case_info = {
+                            "case_number": case_number,
+                            "case_name": detail.get("사건명", ""),
+                            "court_name": detail.get("법원명", ""),
+                            "judgment_date": detail.get("선고일자", ""),
+                            "case_type": detail.get("사건종류명", ""),
+                            "judgment_type": detail.get("판결유형", ""),
+                            "case_serial_number": detail.get("판례정보일련번호", ""),
+                            "case_type_code": detail.get("사건종류코드", ""),
+                            "court_type_code": detail.get("법원종류코드", ""),
+                        }
+
+                        # 공통 처리 (청킹 → 임베딩 → 저장 → 요약)
+                        result = self.process_case(detail, case_info, keyword, skip_summary)
+
+                        keyword_saved += result["chunks_saved"]
+                        total_saved += result["chunks_saved"]
+                        if result["summary_saved"]:
+                            total_summaries += 1
+
+                        keyword_cases += 1
+                        total_cases += 1
+                        print(f"  [{keyword}] {case_number} 저장 완료 ({keyword_cases}건째)")
+
+                    if keyword_cases > 0:
+                        print(f"[{keyword}] 완료: {keyword_cases}건 → {keyword_saved}개 청크 저장")
+                    elif duplicates > 0:
+                        print(f"[{keyword}] {len(case_list)}건 검색, {duplicates}건 중복 → 스킵")
+
+                except Exception as e:
+                    print(f"[{keyword}] 에러: {e}")
+                    traceback.print_exc()
                     continue
 
-                print(f"[{keyword}] 총 {len(case_list)}건 검색됨")
-
-                keyword_cases = 0
-                keyword_saved = 0
-                duplicates = 0
-
-                for case in case_list:
-                    case_number = case.get("사건번호", "")
-                    case_id = case.get("판례일련번호", "")
-
-                    # 중복 체크
-                    if self.is_duplicate(case_number):
-                        duplicates += 1
-                        continue
-
-                    # 상세 조회
-                    detail = await self.fetch_case_detail(case_id)
-                    if not detail:
-                        continue
-
-                    # 메타데이터 구성
-                    case_info = {
-                        "case_number": case_number,
-                        "case_name": detail.get("사건명", ""),
-                        "court_name": detail.get("법원명", ""),
-                        "judgment_date": detail.get("선고일자", ""),
-                        "case_type": detail.get("사건종류명", ""),
-                        "judgment_type": detail.get("판결유형", ""),
-                        "case_serial_number": detail.get("판례정보일련번호", ""),
-                        "case_type_code": detail.get("사건종류코드", ""),
-                        "court_type_code": detail.get("법원종류코드", ""),
-                    }
-
-                    # 공통 처리 (청킹 → 임베딩 → 저장 → 요약)
-                    result = self.process_case(detail, case_info, keyword, skip_summary)
-
-                    keyword_saved += result["chunks_saved"]
-                    total_saved += result["chunks_saved"]
-                    if result["summary_saved"]:
-                        total_summaries += 1
-
-                    keyword_cases += 1
-                    total_cases += 1
-                    print(f"  [{keyword}] {case_number} 저장 완료 ({keyword_cases}건째)")
-                    time.sleep(0.3)
-
-                if keyword_cases > 0:
-                    print(f"[{keyword}] 완료: {keyword_cases}건 → {keyword_saved}개 청크 저장")
-                elif duplicates > 0:
-                    print(f"[{keyword}] {len(case_list)}건 검색, {duplicates}건 중복 → 스킵")
-
-            except Exception as e:
-                print(f"[{keyword}] 에러: {e}")
-                traceback.print_exc()
-                continue
+        # 실패 케이스 저장
+        self.save_failed_cases()
 
         print(f"\n수집 완료! 총 {total_cases}건 → {total_saved}개 청크, {total_summaries}개 요약 저장")
+        if self.get_failed_cases_count() > 0:
+            print(f"  - 실패: {self.get_failed_cases_count()}건 (failed_cases.json 참고)")
 
 
 async def main():

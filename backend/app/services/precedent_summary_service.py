@@ -3,37 +3,32 @@
 GPT를 활용한 판례 요약 생성 및 저장된 요약 조회
 """
 
-import os
 import re
 import time
 import logging
 from typing import Optional, Dict, Any
-from openai import OpenAI
-from qdrant_client import QdrantClient
 from qdrant_client.http import models
-from dotenv import load_dotenv
 
-from app.prompts.summary_prompt import SUMMARY_SYSTEM_PROMPT
+from tool.qdrant_client import QdrantService
+from app.prompts.summary_prompt import SUMMARY_SYSTEM_PROMPT, PROMPT_VERSION
+from app.services.precedent_embedding_service import get_openai_client, get_sparse_model
+from app.config import EmbeddingConfig
 
 logger = logging.getLogger(__name__)
-
-load_dotenv()
 
 
 class SummaryService:
     """판례 요약 서비스"""
 
-    SUMMARIES_COLLECTION = "case_summaries"
+    SUMMARIES_COLLECTION = "precedent_summaries"
 
     # 긴 판례 기준 (청크 개수 대신 문자 수로 판단)
     LONG_CONTENT_THRESHOLD = 30000  # 약 300청크 * 100자
 
     def __init__(self):
-        self.openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-        self.qdrant_client = QdrantClient(
-            host=os.getenv("QDRANT_HOST", "localhost"),
-            port=int(os.getenv("QDRANT_PORT", "6333"))
-        )
+        self.openai_client = get_openai_client()  # 싱글톤
+        self.sparse_model = get_sparse_model()    # 싱글톤
+        self.qdrant_service = QdrantService()     # 내부에서 싱글톤 사용
 
     # ==================== 섹션 파싱 ====================
 
@@ -165,7 +160,7 @@ class SummaryService:
             저장된 요약 텍스트, 없으면 None
         """
         try:
-            results = self.qdrant_client.scroll(
+            results = self.qdrant_service.client.scroll(
                 collection_name=self.SUMMARIES_COLLECTION,
                 scroll_filter=models.Filter(
                     must=[
@@ -188,22 +183,90 @@ class SummaryService:
             logger.error(f"요약 조회 실패: {e}")
             return None
 
-    def get_or_generate_summary(self, case_number: str, content: str) -> Dict[str, Any]:
+    def _save_generated_summary(
+        self,
+        case_number: str,
+        summary: str,
+        case_info: Dict[str, Any] = None,
+    ) -> bool:
         """
-        저장된 요약이 있으면 반환, 없으면 생성
+        생성된 요약을 Qdrant에 저장 (임베딩 포함)
+
+        Args:
+            case_number: 사건번호
+            summary: 요약 텍스트
+            case_info: 메타데이터 (case_name, court_name, judgment_date 등)
+
+        Returns:
+            저장 성공 여부
+        """
+        try:
+            case_info = case_info or {}
+
+            # Dense 임베딩 생성 (text-embedding-3-large)
+            dense_resp = self.openai_client.embeddings.create(
+                model=EmbeddingConfig.SUMMARY_MODEL,
+                input=summary,
+            )
+            dense_vector = dense_resp.data[0].embedding
+
+            # Sparse 임베딩 생성 (BM25)
+            sparse_emb = list(self.sparse_model.embed([summary]))[0]
+            sparse_vector = {
+                "indices": sparse_emb.indices.tolist(),
+                "values": sparse_emb.values.tolist(),
+            }
+
+            # Qdrant에 저장
+            saved = self.qdrant_service.save_summary(
+                case_number=case_number,
+                summary=summary,
+                prompt_version=PROMPT_VERSION,
+                dense_vector=dense_vector,
+                sparse_vector=sparse_vector,
+                case_name=case_info.get("case_name", ""),
+                court_name=case_info.get("court_name", ""),
+                judgment_date=case_info.get("judgment_date", ""),
+            )
+
+            if saved:
+                logger.info(f"요약 저장 완료: {case_number}")
+            return saved
+
+        except Exception as e:
+            logger.error(f"요약 저장 실패 ({case_number}): {e}")
+            return False
+
+    def get_or_generate_summary(
+        self,
+        case_number: str,
+        content: str,
+        case_info: Dict[str, Any] = None,
+        save_to_db: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        저장된 요약이 있으면 반환, 없으면 생성 후 저장
 
         Args:
             case_number: 사건번호
             content: 판례 내용 (요약 생성 시 사용)
+            case_info: 메타데이터 (저장 시 사용)
+            save_to_db: 새로 생성된 요약을 DB에 저장할지 여부
 
         Returns:
-            {"summary": str, "cached": bool}
+            {"summary": str, "cached": bool, "saved": bool}
         """
         # 먼저 저장된 요약 확인
         saved_summary = self.get_saved_summary(case_number)
         if saved_summary:
-            return {"summary": saved_summary, "cached": True}
+            return {"summary": saved_summary, "cached": True, "saved": False}
 
         # 없으면 새로 생성
         summary = self.summarize(content)
-        return {"summary": summary, "cached": False}
+
+        # 생성된 요약을 Qdrant에 저장
+        saved = False
+        if save_to_db:
+            saved = self._save_generated_summary(case_number, summary, case_info)
+
+        return {"summary": summary, "cached": False, "saved": saved}

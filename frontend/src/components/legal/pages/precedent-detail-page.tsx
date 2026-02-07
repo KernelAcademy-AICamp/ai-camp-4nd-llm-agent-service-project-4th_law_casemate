@@ -323,7 +323,7 @@ export function PrecedentDetailPage({ }: PrecedentDetailPageProps) {
 
       {/* Content Area - Side by Side Layout */}
       <div className="flex gap-6">
-        {/* Full Text Section */}
+        {/* Full Text Section 줄 간격 (leading-loose / tight */}
         <div className="prose prose-base max-w-none transition-all duration-300 flex-[6]">
           <div className="whitespace-pre-wrap text-[0.95rem] leading-loose font-sans text-foreground/80">
             {(() => {
@@ -348,13 +348,13 @@ export function PrecedentDetailPage({ }: PrecedentDetailPageProps) {
 
               return sections.map((section, sIndex) => {
                 return (
-                  <div key={sIndex} className={section.header ? "mt-6" : "mt-0"}>
+                  <div key={sIndex} className={section.header ? "mt-1" : "mt-0"}> {/* 섹션 간의 간격*/}
                     {section.header && (
-                      <h3 className="text-lg font-bold text-gray-900 mb-2">
+                      <h3 className="text-lg font-bold text-gray-900 mb-1"> {/* 헤더 아래 간격*/}
                         {section.header.replace(/[【】]/g, '')}
                       </h3>
                     )}
-                    <div className={`${section.header ? "pl-6 md:pl-10" : ""} space-y-1`}>
+                    <div className={`${section.header ? "pl-6 md:pl-10" : ""} space-y-0`}>
                       {section.lines.map((line, lIndex) => {
                         // 연속 공백을 하나로 정리
                         const cleanedLine = line.replace(/\s{2,}/g, ' ');
@@ -365,20 +365,12 @@ export function PrecedentDetailPage({ }: PrecedentDetailPageProps) {
                           return null;
                         }
 
-                        // 법률 문서 번호 패턴 감지: 1., 1), 가., 가), (1), ① 등
-                        const isNumbered = /^\d+\./.test(trimmedLine) ||
-                          /^\d+\)/.test(trimmedLine) ||
-                          /^[가-힣]\./.test(trimmedLine) ||
-                          /^[가-힣]\)/.test(trimmedLine) ||
-                          /^\(\d+\)/.test(trimmedLine) ||
-                          /^[①-⑳]/.test(trimmedLine);
-
-                        // 참조판례 섹션인지 확인
-                        const isRefSection = section.header?.includes("참조판례");
+                        // 참조 섹션인지 확인 (참조판례는 링크로 변환)
+                        const isRefSection = section.header?.includes("참조판례") ||
+                          section.header?.includes("참조조문");
 
                         return (
                           <React.Fragment key={lIndex}>
-                            {isNumbered && <div className="min-h-[1.5rem]"></div>}
                             <div className="min-h-[1.5rem]">
                               {isRefSection ? (
                                 // 참조판례 섹션: 사건번호를 링크로 변환

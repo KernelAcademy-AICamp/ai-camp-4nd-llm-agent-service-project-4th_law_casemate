@@ -14,6 +14,8 @@ from qdrant_client.http import models
 from fastembed import SparseTextEmbedding
 from dotenv import load_dotenv
 
+from app.config import EmbeddingConfig
+
 logger = logging.getLogger(__name__)
 load_dotenv()
 
@@ -85,8 +87,9 @@ def get_executor():
 class PrecedentEmbeddingService:
     """판례 임베딩 생성 서비스"""
 
-    MODEL_SMALL = "text-embedding-3-small"
-    MODEL_LARGE = "text-embedding-3-large"
+    # 레거시 호환성을 위해 유지 (EmbeddingConfig 사용 권장)
+    MODEL_SMALL = EmbeddingConfig.CHUNK_MODEL
+    MODEL_LARGE = EmbeddingConfig.SUMMARY_MODEL
 
     def __init__(self, model: str = MODEL_SMALL):
         """

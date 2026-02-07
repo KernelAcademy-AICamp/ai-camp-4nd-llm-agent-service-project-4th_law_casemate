@@ -18,6 +18,10 @@ logger = logging.getLogger(__name__)
 class SummarizeRequest(BaseModel):
     content: str
     case_number: Optional[str] = None  # 사건번호 (있으면 저장된 요약 우선 조회)
+    # 메타데이터 (새 요약 저장 시 사용)
+    case_name: Optional[str] = None
+    court_name: Optional[str] = None
+    judgment_date: Optional[str] = None
 
 
 class SimilarCasesRequest(BaseModel):
@@ -109,19 +113,34 @@ async def summarize(request: SummarizeRequest):
 
     - **content**: 요약할 텍스트 (필수)
     - **case_number**: 사건번호 (선택, 있으면 저장된 요약 우선 조회)
+    - **case_name**: 사건명 (선택, 새 요약 저장 시 사용)
+    - **court_name**: 법원명 (선택, 새 요약 저장 시 사용)
+    - **judgment_date**: 선고일자 (선택, 새 요약 저장 시 사용)
     """
     try:
         if request.case_number:
-            # 사건번호가 있으면 저장된 요약 우선 조회
+            # 메타데이터 구성 (새 요약 저장 시 사용)
+            case_info = {
+                "case_name": request.case_name or "",
+                "court_name": request.court_name or "",
+                "judgment_date": request.judgment_date or "",
+            }
+
+            # 사건번호가 있으면 저장된 요약 우선 조회, 없으면 생성 후 저장
             result = summary_service.get_or_generate_summary(
                 case_number=request.case_number,
                 content=request.content,
+                case_info=case_info,
             )
-            return {"summary": result["summary"], "cached": result["cached"]}
+            return {
+                "summary": result["summary"],
+                "cached": result["cached"],
+                "saved": result.get("saved", False),
+            }
         else:
-            # 사건번호 없으면 바로 생성
+            # 사건번호 없으면 바로 생성 (저장 안함)
             summary = summary_service.summarize(content=request.content)
-            return {"summary": summary, "cached": False}
+            return {"summary": summary, "cached": False, "saved": False}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"요약 중 오류 발생: {str(e)}")
 
