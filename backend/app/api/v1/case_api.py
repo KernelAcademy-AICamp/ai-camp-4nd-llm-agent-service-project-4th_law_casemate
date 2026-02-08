@@ -18,7 +18,7 @@ from openai import OpenAI
 from tool.database import get_db
 from tool.security import get_current_user
 from app.models.user import User
-from app.models.evidence import Case, CaseSummary
+from app.models.evidence import Case, CaseAnalysis
 
 # OpenAI 클라이언트
 openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -102,7 +102,6 @@ async def create_case(
         new_case = Case(
             law_firm_id=current_user.firm_id,
             created_by=current_user.id,
-            user_id=current_user.id,  # 레거시 호환
             title=request.title,
             client_name=request.client_name,
             client_role=request.client_role,
@@ -249,8 +248,8 @@ async def analyze_case(
         if case.law_firm_id != current_user.firm_id:
             raise HTTPException(status_code=403, detail="해당 사건에 접근할 권한이 없습니다")
 
-        # 캐시 조회: case_summaries 테이블에서 먼저 확인 (force=true면 스킵)
-        cached_summary = db.query(CaseSummary).filter(CaseSummary.case_id == case_id).first()
+        # 캐시 조회: case_analyses 테이블에서 먼저 확인 (force=true면 스킵)
+        cached_summary = db.query(CaseAnalysis).filter(CaseAnalysis.case_id == case_id).first()
         if cached_summary and not force:
             print(f"✅ 캐시 히트: case_id={case_id}")
             return CaseAnalyzeResponse(
@@ -428,14 +427,14 @@ async def analyze_case(
         print(f"   summary: {summary[:80] if len(summary) > 80 else summary}...")
         print(f"   facts type: {type(facts).__name__}, length: {len(facts)}")
 
-        # 분석 결과를 case_summaries 테이블에 저장 (기존 레코드 있으면 업데이트)
+        # 분석 결과를 case_analyses 테이블에 저장 (기존 레코드 있으면 업데이트)
         if cached_summary:
             cached_summary.summary = summary
             cached_summary.facts = facts
             cached_summary.claims = claims
             print(f"💾 캐시 업데이트 완료: case_id={case_id}")
         else:
-            new_summary = CaseSummary(
+            new_summary = CaseAnalysis(
                 case_id=case_id,
                 summary=summary,
                 facts=facts,
@@ -518,14 +517,14 @@ async def update_case(
 
 # ==================== 사건 분석 결과 수정 API ====================
 
-class CaseSummaryUpdateRequest(BaseModel):
+class CaseAnalysisUpdateRequest(BaseModel):
     """AI 분석 결과 수정 요청"""
     summary: Optional[str] = None
     facts: Optional[str] = None
     claims: Optional[str] = None
 
 
-class CaseSummaryResponse(BaseModel):
+class CaseAnalysisResponse(BaseModel):
     """AI 분석 결과 응답"""
     case_id: int
     summary: Optional[str] = None
@@ -537,10 +536,10 @@ class CaseSummaryResponse(BaseModel):
         from_attributes = True
 
 
-@router.put("/{case_id}/summary", response_model=CaseSummaryResponse)
+@router.put("/{case_id}/summary", response_model=CaseAnalysisResponse)
 async def update_case_summary(
     case_id: int,
-    request: CaseSummaryUpdateRequest,
+    request: CaseAnalysisUpdateRequest,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -549,7 +548,7 @@ async def update_case_summary(
 
     - JWT 인증 필요
     - 같은 law_firm_id 소속만 수정 가능
-    - 기존 case_summaries 레코드가 없으면 새로 생성
+    - 기존 case_analyses 레코드가 없으면 새로 생성
     """
     print("=" * 50)
     print(f"📝 AI 분석 결과 수정 요청: case_id={case_id}")
@@ -566,7 +565,7 @@ async def update_case_summary(
             raise HTTPException(status_code=403, detail="해당 사건에 접근할 권한이 없습니다")
 
         # 기존 분석 결과 조회
-        case_summary = db.query(CaseSummary).filter(CaseSummary.case_id == case_id).first()
+        case_summary = db.query(CaseAnalysis).filter(CaseAnalysis.case_id == case_id).first()
 
         if case_summary:
             # 기존 레코드 업데이트
@@ -579,7 +578,7 @@ async def update_case_summary(
             print(f"✅ 기존 분석 결과 업데이트")
         else:
             # 새 레코드 생성
-            case_summary = CaseSummary(
+            case_summary = CaseAnalysis(
                 case_id=case_id,
                 summary=request.summary or "",
                 facts=request.facts or "",
@@ -593,7 +592,7 @@ async def update_case_summary(
 
         print(f"💾 AI 분석 결과 저장 완료: case_id={case_id}")
 
-        return CaseSummaryResponse(
+        return CaseAnalysisResponse(
             case_id=case_summary.case_id,
             summary=case_summary.summary,
             facts=case_summary.facts,

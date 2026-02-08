@@ -166,12 +166,20 @@ async def upload_file(
             file_path=file_path,  # Storage 내부 경로 저장 (재생성용)
             file_type=file.content_type,
             size=len(file_content),  # 파일 크기 (바이트)
-            case_id=case_id,  # 사건 ID (선택적)
             category_id=category_id  # 카테고리 ID (선택적)
         )
         db.add(new_evidence)
         db.commit()
         db.refresh(new_evidence)
+
+        # case_id가 전달된 경우 매핑 테이블로 연결
+        if case_id is not None:
+            new_mapping = models.CaseEvidenceMapping(
+                case_id=case_id,
+                evidence_id=new_evidence.id
+            )
+            db.add(new_mapping)
+            db.commit()
 
         # 백그라운드에서 텍스트 추출 (STT/OCR/VLM)
         # 파일 내용을 직접 전달 (재다운로드 불필요!)
@@ -188,7 +196,7 @@ async def upload_file(
             "evidence_id": new_evidence.id,
             "file_name": file.filename,
             "url": signed_url,
-            "case_id": new_evidence.case_id,
+            "case_id": case_id,
             "category_id": new_evidence.category_id,
             "processing_status": "분석 진행 중 (백그라운드)",
             "info": "파일 업로드가 완료되었습니다. 텍스트 추출은 백그라운드에서 진행됩니다."

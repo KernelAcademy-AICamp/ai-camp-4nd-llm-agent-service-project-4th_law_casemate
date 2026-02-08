@@ -10,7 +10,7 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 # DB 모델들
-from app.models.evidence import Case, CaseSummary
+from app.models.evidence import Case, CaseAnalysis
 from app.models.timeline import TimeLine
 from app.models.relationship import CasePerson, CaseRelationship
 from app.prompts.relationship_prompt import create_relationship_prompt
@@ -148,7 +148,7 @@ class RelationshipService:
         self.db.commit()
         logger.info(f"[Relationship Delete] case_id={self.case_id} 삭제 완료")
 
-    def _fetch_case_data(self) -> Tuple[Case, List[TimeLine], CaseSummary]:
+    def _fetch_case_data(self) -> Tuple[Case, List[TimeLine], CaseAnalysis]:
         """
         DB에서 case 데이터 조회
 
@@ -172,8 +172,8 @@ class RelationshipService:
         ).order_by(TimeLine.order_index).all()
 
         # Case Summary 캐시 조회
-        case_summary = self.db.query(CaseSummary).filter(
-            CaseSummary.case_id == self.case_id
+        case_summary = self.db.query(CaseAnalysis).filter(
+            CaseAnalysis.case_id == self.case_id
         ).first()
 
         return case, timelines, case_summary

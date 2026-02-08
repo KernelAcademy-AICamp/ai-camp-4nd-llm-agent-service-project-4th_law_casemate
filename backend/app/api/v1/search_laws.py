@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 
 from app.services.search_laws_service import SearchLawsService
-from app.models.evidence import Case, CaseSummary
+from app.models.evidence import Case, CaseAnalysis
 from tool.database import get_db
 
 
@@ -89,7 +89,7 @@ async def search_laws_by_case(
             raise HTTPException(status_code=404, detail="사건을 찾을 수 없습니다")
 
         # 사건 분석 결과 조회 (있으면)
-        case_summary = db.query(CaseSummary).filter(CaseSummary.case_id == case_id).first()
+        case_summary = db.query(CaseAnalysis).filter(CaseAnalysis.case_id == case_id).first()
 
         description = case.description or ""
         summary = case_summary.summary if case_summary else None

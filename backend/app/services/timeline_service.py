@@ -8,7 +8,7 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 # DB 모델들 (반드시 evidence.py에서 import!)
-from app.models.evidence import Case, Evidence, CaseSummary, CaseEvidenceMapping
+from app.models.evidence import Case, Evidence, CaseAnalysis, CaseEvidenceMapping
 from app.models.timeline import TimeLine
 from app.prompts.timeline_prompt import create_timeline_prompt
 
@@ -111,7 +111,7 @@ class TimeLineService:
         DB에서 case 데이터와 evidence 목록 조회
 
         Returns:
-            tuple: (case: Case, evidences: List[Evidence], case_summary: CaseSummary | None, evidence_mappings: dict)
+            tuple: (case: Case, evidences: List[Evidence], case_summary: CaseAnalysis | None, evidence_mappings: dict)
 
         Raises:
             HTTPException: 사건을 찾을 수 없을 때
@@ -136,8 +136,8 @@ class TimeLineService:
         ).all()
 
         # Case Summary 캐시 조회
-        case_summary = self.db.query(CaseSummary).filter(
-            CaseSummary.case_id == self.case_id
+        case_summary = self.db.query(CaseAnalysis).filter(
+            CaseAnalysis.case_id == self.case_id
         ).first()
 
         # CaseEvidenceMapping 조회 (증거 날짜와 설명 정보)
