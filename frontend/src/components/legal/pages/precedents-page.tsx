@@ -59,7 +59,7 @@ export function PrecedentsPage({ }: PrecedentsPageProps) {
     setError(null);
 
     try {
-      const response = await fetch("/api/search/cases/recent?limit=10");
+      const response = await fetch("/api/v1/search/cases/recent?limit=50");
 
       if (!response.ok) {
         throw new Error("판례를 불러오는 중 오류가 발생했습니다.");
@@ -92,7 +92,7 @@ export function PrecedentsPage({ }: PrecedentsPageProps) {
 
     try {
       const response = await fetch(
-        `/api/search/cases?query=${encodeURIComponent(searchQuery)}&limit=100`
+        `/api/v1/search/cases?query=${encodeURIComponent(searchQuery)}&limit=100`
       );
 
       if (!response.ok) {
@@ -144,14 +144,17 @@ export function PrecedentsPage({ }: PrecedentsPageProps) {
 
       {/* Results */}
       <div className="space-y-4">
-        <div className="flex items-center justify-between">
-          <h2 className="text-sm font-medium text-muted-foreground">
-            {hasSearched ? `검색 결과 ${results.length}건` : `최신 판례 ${results.length}건`}
-          </h2>
-        </div>
+        {!loading && (
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-medium text-muted-foreground">
+              {hasSearched ? `검색 결과 ${results.length}건` : `최신 판례 ${results.length}건`}
+            </h2>
+          </div>
+        )}
 
         {loading && (
-          <div className="text-center py-10 text-muted-foreground">
+          <div className="flex flex-col items-center justify-center py-10 text-muted-foreground">
+            <video src="/assets/loading-card.mp4" autoPlay loop muted playsInline className="h-20 w-20 mb-2" style={{ mixBlendMode: 'multiply', opacity: 0.3 }} />
             불러오는 중...
           </div>
         )}

@@ -1,27 +1,54 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
   type CaseData,
   type EvidenceData,
   type PrecedentData,
-  sampleCases,
-  sampleEvidenceByDate,
 } from "@/lib/sample-data";
+import { useSearch, type SimilarCaseResult } from "@/contexts/search-context";
+import { Loader2 } from "lucide-react";
 
-// 유사 판례 API 응답 타입
-interface SimilarCaseResult {
-  case_number: string;
-  case_name: string;
-  court_name: string;
-  judgment_date: string;
-  score: number;
+// API 응답 타입
+interface CaseApiResponse {
+  id: number;
+  title: string;
+  client_name: string | null;
+  client_role: string | null;
+  case_type: string | null;
+  status: string | null;
+  created_at: string | null;
+  incident_date: string | null;
+  incident_date_end: string | null;
+  description: string | null;
 }
 
+// 유사 판례 API 응답 타입
 interface SimilarCasesResponse {
   total: number;
   results: SimilarCaseResult[];
+}
+
+// 관련 법령 API 응답 타입
+interface RelatedLawResult {
+  law_name: string;
+  article_number: string;
+  article_title: string;
+  content: string;
+  score: number;
+}
+
+interface ExtractedLegalIssues {
+  keywords: string[];
+  laws: string[];
+  search_query: string;
+}
+
+interface RelatedLawsResponse {
+  total: number;
+  results: RelatedLawResult[];
+  extracted?: ExtractedLegalIssues;
 }
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -58,15 +85,15 @@ import {
   Users,
   Calendar,
   FileText,
-  AlertTriangle,
   Clock,
   TrendingUp,
-  CheckCircle2,
   XCircle,
-  ChevronUp,
-  ChevronDown,
+  User,
+  UserX,
+  Circle,
 } from "lucide-react";
 import { RelationshipEditor } from "@/components/legal/relationship-editor";
+import { DocumentEditor } from "@/components/legal/document-editor";
 
 interface CaseDetailPageProps {
   caseData?: CaseData;
@@ -82,80 +109,7 @@ interface TimelineEvent {
   actor?: string;
 }
 
-const initialTimelineEvents: TimelineEvent[] = [
-  {
-    id: "1",
-    date: "2025-11-15",
-    time: "09:30",
-    title: "단톡방 첫 비방 발언",
-    description: "피고소인 박OO가 34명 단체 카카오톡 채팅방에서 의뢰인에 대해 '업무능력이 없다'는 발언을 최초로 함",
-    type: "상대방",
-    actor: "박OO (피고소인)",
-  },
-  {
-    id: "2",
-    date: "2025-11-15",
-    time: "14:32",
-    title: "단톡방 대화 캡처 확보",
-    description: "의뢰인이 명예훼손 발언이 담긴 카카오톡 대화를 캡처하여 증거로 확보",
-    type: "증거",
-    actor: "캡처 이미지",
-  },
-  {
-    id: "3",
-    date: "2025-11-20",
-    time: "10:15",
-    title: "횡령 허위사실 유포",
-    description: "피고소인이 '회사 돈을 횡령했다'는 허위사실을 단톡방에 유포",
-    type: "상대방",
-    actor: "박OO (피고소인)",
-  },
-  {
-    id: "4",
-    date: "2025-11-25",
-    time: "11:00",
-    title: "의뢰인 해명 시도",
-    description: "의뢰인 김OO가 단톡방에서 허위사실에 대해 해명을 시도하였으나 추가 비방을 받음",
-    type: "의뢰인",
-    actor: "김OO (의뢰인)",
-  },
-  {
-    id: "5",
-    date: "2025-12-01",
-    time: "15:20",
-    title: "회식 자리 녹취 확보",
-    description: "회식 자리에서 피고소인의 추가 모욕 발언이 녹취됨. '사기꾼' 발언 포함",
-    type: "증거",
-    actor: "음성 녹취",
-  },
-  {
-    id: "6",
-    date: "2025-12-01",
-    time: "19:30",
-    title: "공개적 모욕 발언",
-    description: "피고소인이 회식 자리(15명 참석)에서 의뢰인을 '사기꾼'이라고 공개적으로 모욕",
-    type: "상대방",
-    actor: "박OO (피고소인)",
-  },
-  {
-    id: "7",
-    date: "2025-12-10",
-    time: "10:00",
-    title: "목격자 진술 확보",
-    description: "의뢰인이 동료 2명으로부터 피고소인의 발언을 목격했다는 진술서를 확보",
-    type: "증거",
-    actor: "진술서",
-  },
-  {
-    id: "8",
-    date: "2026-01-05",
-    time: "14:00",
-    title: "법률 상담 진행",
-    description: "의뢰인이 명예훼손 피해에 대한 법률 상담을 진행하고 사건 수임 결정",
-    type: "의뢰인",
-    actor: "김OO (의뢰인)",
-  },
-];
+// 타임라인 이벤트는 API에서 가져옴
 
 // Case overview editable fields
 interface CaseOverviewData {
@@ -170,12 +124,17 @@ export function CaseDetailPage({
 }: CaseDetailPageProps) {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const { getSimilarCases, setSimilarCases: cacheSimilarCases } = useSearch();
 
-  // Find case data from sample data if not provided as prop
-  const caseData = propCaseData && propCaseData.id ? propCaseData : sampleCases.find(c => c.id === id) || sampleCases[0];
+  // 모든 useState 훅을 컴포넌트 최상단에 선언 (React 훅 규칙)
+  const [caseData, setCaseData] = useState<CaseData | null>(propCaseData || null);
+  const [isLoadingCase, setIsLoadingCase] = useState(!propCaseData);
+  const [caseError, setCaseError] = useState<string | null>(null);
 
   const [timelineEvents, setTimelineEvents] =
-    useState<TimelineEvent[]>(initialTimelineEvents);
+    useState<TimelineEvent[]>([]);
+  const [timelineLoading, setTimelineLoading] = useState(false);
+  const [timelineLayout, setTimelineLayout] = useState<"linear" | "zigzag">("linear");
   const [editingEvent, setEditingEvent] = useState<TimelineEvent | null>(null);
   const [isAddingEvent, setIsAddingEvent] = useState(false);
   const [newEvent, setNewEvent] = useState<Partial<TimelineEvent>>({
@@ -187,35 +146,321 @@ export function CaseDetailPage({
     actor: "",
   });
 
-  // Case overview state
+  // Case overview state - 빈 값으로 초기화, API 데이터 로드 후 업데이트
   const [isEditingOverview, setIsEditingOverview] = useState(false);
   const [overviewData, setOverviewData] = useState<CaseOverviewData>({
-    summary:
-      "온라인 커뮤니티 및 직장 내에서 발생한 명예훼손 사건. 피고소인이 34명 규모의 단체 카카오톡 채팅방에서 의뢰인에 대해 '업무능력이 없다', '팀에 짐만 된다' 등의 모욕적 발언과 '회사 돈을 횡령했다'는 허위사실을 유포함.",
-    facts:
-      "2025년 11월 15일부터 2026년 1월 10일까지 약 2개월간, 피고소인 박OO는 직장 동료 34명이 참여한 카카오톡 단체 채팅방에서 의뢰인 김OO에 대해 '업무능력이 없다', '팀에 짐만 된다' 등의 모욕적 발언과 '회사 돈을 횡령했다'는 허위사실을 유포함.",
-    claims:
-      "1. 형사: 명예훼손죄(형법 제307조) 및 모욕죄(형법 제311조)로 고소\n2. 민사: 위자료 5,000만원 손해배상 청구",
-    legalBasis:
-      "형법 제307조(명예훼손), 형법 제311조(모욕), 정보통신망 이용촉진 및 정보보호 등에 관한 법률 제70조",
+    summary: "",
+    facts: "",
+    claims: "",
+    legalBasis: "",
   });
 
-  const allEvidence = Object.values(sampleEvidenceByDate).flat();
+  // 서브 탭 상태: "analysis" (AI 분석) | "original" (원문 보기)
+  const [detailSubTab, setDetailSubTab] = useState<"analysis" | "original">("analysis");
+
+  // 원문 편집 상태
+  const [isEditingOriginal, setIsEditingOriginal] = useState(false);
+  const [originalDescription, setOriginalDescription] = useState("");
+  const [isSaving, setIsSaving] = useState(false);
+
+  // 증거 파일 상태 (API에서 가져옴)
+  const [allEvidence, setAllEvidence] = useState<EvidenceData[]>([]);
+  const [evidenceLoading, setEvidenceLoading] = useState(false);
 
   // 유사 판례 상태
   const [similarCases, setSimilarCases] = useState<SimilarCaseResult[]>([]);
   const [similarCasesLoading, setSimilarCasesLoading] = useState(false);
 
-  // 유사 판례 검색 (overviewData 기반)
-  const fetchSimilarCases = async () => {
-    // overviewData의 summary + facts를 쿼리로 사용
-    const query = `${overviewData.summary} ${overviewData.facts}`;
+  // 관련 법령 상태
+  const [relatedLaws, setRelatedLaws] = useState<RelatedLawResult[]>([]);
+  const [relatedLawsLoading, setRelatedLawsLoading] = useState(false);
+  const [extractedIssues, setExtractedIssues] = useState<ExtractedLegalIssues | null>(null);
 
+  // 수동 추가 법령 태그 상태
+  const [manualLawTags, setManualLawTags] = useState<string[]>([]);
+  const [lawTagInput, setLawTagInput] = useState("");
+
+  // API에서 사건 상세 조회
+  useEffect(() => {
+    if (propCaseData) return;
+
+    const fetchCase = async () => {
+      try {
+        const token = localStorage.getItem("access_token");
+        if (!token) {
+          setCaseError("로그인이 필요합니다.");
+          setIsLoadingCase(false);
+          return;
+        }
+
+        const response = await fetch(`http://localhost:8000/api/v1/cases/${id}`, {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        });
+
+        if (!response.ok) {
+          if (response.status === 404) {
+            setCaseError("사건을 찾을 수 없습니다.");
+            return;
+          }
+          throw new Error("사건 정보를 불러오는데 실패했습니다.");
+        }
+
+        const data: CaseApiResponse = await response.json();
+
+        // API 응답을 CaseData 타입으로 변환
+        const mappedCase: CaseData = {
+          id: String(data.id),
+          name: data.title,
+          progress: 0,
+          status: data.status || "접수",
+          date: data.created_at ? new Date(data.created_at).toLocaleDateString("ko-KR") : "",
+          evidenceCount: 0,
+          riskLevel: "medium" as const,
+          client: data.client_name || "미지정",
+          opponent: "상대방",
+          caseType: data.case_type || "미분류",
+          claimAmount: 0,
+          description: data.description || "",
+          period: data.incident_date && data.incident_date_end
+            ? `${data.incident_date} ~ ${data.incident_date_end}`
+            : data.incident_date || "",
+        };
+
+        setCaseData(mappedCase);
+
+        // 원문 상태 저장
+        setOriginalDescription(data.description || "");
+
+        // 사건 분석 API 호출 (description → summary, facts, claims 추출)
+        if (data.description) {
+          try {
+            const analyzeResponse = await fetch(`http://localhost:8000/api/v1/cases/${id}/analyze`, {
+              method: "POST",
+              headers: {
+                Authorization: `Bearer ${token}`,
+              },
+            });
+
+            if (analyzeResponse.ok) {
+              const analyzed = await analyzeResponse.json();
+              setOverviewData({
+                summary: analyzed.summary || "",
+                facts: analyzed.facts || "",
+                claims: analyzed.claims || "",
+                legalBasis: "",
+              });
+              // 분석된 summary + facts로 관련 법령 검색
+              const searchQuery = `${analyzed.summary} ${analyzed.facts}`;
+              if (searchQuery.trim()) {
+                fetchRelatedLaws(searchQuery);
+              }
+            }
+          } catch (analyzeErr) {
+            console.error("사건 분석 실패:", analyzeErr);
+            // 분석 실패 시 description 원본 사용
+            setOverviewData(prev => ({
+              ...prev,
+              summary: data.description || "",
+            }));
+            fetchRelatedLaws(data.description);
+          }
+        }
+      } catch (err) {
+        console.error("사건 상세 조회 실패:", err);
+        setCaseError(err instanceof Error ? err.message : "오류가 발생했습니다.");
+      } finally {
+        setIsLoadingCase(false);
+      }
+    };
+
+    fetchCase();
+  }, [id, propCaseData]);
+
+  // 증거 파일 목록 가져오기
+  useEffect(() => {
+    if (!caseData?.id) return;
+
+    const fetchEvidences = async () => {
+      setEvidenceLoading(true);
+      try {
+        const token = localStorage.getItem('access_token');
+        if (!token) return;
+
+        const response = await fetch(
+          `http://localhost:8000/api/v1/evidence/list?case_id=${caseData.id}`,
+          {
+            headers: {
+              'Authorization': `Bearer ${token}`
+            }
+          }
+        );
+
+        if (response.ok) {
+          const data = await response.json();
+
+          // API 응답을 EvidenceData 형식으로 변환
+          const evidenceList: EvidenceData[] = data.files.map((file: any) => ({
+            id: String(file.evidence_id),
+            name: file.file_name,
+            type: file.file_type || '문서',
+            status: '제출완료',
+            date: file.created_at ? new Date(file.created_at).toISOString().split('T')[0] : '',
+            time: file.created_at ? new Date(file.created_at).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }) : '',
+            category: '증거',
+            aiSummary: '',
+            images: [],
+          }));
+
+          setAllEvidence(evidenceList);
+
+          // 사건 데이터에 증거 개수 업데이트
+          if (caseData) {
+            setCaseData({
+              ...caseData,
+              evidenceCount: evidenceList.length
+            });
+          }
+        }
+      } catch (error) {
+        console.error('증거 파일 조회 실패:', error);
+      } finally {
+        setEvidenceLoading(false);
+      }
+    };
+
+    fetchEvidences();
+  }, [caseData?.id]);
+
+  // AI 분석 결과 저장 (summary, facts, claims)
+  const saveSummary = async () => {
+    const token = localStorage.getItem("access_token");
+    if (!token || !id) return;
+
+    setIsSaving(true);
+    try {
+      const response = await fetch(`http://localhost:8000/api/v1/cases/${id}/summary`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          summary: overviewData.summary,
+          facts: overviewData.facts,
+          claims: overviewData.claims,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error("AI 분석 결과 저장 실패");
+      }
+
+      console.log("✅ AI 분석 결과 저장 완료");
+      // 저장 후 관련 법령 재검색
+      fetchRelatedLaws();
+    } catch (err) {
+      console.error("AI 분석 결과 저장 실패:", err);
+      alert("저장에 실패했습니다.");
+    } finally {
+      setIsSaving(false);
+      setIsEditingOverview(false);
+    }
+  };
+
+  // AI 분석 새로고침 (강제 재분석)
+  const [isRefreshing, setIsRefreshing] = useState(false);
+
+  const refreshAnalysis = async () => {
+    const token = localStorage.getItem("access_token");
+    if (!token || !id) return;
+
+    setIsRefreshing(true);
+    try {
+      const response = await fetch(`http://localhost:8000/api/v1/cases/${id}/analyze?force=true`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error("AI 분석 새로고침 실패");
+      }
+
+      const analyzed = await response.json();
+      setOverviewData({
+        summary: analyzed.summary || "",
+        facts: analyzed.facts || "",
+        claims: analyzed.claims || "",
+        legalBasis: "",
+      });
+
+      console.log("✅ AI 분석 새로고침 완료");
+      // 새로고침 후 관련 법령 재검색
+      fetchRelatedLaws(`${analyzed.summary} ${analyzed.facts}`);
+    } catch (err) {
+      console.error("AI 분석 새로고침 실패:", err);
+      alert("AI 분석 새로고침에 실패했습니다.");
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
+
+  // 원문(description) 저장
+  const saveDescription = async () => {
+    const token = localStorage.getItem("access_token");
+    if (!token || !id) return;
+
+    setIsSaving(true);
+    try {
+      const response = await fetch(`http://localhost:8000/api/v1/cases/${id}`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          description: originalDescription,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error("원문 저장 실패");
+      }
+
+      console.log("✅ 원문 저장 완료");
+      // caseData도 업데이트
+      setCaseData(prev => prev ? { ...prev, description: originalDescription } : null);
+    } catch (err) {
+      console.error("원문 저장 실패:", err);
+      alert("저장에 실패했습니다.");
+    } finally {
+      setIsSaving(false);
+      setIsEditingOriginal(false);
+    }
+  };
+
+  // 유사 판례 검색 (overviewData 기반)
+  const fetchSimilarCases = useCallback(async () => {
+    if (!caseData) return;
+
+    // 1. 캐시에 있으면 캐시된 결과 사용
+    const cached = getSimilarCases(caseData.id);
+    if (cached) {
+      setSimilarCases(cached);
+      return;
+    }
+
+    // 2. 캐시에 없으면 API 호출 (요약 + 사실관계 + 청구내용)
+    const query = `${overviewData.summary} ${overviewData.facts} ${overviewData.claims}`;
     if (!query.trim()) return;
 
     setSimilarCasesLoading(true);
     try {
-      const response = await fetch("/api/search/cases/similar", {
+      const response = await fetch("/api/v1/search/cases/similar", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -232,23 +477,341 @@ export function CaseDetailPage({
 
       const data: SimilarCasesResponse = await response.json();
       setSimilarCases(data.results);
+
+      // 3. 결과를 캐시에 저장
+      cacheSimilarCases(caseData.id, data.results);
     } catch (err) {
       console.error("유사 판례 검색 실패:", err);
       setSimilarCases([]);
     } finally {
       setSimilarCasesLoading(false);
     }
+  }, [caseData, overviewData.summary, overviewData.facts, overviewData.claims, getSimilarCases, cacheSimilarCases]);
+
+  // 타임라인 데이터 가져오기
+  const fetchTimeline = useCallback(async () => {
+    if (!caseData) return;
+
+    setTimelineLoading(true);
+    try {
+      const response = await fetch(`http://localhost:8000/api/v1/timeline/${caseData.id}`);
+      if (!response.ok) {
+        throw new Error("타임라인 데이터를 가져오는 중 오류가 발생했습니다.");
+      }
+      const data = await response.json();
+      setTimelineEvents(data);
+    } catch (err) {
+      console.error("타임라인 데이터 가져오기 실패:", err);
+      setTimelineEvents([]);
+    } finally {
+      setTimelineLoading(false);
+    }
+  }, [caseData]);
+
+  // 타임라인 생성 (샘플 데이터)
+  const generateTimeline = async () => {
+    if (!caseData) return;
+
+    console.log("[Timeline Generate] 시작");
+    console.log("[Timeline Generate] Case ID:", caseData.id);
+    console.log("[Timeline Generate] Case Data:", caseData);
+
+    setTimelineLoading(true);
+    try {
+      const url = `http://localhost:8000/api/v1/timeline/${caseData.id}/generate?use_llm=false`;
+      console.log("[Timeline Generate] 요청 URL:", url);
+
+      const response = await fetch(url, {
+        method: 'POST',
+      });
+
+      console.log("[Timeline Generate] Response Status:", response.status);
+      console.log("[Timeline Generate] Response OK:", response.ok);
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error("[Timeline Generate] Error Response:", errorText);
+        throw new Error(`타임라인 생성 중 오류가 발생했습니다. Status: ${response.status}`);
+      }
+
+      const data = await response.json();
+      console.log("[Timeline Generate] 생성된 타임라인 개수:", data.length);
+      console.log("[Timeline Generate] 타임라인 데이터:", data);
+
+      setTimelineEvents(data);
+    } catch (err) {
+      console.error("[Timeline Generate] 실패:", err);
+      alert("타임라인 생성에 실패했습니다.");
+    } finally {
+      setTimelineLoading(false);
+    }
   };
 
-  // 컴포넌트 마운트 시 유사 판례 검색
+  // 컴포넌트 마운트 시 유사 판례 검색 및 타임라인 데이터 가져오기
   useEffect(() => {
     fetchSimilarCases();
+    fetchTimeline();
+  }, [fetchSimilarCases, fetchTimeline]);
+  // 관련 법령 검색 (2단계 파이프라인: 법적 쟁점 추출 → 검색)
+  const fetchRelatedLaws = async () => {
+    if (!id) return;
+
+    setRelatedLawsLoading(true);
+    try {
+      const response = await fetch(`/api/v1/laws/search-by-case/${id}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ limit: 8 }),
+      });
+
+      if (!response.ok) {
+        throw new Error("관련 법령 검색 중 오류가 발생했습니다.");
+      }
+
+      const data: RelatedLawsResponse = await response.json();
+      setRelatedLaws(data.results);
+
+      // 추출된 법적 쟁점 저장
+      if (data.extracted) {
+        setExtractedIssues(data.extracted);
+      }
+    } catch (err) {
+      console.error("관련 법령 검색 실패:", err);
+      setRelatedLaws([]);
+      setExtractedIssues(null);
+    } finally {
+      setRelatedLawsLoading(false);
+    }
+  };
+
+  // 컴포넌트 마운트 시 유사 판례 및 관련 법령 검색
+  useEffect(() => {
+    fetchSimilarCases();
+    fetchRelatedLaws();
   }, []);
 
   // 날짜 포맷 (20200515 → 2020.05.15)
   const formatJudgmentDate = (dateStr: string) => {
     if (!dateStr || dateStr.length !== 8) return dateStr || "";
     return `${dateStr.slice(0, 4)}.${dateStr.slice(4, 6)}.${dateStr.slice(6, 8)}`;
+  };
+
+  // 사실 관계 포맷팅: 배열 또는 문자열 → 불렛 + 날짜 + 말투 변환
+  const formatFacts = (facts: string | string[]) => {
+    if (!facts) return "";
+
+    // 배열이면 그대로 사용, 문자열이면 줄바꿈으로 분리
+    let items: string[] = [];
+    if (Array.isArray(facts)) {
+      items = facts;
+    } else {
+      // JSON 배열 문자열인지 확인
+      try {
+        const parsed = JSON.parse(facts);
+        if (Array.isArray(parsed)) {
+          items = parsed;
+        } else {
+          items = facts.split('\n').filter(line => line.trim());
+        }
+      } catch {
+        items = facts.split('\n').filter(line => line.trim());
+      }
+    }
+
+    // 복합 문장 분리 (1문장 = 1사실)
+    const splitCompoundSentence = (sentence: string): string[] => {
+      // "~하고,", "~하였고,", "~하며,", "또한," 등으로 분리
+      const parts = sentence.split(/(?:,\s*(?:또한|그리고)\s*|(?:하였고|했고|하고|하며|되었고|됐고|되고|되며)[,\s]+)/);
+      return parts.map(p => p.trim()).filter(p => p.length > 0);
+    };
+
+    // 모든 항목을 분리
+    const allItems: string[] = [];
+    for (const item of items) {
+      const cleaned = String(item).trim().replace(/^[•\-\*\d.]+\s*/, '').trim();
+      if (cleaned) {
+        const split = splitCompoundSentence(cleaned);
+        allItems.push(...split);
+      }
+    }
+
+    // 각 항목 처리
+    return allItems.map(item => {
+      let content = item.trim();
+      if (!content) return '';
+
+      // 말투 변환: 보고서 말투 (-임, -함, -음)
+      content = content
+        // -시켰다 계열 → -시킴
+        .replace(/시켰습니다\.?$/g, '시킴').replace(/시켰다\.?$/g, '시킴')
+        .replace(/시킨다\.?$/g, '시킴').replace(/시켰음\.?$/g, '시킴')
+        // -하였다/-했다 계열 → -함
+        .replace(/하였습니다\.?$/g, '함').replace(/했습니다\.?$/g, '함')
+        .replace(/하였다\.?$/g, '함').replace(/했다\.?$/g, '함')
+        .replace(/합니다\.?$/g, '함').replace(/한다\.?$/g, '함')
+        .replace(/하였음\.?$/g, '함').replace(/했음\.?$/g, '함')
+        // -되었다/-됐다 계열 → -됨
+        .replace(/되었습니다\.?$/g, '됨').replace(/됐습니다\.?$/g, '됨')
+        .replace(/되었다\.?$/g, '됨').replace(/됐다\.?$/g, '됨')
+        .replace(/된다\.?$/g, '됨').replace(/되었음\.?$/g, '됨')
+        // -있다 계열 → -있음
+        .replace(/있습니다\.?$/g, '있음').replace(/있다\.?$/g, '있음')
+        .replace(/있었다\.?$/g, '있었음').replace(/없다\.?$/g, '없음')
+        // -이다 계열 → -임
+        .replace(/입니다\.?$/g, '임').replace(/이다\.?$/g, '임')
+        // 기타 동사 → -ㅁ
+        .replace(/났다\.?$/g, '남').replace(/났음\.?$/g, '남')
+        .replace(/받았다\.?$/g, '받음').replace(/받다\.?$/g, '받음')
+        .replace(/주었다\.?$/g, '줌').replace(/줬다\.?$/g, '줌')
+        .replace(/왔다\.?$/g, '옴').replace(/갔다\.?$/g, '감')
+        .replace(/냈다\.?$/g, '냄').replace(/썼다\.?$/g, '씀')
+        .replace(/봤다\.?$/g, '봄').replace(/알았다\.?$/g, '앎')
+        .replace(/모았다\.?$/g, '모음').replace(/샀다\.?$/g, '삼')
+        .replace(/팔았다\.?$/g, '팖').replace(/만들었다\.?$/g, '만듦')
+        // 마지막 마침표 제거
+        .replace(/\.$/g, '');
+
+      // 한글 날짜 → [ YYYY-MM-DD ]
+      const koreanDateMatch = content.match(/^(\d{4})년\s*(\d{1,2})월\s*(\d{1,2})일[부터까지]?\s*(.*)/);
+      if (koreanDateMatch) {
+        const [, year, month, day, rest] = koreanDateMatch;
+        return `• [ ${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')} ] ${rest.trim()}`;
+      }
+
+      // [ YYYY-MM-DD ] 형식이 이미 있는 경우
+      const bracketDateMatch = content.match(/^\[\s*(\d{4})-(\d{2})-(\d{2})\s*\]\s*[,，]?\s*(.*)/);
+      if (bracketDateMatch) {
+        const [, year, month, day, rest] = bracketDateMatch;
+        return `• [ ${year}-${month}-${day} ] ${rest.replace(/^[,，\s]+/, '').trim()}`;
+      }
+
+      // 날짜 없으면 바로 불렛
+      return `• ${content}`;
+    }).filter(Boolean).join('\n');
+  };
+
+  // 청구 내용 포맷팅: 객체 또는 문자열 → • 형사 / • 민사 형태
+  const formatClaims = (claims: string | Record<string, string[]>) => {
+    if (!claims) return "";
+
+    const categories = ['형사', '민사', '행정', '가정', '가사', '기타'];
+    const result: string[] = [];
+
+    // 항목 내 • 분리 및 정리 헬퍼
+    const splitAndClean = (item: string): string[] => {
+      return String(item)
+        .split(/\s*•\s*/)
+        .map(s => s.replace(/^[-•*\d.]+\s*/, '').trim())
+        .filter(s => s.length > 0);
+    };
+
+    // 카테고리별 항목 추가 헬퍼
+    const addCategoryItems = (cat: string, items: string[]) => {
+      if (!items || items.length === 0) return;
+      const allItems: string[] = [];
+      for (const item of items) {
+        allItems.push(...splitAndClean(item));
+      }
+      if (allItems.length > 0) {
+        result.push(`• ${cat}`);
+        for (const cleanItem of allItems) {
+          result.push(`  - ${cleanItem}`);
+        }
+      }
+    };
+
+    // 1) 객체 형태 직접 처리
+    if (typeof claims === 'object' && claims !== null && !Array.isArray(claims)) {
+      for (const cat of categories) {
+        const items = (claims as Record<string, string[]>)[cat];
+        if (items && Array.isArray(items)) {
+          addCategoryItems(cat, items);
+        }
+      }
+      // 정의된 카테고리 외의 키도 처리
+      for (const key of Object.keys(claims)) {
+        if (!categories.includes(key)) {
+          const items = (claims as Record<string, string[]>)[key];
+          if (items && Array.isArray(items)) {
+            addCategoryItems(key, items);
+          }
+        }
+      }
+      if (result.length > 0) return result.join('\n');
+    }
+
+    // 2) 문자열인 경우 JSON 파싱 시도
+    if (typeof claims === 'string') {
+      const claimsStr = claims.trim();
+
+      // JSON 객체 파싱 시도
+      if (claimsStr.startsWith('{')) {
+        try {
+          const parsed = JSON.parse(claimsStr);
+          if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+            for (const cat of categories) {
+              const items = parsed[cat];
+              if (items && Array.isArray(items)) {
+                addCategoryItems(cat, items);
+              }
+            }
+            // 정의된 카테고리 외의 키도 처리
+            for (const key of Object.keys(parsed)) {
+              if (!categories.includes(key)) {
+                const items = parsed[key];
+                if (items && Array.isArray(items)) {
+                  addCategoryItems(key, items);
+                }
+              }
+            }
+            if (result.length > 0) return result.join('\n');
+          }
+        } catch {
+          // JSON 파싱 실패 - 텍스트로 처리
+        }
+      }
+
+      // 3) 텍스트 형태 처리 (fallback)
+      const cleaned = claimsStr
+        .replace(/[{}\[\]"]/g, '')
+        .replace(/\n/g, ' ')
+        .trim();
+
+      const categorized: Record<string, string[]> = {};
+      categories.forEach(c => categorized[c] = []);
+
+      // "형사:" 또는 "민사:" 패턴으로 분리
+      const parts = cleaned.split(/(?=형사\s*[:：]|민사\s*[:：]|행정\s*[:：]|가정\s*[:：]|가사\s*[:：]|기타\s*[:：])/);
+
+      for (const part of parts) {
+        const trimmed = part.trim();
+        if (!trimmed) continue;
+        const catMatch = categories.find(cat => trimmed.startsWith(cat));
+        if (catMatch) {
+          const content = trimmed.replace(new RegExp(`^${catMatch}\\s*[:：]?\\s*`), '').trim();
+          if (content) {
+            // • 또는 , 로 분리
+            const items = content.split(/\s*[•,，]\s*/).map(s => s.trim()).filter(Boolean);
+            categorized[catMatch].push(...items);
+          }
+        }
+      }
+
+      for (const cat of categories) {
+        if (categorized[cat].length > 0) {
+          result.push(`• ${cat}`);
+          for (const item of categorized[cat]) {
+            result.push(`  - ${item.replace(/^[-•*\d.]+\s*/, '').trim()}`);
+          }
+        }
+      }
+
+      return result.join('\n') || cleaned;
+    }
+
+    return String(claims);
   };
 
   const handleSaveEvent = () => {
@@ -297,26 +860,39 @@ export function CaseDetailPage({
   const getTypeColor = (type: TimelineEvent["type"]) => {
     switch (type) {
       case "의뢰인":
-        return "border-emerald-500 bg-emerald-50 text-emerald-800";
+        return "border-[#6D5EF5]/20 bg-[#6D5EF5]/5 text-[#6D5EF5]";
       case "상대방":
-        return "border-amber-600 bg-amber-50 text-amber-900";
+        return "border-[#F59E0B]/20 bg-[#F59E0B]/5 text-[#B45309]";
       case "증거":
-        return "border-blue-500 bg-blue-50 text-blue-800";
+        return "border-[#38BDF8]/20 bg-[#38BDF8]/5 text-[#0284C7]";
       default:
-        return "border-border bg-secondary text-secondary-foreground";
+        return "border-[#94A3B8]/20 bg-[#94A3B8]/5 text-[#64748B]";
     }
   };
 
   const getTimelineDotColor = (type: TimelineEvent["type"]) => {
     switch (type) {
       case "의뢰인":
-        return "bg-emerald-500";
+        return "bg-gradient-to-br from-[#6D5EF5] to-[#A78BFA]";
       case "상대방":
-        return "bg-amber-600";
+        return "bg-gradient-to-br from-[#F59E0B] to-[#FBBF24]";
       case "증거":
-        return "bg-blue-500";
+        return "bg-gradient-to-br from-[#38BDF8] to-[#7DD3FC]";
       default:
-        return "bg-foreground";
+        return "bg-gradient-to-br from-[#94A3B8] to-[#CBD5E1]";
+    }
+  };
+
+  const getTypeIcon = (type: TimelineEvent["type"]) => {
+    switch (type) {
+      case "의뢰인":
+        return <User className="h-4 w-4" />;
+      case "상대방":
+        return <UserX className="h-4 w-4" />;
+      case "증거":
+        return <FileText className="h-4 w-4" />;
+      default:
+        return <Circle className="h-4 w-4" />;
     }
   };
 
@@ -342,7 +918,67 @@ export function CaseDetailPage({
     });
   };
 
-  const [bottomSectionOpen, setBottomSectionOpen] = useState(false);
+  // 타임라인 헬퍼 함수들
+  const parseDateParts = (dateStr: string) => {
+    const date = new Date(dateStr);
+    const dayOfWeekNames = ["일", "월", "화", "수", "목", "금", "토"];
+    return {
+      day: date.getDate(),
+      month: date.getMonth() + 1,
+      year: date.getFullYear(),
+      dayOfWeek: dayOfWeekNames[date.getDay()],
+    };
+  };
+
+  const formatMonthYear = (dateStr: string) => {
+    const { year, month } = parseDateParts(dateStr);
+    return `${year}년 ${month}월`;
+  };
+
+  const isNewMonth = (currentDate: string, previousDate: string | null) => {
+    if (!previousDate) return true;
+    const current = parseDateParts(currentDate);
+    const previous = parseDateParts(previousDate);
+    return current.year !== previous.year || current.month !== previous.month;
+  };
+
+  const groupEventsByDate = (events: TimelineEvent[]) => {
+    const groups: { date: string; events: TimelineEvent[] }[] = [];
+    for (const event of events) {
+      const lastGroup = groups[groups.length - 1];
+      if (lastGroup && lastGroup.date === event.date) {
+        lastGroup.events.push(event);
+      } else {
+        groups.push({ date: event.date, events: [event] });
+      }
+    }
+    return groups;
+  };
+
+  // 로딩 상태
+  if (isLoadingCase) {
+    return (
+      <div className="flex items-center justify-center" style={{ height: 'calc(100vh - 120px)' }}>
+        <video src="/assets/loading-card.mp4" autoPlay loop muted playsInline className="h-20 w-20" style={{ mixBlendMode: 'multiply', opacity: 0.3 }} />
+      </div>
+    );
+  }
+
+  // 에러 상태
+  if (caseError || !caseData) {
+    return (
+      <div className="text-center py-16">
+        <p className="text-muted-foreground">{caseError || "사건을 찾을 수 없습니다."}</p>
+        <Button
+          variant="outline"
+          className="mt-4"
+          onClick={() => navigate("/cases")}
+        >
+          사건 목록으로
+        </Button>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -396,8 +1032,8 @@ export function CaseDetailPage({
           <TabsTrigger value="relations" className="text-sm">
             관계도
           </TabsTrigger>
-          <TabsTrigger value="dashboard" className="text-sm">
-            대시보드
+          <TabsTrigger value="documents" className="text-sm">
+            문서작성
           </TabsTrigger>
         </TabsList>
 
@@ -405,143 +1041,330 @@ export function CaseDetailPage({
         <TabsContent value="overview" className="space-y-6 mt-6">
           {/* Case Details - Editable (Moved to top) */}
           <Card className="border-border/60">
-            <CardHeader className="pb-4">
+            <CardHeader className="pb-2">
               <div className="flex items-center justify-between">
                 <CardTitle className="text-base font-medium">
                   사건 상세 정보
                 </CardTitle>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => setIsEditingOverview(!isEditingOverview)}
-                >
-                  {isEditingOverview ? (
-                    <>
-                      <Save className="h-4 w-4 mr-2" />
-                      저장
-                    </>
-                  ) : (
-                    <>
-                      <Edit2 className="h-4 w-4 mr-2" />
-                      편집
-                    </>
-                  )}
-                </Button>
+                {/* 서브 탭에 따라 다른 버튼 표시 */}
+                {detailSubTab === "analysis" ? (
+                  <div className="flex items-center gap-2">
+                    {/* AI 분석 새로고침 버튼 */}
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      disabled={isRefreshing || isSaving}
+                      onClick={refreshAnalysis}
+                      title="AI 분석 새로고침"
+                    >
+                      {isRefreshing ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          width="16"
+                          height="16"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        >
+                          <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+                          <path d="M3 3v5h5" />
+                          <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16" />
+                          <path d="M16 21h5v-5" />
+                        </svg>
+                      )}
+                    </Button>
+                    {/* 편집/저장 버튼 */}
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={isSaving || isRefreshing}
+                      onClick={() => {
+                        if (isEditingOverview) {
+                          saveSummary();
+                        } else {
+                          setIsEditingOverview(true);
+                        }
+                      }}
+                    >
+                      {isSaving ? (
+                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                      ) : isEditingOverview ? (
+                        <>
+                          <Save className="h-4 w-4 mr-2" />
+                          저장
+                        </>
+                      ) : (
+                        <>
+                          <Edit2 className="h-4 w-4 mr-2" />
+                          편집
+                        </>
+                      )}
+                    </Button>
+                  </div>
+                ) : (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={isSaving}
+                    onClick={() => {
+                      if (isEditingOriginal) {
+                        saveDescription();
+                      } else {
+                        setIsEditingOriginal(true);
+                      }
+                    }}
+                  >
+                    {isSaving ? (
+                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    ) : isEditingOriginal ? (
+                      <>
+                        <Save className="h-4 w-4 mr-2" />
+                        저장
+                      </>
+                    ) : (
+                      <>
+                        <Edit2 className="h-4 w-4 mr-2" />
+                        원문 수정
+                      </>
+                    )}
+                  </Button>
+                )}
               </div>
             </CardHeader>
             <CardContent className="space-y-6">
-              {/* Basic Info */}
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pb-6 border-b border-border/60">
-                <div className="space-y-1">
-                  <p className="text-xs text-muted-foreground">사건 유형</p>
-                  <p className="text-sm font-medium">{caseData.caseType}</p>
-                </div>
-                <div className="space-y-1">
-                  <p className="text-xs text-muted-foreground">의뢰인</p>
-                  <p className="text-sm font-medium">{caseData.client}</p>
-                </div>
-                <div className="space-y-1">
-                  <p className="text-xs text-muted-foreground">발생 기간</p>
-                  <p className="text-sm font-medium">
-                    {caseData.period || "2025.11.15 ~ 2026.01.10"}
-                  </p>
-                </div>
+              {/* 서브 탭 */}
+              <div className="flex gap-1 border-b border-border/60 pb-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDetailSubTab("analysis");
+                    setIsEditingOriginal(false);
+                  }}
+                  className={`px-3 py-1.5 text-sm rounded-md transition-colors ${detailSubTab === "analysis"
+                      ? "bg-primary text-primary-foreground"
+                      : "text-muted-foreground hover:bg-secondary"
+                    }`}
+                >
+                  AI 분석
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDetailSubTab("original");
+                    setIsEditingOverview(false);
+                  }}
+                  className={`px-3 py-1.5 text-sm rounded-md transition-colors ${detailSubTab === "original"
+                      ? "bg-primary text-primary-foreground"
+                      : "text-muted-foreground hover:bg-secondary"
+                    }`}
+                >
+                  원문 보기
+                </button>
               </div>
 
-              {/* Editable Fields */}
-              <div className="space-y-4">
-                <div className="space-y-2">
-                  <Label className="text-sm font-medium">사건 요약</Label>
-                  {isEditingOverview ? (
+              {/* 원문 보기 탭 콘텐츠 */}
+              {detailSubTab === "original" && (
+                <div className="space-y-4">
+                  {isEditingOriginal ? (
                     <Textarea
-                      value={overviewData.summary}
-                      onChange={(e) =>
-                        setOverviewData((prev) => ({
-                          ...prev,
-                          summary: e.target.value,
-                        }))
-                      }
-                      rows={3}
-                      className="text-sm"
+                      value={originalDescription}
+                      onChange={(e) => setOriginalDescription(e.target.value)}
+                      rows={12}
+                      className="text-sm font-mono"
+                      placeholder="사건 내용 원문을 입력하세요..."
                     />
                   ) : (
-                    <p className="text-sm text-muted-foreground leading-relaxed">
-                      {overviewData.summary}
-                    </p>
-                  )}
-                </div>
-
-                <div className="space-y-2">
-                  <Label className="text-sm font-medium">사실관계</Label>
-                  {isEditingOverview ? (
-                    <Textarea
-                      value={overviewData.facts}
-                      onChange={(e) =>
-                        setOverviewData((prev) => ({
-                          ...prev,
-                          facts: e.target.value,
-                        }))
-                      }
-                      rows={4}
-                      className="text-sm"
-                    />
-                  ) : (
-                    <p className="text-sm text-muted-foreground leading-relaxed">
-                      {overviewData.facts}
-                    </p>
-                  )}
-                </div>
-
-                <div className="space-y-2">
-                  <Label className="text-sm font-medium">청구 내용</Label>
-                  {isEditingOverview ? (
-                    <Textarea
-                      value={overviewData.claims}
-                      onChange={(e) =>
-                        setOverviewData((prev) => ({
-                          ...prev,
-                          claims: e.target.value,
-                        }))
-                      }
-                      rows={2}
-                      className="text-sm"
-                    />
-                  ) : (
-                    <p className="text-sm text-muted-foreground leading-relaxed whitespace-pre-line">
-                      {overviewData.claims}
-                    </p>
-                  )}
-                </div>
-
-                <div className="space-y-2">
-                  <Label className="text-sm font-medium">적용 법률</Label>
-                  {isEditingOverview ? (
-                    <Textarea
-                      value={overviewData.legalBasis}
-                      onChange={(e) =>
-                        setOverviewData((prev) => ({
-                          ...prev,
-                          legalBasis: e.target.value,
-                        }))
-                      }
-                      rows={2}
-                      className="text-sm"
-                    />
-                  ) : (
-                    <div className="flex flex-wrap gap-2">
-                      {overviewData.legalBasis.split(", ").map((law) => (
-                        <Badge
-                          key={law}
-                          variant="outline"
-                          className="font-normal text-xs"
-                        >
-                          {law}
-                        </Badge>
-                      ))}
+                    <div className="p-4 bg-secondary/30 rounded-lg border border-border/60">
+                      <p className="text-sm text-muted-foreground whitespace-pre-wrap leading-[1.8]">
+                        {originalDescription || "원문이 입력되지 않았습니다."}
+                      </p>
                     </div>
                   )}
                 </div>
-              </div>
+              )}
+
+              {/* AI 분석 탭 콘텐츠 */}
+              {detailSubTab === "analysis" && (
+                <>
+                  {/* Basic Info */}
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pb-6 border-b border-border/60">
+                    <div className="space-y-1">
+                      <p className="text-xs text-muted-foreground">사건 유형</p>
+                      <p className="text-sm font-medium">{caseData.caseType}</p>
+                    </div>
+                    <div className="space-y-1">
+                      <p className="text-xs text-muted-foreground">의뢰인</p>
+                      <p className="text-sm font-medium">{caseData.client}</p>
+                    </div>
+                    <div className="space-y-1">
+                      <p className="text-xs text-muted-foreground">발생 기간</p>
+                      <p className="text-sm font-medium">
+                        {caseData.period || "2025.11.15 ~ 2026.01.10"}
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Editable Fields */}
+                  <div className="space-y-7">
+                    <div className="space-y-2">
+                      <Label className="text-sm font-semibold">사건 요약</Label>
+                      {isEditingOverview ? (
+                        <Textarea
+                          value={overviewData.summary}
+                          onChange={(e) =>
+                            setOverviewData((prev) => ({
+                              ...prev,
+                              summary: e.target.value,
+                            }))
+                          }
+                          rows={3}
+                          className="text-sm"
+                        />
+                      ) : (
+                        <p className="text-sm text-muted-foreground leading-[1.8]">
+                          {overviewData.summary}
+                        </p>
+                      )}
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label className="text-sm font-semibold">사실 관계</Label>
+                      {isEditingOverview ? (
+                        <Textarea
+                          value={overviewData.facts}
+                          onChange={(e) =>
+                            setOverviewData((prev) => ({
+                              ...prev,
+                              facts: e.target.value,
+                            }))
+                          }
+                          rows={4}
+                          className="text-sm"
+                        />
+                      ) : (
+                        <p className="text-sm text-muted-foreground leading-[1.8] whitespace-pre-line">
+                          {formatFacts(overviewData.facts)}
+                        </p>
+                      )}
+                    </div>
+
+                    {/* AI 분석 법적 쟁점 (항상 읽기 전용) */}
+                    {extractedIssues?.keywords && extractedIssues.keywords.length > 0 && (
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-[11px] text-gray-400 italic">AI 분석 법적 쟁점</span>
+                        {extractedIssues.keywords.map((keyword, index) => (
+                          <Badge
+                            key={`keyword-${index}`}
+                            variant="default"
+                            className="font-normal text-xs bg-primary/10 text-primary"
+                          >
+                            {keyword}
+                          </Badge>
+                        ))}
+                      </div>
+                    )}
+
+                    <div className="space-y-2">
+                      <Label className="text-sm font-semibold">청구 내용</Label>
+                      {isEditingOverview ? (
+                        <Textarea
+                          value={overviewData.claims}
+                          onChange={(e) =>
+                            setOverviewData((prev) => ({
+                              ...prev,
+                              claims: e.target.value,
+                            }))
+                          }
+                          rows={2}
+                          className="text-sm"
+                        />
+                      ) : (
+                        <div className="text-sm text-muted-foreground leading-[1.8] whitespace-pre-wrap">
+                          {formatClaims(overviewData.claims)}
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label className="text-sm font-semibold">적용 법률</Label>
+                      {isEditingOverview ? (
+                        <div className="space-y-2">
+                          {/* 수동 추가된 태그 표시 */}
+                          <div className="flex flex-wrap gap-2">
+                            {manualLawTags.map((tag, index) => (
+                              <Badge
+                                key={`manual-${index}`}
+                                variant="secondary"
+                                className="font-normal text-xs pr-1"
+                              >
+                                {tag}
+                                <button
+                                  type="button"
+                                  onClick={() => setManualLawTags(prev => prev.filter((_, i) => i !== index))}
+                                  className="ml-1 hover:text-destructive"
+                                >
+                                  <XCircle className="h-3 w-3" />
+                                </button>
+                              </Badge>
+                            ))}
+                          </div>
+                          {/* 태그 입력창 */}
+                          <Input
+                            value={lawTagInput}
+                            onChange={(e) => setLawTagInput(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter" && lawTagInput.trim()) {
+                                e.preventDefault();
+                                setManualLawTags(prev => [...prev, lawTagInput.trim()]);
+                                setLawTagInput("");
+                              }
+                            }}
+                            placeholder="법령명 입력 후 Enter (예: 형법 제307조)"
+                            className="text-sm"
+                          />
+                        </div>
+                      ) : (
+                        <div className="flex flex-wrap gap-2">
+                          {relatedLawsLoading ? (
+                            <span className="text-sm text-muted-foreground">관련 법령 검색 중...</span>
+                          ) : (
+                            <>
+                              {/* 수동 추가 태그 */}
+                              {manualLawTags.map((tag, index) => (
+                                <Badge
+                                  key={`manual-${index}`}
+                                  variant="secondary"
+                                  className="font-normal text-xs"
+                                >
+                                  {tag}
+                                </Badge>
+                              ))}
+                              {/* API 검색 결과 태그 */}
+                              {relatedLaws.map((law, index) => (
+                                <Badge
+                                  key={`${law.law_name}-${law.article_number}-${index}`}
+                                  variant="outline"
+                                  className="font-normal text-xs"
+                                >
+                                  {law.law_name} 제{law.article_number}조({law.article_title})
+                                </Badge>
+                              ))}
+                              {manualLawTags.length === 0 && relatedLaws.length === 0 && (
+                                <span className="text-sm text-muted-foreground">관련 법령이 없습니다.</span>
+                              )}
+                            </>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </>
+              )}
             </CardContent>
           </Card>
 
@@ -613,8 +1436,8 @@ export function CaseDetailPage({
             </CardHeader>
             <CardContent>
               {similarCasesLoading ? (
-                <div className="text-center py-8 text-muted-foreground">
-                  <div className="animate-spin h-6 w-6 border-2 border-primary border-t-transparent rounded-full mx-auto mb-2" />
+                <div className="flex flex-col items-center justify-center py-8 text-muted-foreground">
+                  <video src="/assets/loading-card.mp4" autoPlay loop muted playsInline className="h-20 w-20 mb-2" style={{ mixBlendMode: 'multiply', opacity: 0.3 }} />
                   유사 판례 검색 중...
                 </div>
               ) : similarCases.length === 0 ? (
@@ -627,7 +1450,10 @@ export function CaseDetailPage({
                     <button
                       key={`${caseItem.case_number}-${index}`}
                       type="button"
-                      onClick={() => navigate(`/precedents/${encodeURIComponent(caseItem.case_number)}`)}
+                      onClick={() => navigate(
+                        `/precedents/${encodeURIComponent(caseItem.case_number)}?caseId=${caseData.id}`,
+                        { state: { originFacts: overviewData.facts, originClaims: overviewData.claims } }
+                      )}
                       className="w-full p-4 rounded-lg border border-l-4 border-l-primary border-t-border/60 border-r-border/60 border-b-border/60 bg-card hover:bg-secondary/30 transition-colors text-left group overflow-hidden relative"
                     >
                       <div className="flex items-start justify-between gap-4">
@@ -673,21 +1499,38 @@ export function CaseDetailPage({
                   실제 발생한 사건들을 시간순으로 정리
                 </p>
               </div>
-              <div className="flex items-center gap-4">
+              <div className="flex items-center gap-3">
                 {/* Legend */}
-                <div className="hidden sm:flex items-center gap-3 text-xs text-muted-foreground">
-                  <div className="flex items-center gap-1.5">
-                    <div className="w-2.5 h-2.5 rounded-full bg-emerald-500" />
-                    <span>우리측</span>
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    <div className="w-2.5 h-2.5 rounded-full bg-amber-600" />
-                    <span>상대측</span>
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    <div className="w-2.5 h-2.5 rounded-full bg-blue-500" />
-                    <span>증거</span>
-                  </div>
+                <div className="hidden sm:flex items-center gap-2 text-xs">
+                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#6D5EF5]/10 text-[#6D5EF5] font-medium">
+                    <User className="h-3 w-3" />
+                    우리측
+                  </span>
+                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#F59E0B]/10 text-[#B45309] font-medium">
+                    <UserX className="h-3 w-3" />
+                    상대측
+                  </span>
+                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#38BDF8]/10 text-[#0284C7] font-medium">
+                    <FileText className="h-3 w-3" />
+                    증거
+                  </span>
+                </div>
+                {/* Layout toggle */}
+                <div className="flex items-center bg-secondary/50 rounded-md p-0.5">
+                  <button
+                    type="button"
+                    onClick={() => setTimelineLayout("linear")}
+                    className={`px-2 py-1 text-xs rounded transition-colors ${timelineLayout === "linear" ? "bg-background shadow-sm font-medium text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+                  >
+                    목록
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setTimelineLayout("zigzag")}
+                    className={`px-2 py-1 text-xs rounded transition-colors ${timelineLayout === "zigzag" ? "bg-background shadow-sm font-medium text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+                  >
+                    지그재그
+                  </button>
                 </div>
                 <Button
                   size="sm"
@@ -700,105 +1543,256 @@ export function CaseDetailPage({
               </div>
             </CardHeader>
             <CardContent>
-              {/* Zigzag Timeline */}
-              <div className="relative py-8">
-                {/* Center Line */}
-                <div className="absolute left-1/2 top-0 bottom-0 w-px bg-border -translate-x-1/2" />
+              {timelineLoading ? (
+                <div className="flex flex-col items-center justify-center py-12 text-muted-foreground">
+                  <video src="/assets/loading-card.mp4" autoPlay loop muted playsInline className="h-20 w-20 mb-2" style={{ mixBlendMode: 'multiply', opacity: 0.3 }} />
+                  타임라인 데이터 로딩 중...
+                </div>
+              ) : timelineEvents.length === 0 ? (
+                <div className="text-center py-12">
+                  <p className="text-muted-foreground text-sm mb-4">타임라인 이벤트가 없습니다.</p>
+                  <Button onClick={generateTimeline} variant="outline">
+                    샘플 타임라인 생성
+                  </Button>
+                </div>
+              ) : timelineLayout === "linear" ? (
+                /* ===== A. 좌측 날짜 목록형 (max-w 적용) ===== */
+                <div className="relative py-4 max-w-2xl mx-auto">
+                  {(() => {
+                    const dateGroups = groupEventsByDate(timelineEvents);
 
-                {/* Timeline Events */}
-                <div className="space-y-8">
-                  {timelineEvents.map((event, index) => {
-                    const isLeft = index % 2 === 0;
-                    return (
-                      <div
-                        key={event.id}
-                        className={`relative flex items-center ${isLeft ? "justify-start" : "justify-end"}`}
-                      >
-                        {/* Center Number Circle with Color */}
-                        <div className="absolute left-1/2 -translate-x-1/2 z-10">
-                          <div className={`w-10 h-10 rounded-full flex items-center justify-center text-sm font-semibold ${getTimelineDotColor(event.type)} text-white`}>
-                            {index + 1}
-                          </div>
+                    return dateGroups.map((group, groupIdx) => {
+                      const prevDate = groupIdx > 0 ? dateGroups[groupIdx - 1].date : null;
+                      const showMonthHeader = isNewMonth(group.date, prevDate);
+                      const dateParts = parseDateParts(group.date);
+                      return (
+                        <div key={group.date + groupIdx}>
+                          {showMonthHeader && (
+                            <div className="flex items-center gap-3 mb-6 mt-2">
+                              <div className="flex-1 h-px bg-gradient-to-r from-transparent to-[#6D5EF5]/20" />
+                              <span className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-[#6D5EF5]/10 text-[#6D5EF5] text-xs font-semibold">
+                                <Calendar className="h-3 w-3" />
+                                {formatMonthYear(group.date)}
+                              </span>
+                              <div className="flex-1 h-px bg-gradient-to-l from-transparent to-[#6D5EF5]/20" />
+                            </div>
+                          )}
+
+                          {group.events.map((event, eventIdx) => {
+                            const isFirstInGroup = eventIdx === 0;
+                            const isLastEvent = groupIdx === dateGroups.length - 1 && eventIdx === group.events.length - 1;
+
+                            return (
+                              <div key={event.id} className="flex group relative">
+                                {/* Date Column */}
+                                <div className="w-16 sm:w-20 shrink-0 hidden sm:flex flex-col items-center pt-1">
+                                  {isFirstInGroup && (
+                                    <>
+                                      <span className="text-2xl font-bold text-foreground leading-none">
+                                        {dateParts.day}
+                                      </span>
+                                      <span className="text-[11px] text-muted-foreground mt-0.5">
+                                        {dateParts.month}월 {dateParts.dayOfWeek}
+                                      </span>
+                                    </>
+                                  )}
+                                </div>
+
+                                {/* Dot + Line */}
+                                <div className="w-8 sm:w-10 shrink-0 flex flex-col items-center relative">
+                                  {!(groupIdx === 0 && eventIdx === 0) ? (
+                                    <div className="w-px flex-1 bg-[#6D5EF5]/15 min-h-[8px]" />
+                                  ) : (
+                                    <div className="flex-1 min-h-[8px]" />
+                                  )}
+                                  <div className={`w-8 h-8 rounded-full flex items-center justify-center ${getTimelineDotColor(event.type)} text-white ring-[3px] ring-background shadow-sm shrink-0 z-10`}>
+                                    {getTypeIcon(event.type)}
+                                  </div>
+                                  {!isLastEvent ? (
+                                    <div className="w-px flex-1 bg-[#6D5EF5]/15 min-h-[8px]" />
+                                  ) : (
+                                    <div className="flex-1 min-h-[8px]" />
+                                  )}
+                                </div>
+
+                                {/* Card */}
+                                <div className="flex-1 pb-5 pl-3 sm:pl-4">
+                                  {/* Mobile date */}
+                                  <div className="sm:hidden flex items-center gap-1.5 text-xs text-muted-foreground mb-1">
+                                    <span className="font-semibold text-foreground">{dateParts.month}/{dateParts.day}</span>
+                                    <span className="text-muted-foreground/50">{dateParts.dayOfWeek}</span>
+                                  </div>
+
+                                  <div className={`px-4 py-3 rounded-xl border shadow-sm hover:shadow-md transition-all duration-200 ${getTypeColor(event.type)}`}>
+                                    <div className="flex items-center gap-2 mb-1.5 flex-wrap">
+                                      <Badge
+                                        variant="outline"
+                                        className={`text-[11px] font-medium px-2 py-0 rounded-full border ${event.type === "의뢰인"
+                                          ? "border-[#6D5EF5]/30 bg-[#6D5EF5]/10 text-[#6D5EF5]"
+                                          : event.type === "상대방"
+                                            ? "border-[#F59E0B]/30 bg-[#F59E0B]/10 text-[#B45309]"
+                                            : event.type === "증거"
+                                              ? "border-[#38BDF8]/30 bg-[#38BDF8]/10 text-[#0284C7]"
+                                              : "border-[#94A3B8]/30 bg-[#94A3B8]/10 text-[#64748B]"
+                                          }`}
+                                      >
+                                        {getTypeLabel(event.type)}
+                                      </Badge>
+                                      {event.time && (
+                                        <span className="hidden sm:inline-flex items-center gap-1 text-[11px] text-muted-foreground">
+                                          <Clock className="h-3 w-3" />
+                                          {event.time}
+                                        </span>
+                                      )}
+                                      {event.actor && (
+                                        <span className="text-[11px] text-muted-foreground">· {event.actor}</span>
+                                      )}
+                                    </div>
+                                    <h4 className="text-sm font-semibold text-foreground">
+                                      {event.title}
+                                    </h4>
+                                    {event.description && (
+                                      <p className="text-xs text-muted-foreground leading-relaxed mt-1">
+                                        {event.description}
+                                      </p>
+                                    )}
+                                    <div className="mt-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                      <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => setEditingEvent(event)}>
+                                        <Edit2 className="h-3 w-3" />
+                                      </Button>
+                                      <Button variant="ghost" size="icon" className="h-6 w-6 text-destructive" onClick={() => handleDeleteEvent(event.id)}>
+                                        <Trash2 className="h-3 w-3" />
+                                      </Button>
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })}
                         </div>
+                      );
+                    });
+                  })()}
+                </div>
+              ) : (
+                /* ===== B. 지그재그 + 큰 날짜 ===== */
+                <div className="relative py-8 max-w-3xl mx-auto">
+                  {(() => {
+                    // 월 헤더를 위해 flat list + 메타 생성
+                    const flatEvents: { event: TimelineEvent; showMonth: boolean; showDate: boolean }[] = [];
+                    for (let i = 0; i < timelineEvents.length; i++) {
+                      const event = timelineEvents[i];
+                      const prev = i > 0 ? timelineEvents[i - 1] : null;
+                      flatEvents.push({
+                        event,
+                        showMonth: isNewMonth(event.date, prev?.date || null),
+                        showDate: !prev || prev.date !== event.date,
+                      });
+                    }
 
-                        {/* Event Card */}
-                        <div
-                          className={`w-[calc(50%-3rem)] group ${isLeft ? "pr-4 text-right" : "pl-4 text-left"}`}
-                        >
-                          <div
-                            className={`p-5 rounded-xl border-2 bg-card hover:shadow-md transition-all ${getTypeColor(event.type)}`}
-                          >
-                            {/* Header */}
-                            <div
-                              className={`flex items-center gap-2 mb-2 ${isLeft ? "justify-end" : "justify-start"}`}
-                            >
-                              <Badge
-                                variant="outline"
-                                className={`text-xs font-medium px-2 py-0.5 ${event.type === "의뢰인"
-                                  ? "border-emerald-300 bg-emerald-100 text-emerald-700"
-                                  : event.type === "상대방"
-                                    ? "border-amber-300 bg-amber-100 text-amber-800"
-                                    : event.type === "증거"
-                                      ? "border-blue-300 bg-blue-100 text-blue-700"
-                                      : "border-border bg-secondary text-muted-foreground"
-                                  }`}
-                              >
-                                {getTypeLabel(event.type)}
-                              </Badge>
-                              {event.actor && (
-                                <span className="text-xs text-muted-foreground">{event.actor}</span>
+                    return flatEvents.map(({ event, showMonth, showDate }, index) => {
+                      const isLeft = index % 2 === 0;
+                      const dateParts = parseDateParts(event.date);
+                      const isFirst = index === 0;
+                      const isLast = index === flatEvents.length - 1;
+
+                      return (
+                        <div key={event.id}>
+                          {/* Month header */}
+                          {showMonth && (
+                            <div className="flex items-center gap-3 mb-8 mt-4 relative z-10">
+                              <div className="flex-1 h-px bg-gradient-to-r from-transparent to-[#6D5EF5]/20" />
+                              <span className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-[#6D5EF5]/10 text-[#6D5EF5] text-xs font-semibold">
+                                <Calendar className="h-3 w-3" />
+                                {formatMonthYear(event.date)}
+                              </span>
+                              <div className="flex-1 h-px bg-gradient-to-l from-transparent to-[#6D5EF5]/20" />
+                            </div>
+                          )}
+
+                          <div className={`relative flex items-start mb-10 ${isLeft ? "justify-start" : "justify-end"}`}>
+                            {/* Center dot + 세로선 세그먼트 */}
+                            <div className="absolute left-1/2 -translate-x-1/2 z-10 flex flex-col items-center">
+                              {/* 윗쪽 세로선 (첫 이벤트 제외) */}
+                              {!isFirst && (
+                                <div className="w-px bg-[#6D5EF5]/15" style={{ height: showMonth ? 52 : 40, marginBottom: -1 }} />
+                              )}
+                              <div className={`w-9 h-9 rounded-full flex items-center justify-center ${getTimelineDotColor(event.type)} text-white ring-4 ring-background shadow-md shrink-0`}>
+                                {getTypeIcon(event.type)}
+                              </div>
+                              {/* 아랫쪽 세로선 (마지막 이벤트 제외) */}
+                              {!isLast && (
+                                <div className="w-px bg-[#6D5EF5]/15 flex-1" style={{ minHeight: 40, marginTop: -1 }} />
                               )}
                             </div>
 
-                            {/* Title */}
-                            <h4 className="text-base font-semibold mb-1">
-                              {event.title}
-                            </h4>
+                            {/* Card area (한쪽에만) */}
+                            <div className={`w-[calc(50%-2.5rem)] group ${isLeft ? "pr-2" : "pl-2"}`}>
+                              {/* 날짜 — 카드 위에 크게 */}
+                              {showDate && (
+                                <div className={`flex items-baseline gap-1.5 mb-2 ${isLeft ? "justify-end" : "justify-start"}`}>
+                                  <span className="text-xl font-bold text-foreground leading-none tracking-tight">
+                                    {dateParts.day}일
+                                  </span>
+                                  <span className="text-xs text-muted-foreground">
+                                    {dateParts.dayOfWeek}
+                                  </span>
+                                  {event.time && (
+                                    <span className="text-xs text-muted-foreground/60 ml-1">
+                                      {event.time}
+                                    </span>
+                                  )}
+                                </div>
+                              )}
 
-                            {/* Description */}
-                            <p className="text-sm text-muted-foreground leading-relaxed mb-3">
-                              {event.description}
-                            </p>
+                              {/* Card */}
+                              <div className={`p-4 rounded-xl border shadow-sm hover:shadow-md transition-all duration-200 ${getTypeColor(event.type)} ${isLeft ? "text-right" : "text-left"}`}>
+                                <div className={`flex items-center gap-2 mb-1.5 ${isLeft ? "justify-end" : "justify-start"}`}>
+                                  <Badge
+                                    variant="outline"
+                                    className={`text-[11px] font-medium px-2 py-0 rounded-full border ${event.type === "의뢰인"
+                                      ? "border-[#6D5EF5]/30 bg-[#6D5EF5]/10 text-[#6D5EF5]"
+                                      : event.type === "상대방"
+                                        ? "border-[#F59E0B]/30 bg-[#F59E0B]/10 text-[#B45309]"
+                                        : event.type === "증거"
+                                          ? "border-[#38BDF8]/30 bg-[#38BDF8]/10 text-[#0284C7]"
+                                          : "border-[#94A3B8]/30 bg-[#94A3B8]/10 text-[#64748B]"
+                                      }`}
+                                  >
+                                    {getTypeLabel(event.type)}
+                                  </Badge>
+                                  {event.actor && (
+                                    <span className="text-[11px] text-muted-foreground">{event.actor}</span>
+                                  )}
+                                </div>
 
-                            {/* Date & Time */}
-                            <div
-                              className={`pt-3 border-t border-current/10 flex items-center gap-2 text-xs text-muted-foreground ${isLeft ? "justify-end" : "justify-start"}`}
-                            >
-                              <Calendar className="h-3 w-3" />
-                              <span>{formatDate(event.date)}</span>
-                              <span className="opacity-50">|</span>
-                              <Clock className="h-3 w-3" />
-                              <span>{event.time}</span>
-                            </div>
+                                <h4 className="text-sm font-semibold mb-0.5 text-foreground">
+                                  {event.title}
+                                </h4>
 
-                            {/* Action Buttons - Show on Hover */}
-                            <div
-                              className={`mt-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity ${isLeft ? "justify-end" : "justify-start"}`}
-                            >
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-7 w-7"
-                                onClick={() => setEditingEvent(event)}
-                              >
-                                <Edit2 className="h-3 w-3" />
-                              </Button>
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-7 w-7 text-destructive"
-                                onClick={() => handleDeleteEvent(event.id)}
-                              >
-                                <Trash2 className="h-3 w-3" />
-                              </Button>
+                                {event.description && (
+                                  <p className="text-xs text-muted-foreground leading-relaxed">
+                                    {event.description}
+                                  </p>
+                                )}
+
+                                <div className={`mt-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity ${isLeft ? "justify-end" : "justify-start"}`}>
+                                  <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => setEditingEvent(event)}>
+                                    <Edit2 className="h-3 w-3" />
+                                  </Button>
+                                  <Button variant="ghost" size="icon" className="h-6 w-6 text-destructive" onClick={() => handleDeleteEvent(event.id)}>
+                                    <Trash2 className="h-3 w-3" />
+                                  </Button>
+                                </div>
+                              </div>
                             </div>
                           </div>
                         </div>
-                      </div>
-                    );
-                  })}
+                      );
+                    });
+                  })()}
                 </div>
-              </div>
+              )}
             </CardContent>
           </Card>
         </TabsContent>
@@ -818,326 +1812,30 @@ export function CaseDetailPage({
               </div>
             </CardHeader>
             <CardContent className="p-0">
-              <RelationshipEditor
-                clientName={caseData.client}
-                opponentName={caseData.opponent}
-              />
+              {caseData?.id ? (
+                <RelationshipEditor
+                  caseId={String(caseData.id)}
+                />
+              ) : (
+                <div className="flex flex-col items-center justify-center h-[600px] text-muted-foreground">
+                  <video src="/assets/loading-card.mp4" autoPlay loop muted playsInline className="h-20 w-20 mb-3" style={{ mixBlendMode: 'multiply', opacity: 0.3 }} />
+                  <p className="text-sm">사건 정보를 불러오는 중...</p>
+                </div>
+              )}
             </CardContent>
           </Card>
         </TabsContent>
 
-        {/* ===== 대시보드 탭 (법적 리스크 분석) ===== */}
-        <TabsContent value="dashboard" className="mt-6 space-y-6">
-          {/* TOP: Risk Summary Strip */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            {/* 인과관계 */}
-            <Card className="border-border/60">
-              <CardContent className="p-4">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-sm font-medium text-muted-foreground">인과관계</span>
-                  <Badge variant="outline" className="bg-amber-50 text-amber-700 border-amber-200">
-                    <AlertTriangle className="h-3 w-3 mr-1" />
-                    주의
-                  </Badge>
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  2023년 6월~12월 증거 공백으로 인과관계 입증 취약
-                </p>
-              </CardContent>
-            </Card>
-
-            {/* 과실 */}
-            <Card className="border-border/60">
-              <CardContent className="p-4">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-sm font-medium text-muted-foreground">과실</span>
-                  <Badge variant="outline" className="bg-emerald-50 text-emerald-700 border-emerald-200">
-                    <CheckCircle2 className="h-3 w-3 mr-1" />
-                    안정
-                  </Badge>
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  상대방 고의성 입증 자료 충분 (채팅 로그 4건 확보)
-                </p>
-              </CardContent>
-            </Card>
-
-            {/* 손해 */}
-            <Card className="border-border/60">
-              <CardContent className="p-4">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-sm font-medium text-muted-foreground">손해</span>
-                  <Badge variant="outline" className="bg-red-50 text-red-700 border-red-200">
-                    <XCircle className="h-3 w-3 mr-1" />
-                    고위험
-                  </Badge>
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  정신적 피해 입증 자료 부족, 진단서 미확보
-                </p>
-              </CardContent>
-            </Card>
-          </div>
-
-          {/* MAIN: Left Heatmap + Center Matrix + Right Panel */}
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-            {/* LEFT: Time × Evidence Type Heatmap */}
-            <Card className="border-border/60 lg:col-span-4">
-              <CardHeader className="pb-3">
-                <CardTitle className="text-sm font-medium">시간 × 증거유형 히트맵</CardTitle>
-                <p className="text-xs text-muted-foreground">증거 공백 구간 식별</p>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-1">
-                  {/* Header Row */}
-                  <div className="grid grid-cols-7 gap-1 text-xs text-muted-foreground mb-2">
-                    <div className="col-span-1" />
-                    {["1월", "2월", "3월", "4월", "5월", "6월"].map((month) => (
-                      <div key={month} className="text-center text-[10px]">{month}</div>
-                    ))}
-                  </div>
-                  {/* Heatmap Rows */}
-                  {[
-                    { type: "채팅", data: [3, 2, 4, 1, 0, 0] },
-                    { type: "음성", data: [1, 0, 2, 0, 0, 0] },
-                    { type: "문서", data: [2, 1, 1, 2, 1, 0] },
-                    { type: "진술", data: [1, 1, 0, 0, 0, 0] },
-                    { type: "상대측", data: [0, 1, 1, 0, 0, 0] },
-                  ].map((row) => (
-                    <div key={row.type} className="grid grid-cols-7 gap-1 items-center">
-                      <div className="text-xs text-muted-foreground truncate">{row.type}</div>
-                      {row.data.map((value, idx) => (
-                        <div
-                          key={idx}
-                          className={`h-6 rounded-sm flex items-center justify-center text-[10px] font-medium ${value === 0
-                            ? "bg-red-100 text-red-600 border border-red-200"
-                            : value <= 1
-                              ? "bg-amber-100 text-amber-700"
-                              : value <= 2
-                                ? "bg-emerald-100 text-emerald-700"
-                                : "bg-emerald-200 text-emerald-800"
-                            }`}
-                        >
-                          {value}
-                        </div>
-                      ))}
-                    </div>
-                  ))}
-                </div>
-                <div className="mt-4 p-2 rounded bg-red-50 border border-red-100">
-                  <p className="text-xs text-red-700 font-medium">증거 공백 경고</p>
-                  <p className="text-xs text-red-600">5월~6월 전 증거유형 공백</p>
-                </div>
-              </CardContent>
-            </Card>
-
-            {/* CENTER: Issue-Evidence Matrix */}
-            <Card className="border-border/60 lg:col-span-5">
-              <CardHeader className="pb-3">
-                <CardTitle className="text-sm font-medium">쟁점-증거 매트릭스</CardTitle>
-                <p className="text-xs text-muted-foreground">핵심 쟁점별 증거 충족도</p>
-              </CardHeader>
-              <CardContent>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-xs">
-                    <thead>
-                      <tr className="border-b border-border/60">
-                        <th className="text-left py-2 pr-2 font-medium text-muted-foreground">쟁점</th>
-                        <th className="text-center py-2 px-1 font-medium text-muted-foreground">채팅</th>
-                        <th className="text-center py-2 px-1 font-medium text-muted-foreground">음성</th>
-                        <th className="text-center py-2 px-1 font-medium text-muted-foreground">문서</th>
-                        <th className="text-center py-2 px-1 font-medium text-muted-foreground">진술</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {[
-                        { issue: "명예훼손 발언", chat: "sufficient", audio: "partial", doc: "none", statement: "sufficient" },
-                        { issue: "공연성 (다수 인지)", chat: "sufficient", audio: "none", doc: "sufficient", statement: "partial" },
-                        { issue: "허위사실 적시", chat: "partial", audio: "partial", doc: "none", statement: "none" },
-                        { issue: "고의성", chat: "sufficient", audio: "sufficient", doc: "partial", statement: "sufficient" },
-                        { issue: "피해 발생", chat: "none", audio: "none", doc: "none", statement: "partial" },
-                      ].map((row) => (
-                        <tr key={row.issue} className="border-b border-border/40">
-                          <td className="py-2 pr-2 font-medium">{row.issue}</td>
-                          {[row.chat, row.audio, row.doc, row.statement].map((status, idx) => (
-                            <td key={idx} className="text-center py-2 px-1">
-                              {status === "sufficient" ? (
-                                <div className="w-6 h-6 mx-auto rounded bg-emerald-100 flex items-center justify-center">
-                                  <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
-                                </div>
-                              ) : status === "partial" ? (
-                                <div className="w-6 h-6 mx-auto rounded bg-amber-100 flex items-center justify-center">
-                                  <AlertTriangle className="h-3.5 w-3.5 text-amber-600" />
-                                </div>
-                              ) : (
-                                <div className="w-6 h-6 mx-auto rounded bg-red-100 flex items-center justify-center">
-                                  <XCircle className="h-3.5 w-3.5 text-red-500" />
-                                </div>
-                              )}
-                            </td>
-                          ))}
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-                <div className="mt-3 flex items-center gap-4 text-[10px] text-muted-foreground">
-                  <div className="flex items-center gap-1">
-                    <div className="w-3 h-3 rounded bg-emerald-100" /> 충분
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <div className="w-3 h-3 rounded bg-amber-100" /> 부분
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <div className="w-3 h-3 rounded bg-red-100" /> 미확보
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-
-            {/* RIGHT: Action Panel */}
-            <div className="lg:col-span-3 space-y-4">
-              {/* Opponent Claim Risk Alerts */}
-              <Card className="border-border/60">
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-sm font-medium flex items-center gap-2">
-                    <AlertTriangle className="h-4 w-4 text-amber-500" />
-                    상대측 주장 리스크
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-2">
-                  <div className="p-2 rounded bg-amber-50 border border-amber-100">
-                    <p className="text-xs font-medium text-amber-800">허위사실 부인 가능성</p>
-                    <p className="text-[10px] text-amber-700">"사실적시에 불과" 주장 예상</p>
-                  </div>
-                  <div className="p-2 rounded bg-red-50 border border-red-100">
-                    <p className="text-xs font-medium text-red-800">손해 인과관계 부정</p>
-                    <p className="text-[10px] text-red-700">증거 공백기간 악용 우려</p>
-                  </div>
-                </CardContent>
-              </Card>
-
-              {/* Next Actions */}
-              <Card className="border-border/60">
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-sm font-medium">필수 조치사항</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="space-y-2">
-                    {[
-                      { action: "5~6월 증거 공백 보완", priority: "high" },
-                      { action: "정신과 진단서 확보", priority: "high" },
-                      { action: "목격자 진술서 추가 확보", priority: "medium" },
-                    ].map((item, idx) => (
-                      <div key={idx} className="flex items-start gap-2">
-                        <div className={`w-1.5 h-1.5 rounded-full mt-1.5 ${item.priority === "high" ? "bg-red-500" : "bg-amber-500"
-                          }`} />
-                        <p className="text-xs">{item.action}</p>
-                      </div>
-                    ))}
-                  </div>
-                </CardContent>
-              </Card>
-
-              {/* Nearest Deadline */}
-              <Card className="border-red-200 bg-red-50/50">
-                <CardContent className="p-3">
-                  <div className="flex items-center gap-2 mb-1">
-                    <Calendar className="h-3.5 w-3.5 text-red-600" />
-                    <span className="text-xs font-medium text-red-700">최근접 기한</span>
-                  </div>
-                  <p className="text-sm font-semibold text-red-800">2026. 1. 25.</p>
-                  <p className="text-xs text-red-600">내용증명 회신 기한 (D-3)</p>
-                </CardContent>
-              </Card>
+        {/* ===== 문서작성 탭 ===== */}
+        <TabsContent value="documents" className="mt-6">
+          {caseData ? (
+            <DocumentEditor caseData={caseData} />
+          ) : (
+            <div className="flex flex-col items-center justify-center h-[600px] text-muted-foreground">
+              <video src="/assets/loading-card.mp4" autoPlay loop muted playsInline className="h-20 w-20 mb-3" style={{ mixBlendMode: 'multiply', opacity: 0.3 }} />
+              <p className="text-sm">사건 정보를 불러오는 중...</p>
             </div>
-          </div>
-
-          {/* BOTTOM: Collapsible Section */}
-          <Card className="border-border/60">
-            <CardHeader className="pb-0">
-              <button
-                type="button"
-                onClick={() => setBottomSectionOpen(!bottomSectionOpen)}
-                className="flex items-center justify-between w-full py-2"
-              >
-                <CardTitle className="text-sm font-medium">예상 판결 범위 (참고용)</CardTitle>
-                {bottomSectionOpen ? (
-                  <ChevronUp className="h-4 w-4 text-muted-foreground" />
-                ) : (
-                  <ChevronDown className="h-4 w-4 text-muted-foreground" />
-                )}
-              </button>
-            </CardHeader>
-            {bottomSectionOpen && (
-              <CardContent className="pt-4">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  {/* Fault Ratio Range Bar */}
-                  <div className="space-y-3">
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-medium">과실 비율 예상 범위</span>
-                      <span className="text-xs text-muted-foreground">유사 판례 기준</span>
-                    </div>
-                    <div className="relative h-8 bg-secondary/50 rounded-lg overflow-hidden">
-                      {/* Full bar background */}
-                      <div className="absolute inset-0 flex items-center px-2">
-                        <div className="flex-1 h-2 bg-muted rounded-full" />
-                      </div>
-                      {/* Range indicator */}
-                      <div
-                        className="absolute top-1/2 -translate-y-1/2 h-4 bg-emerald-500/80 rounded"
-                        style={{ left: "15%", width: "25%" }}
-                      />
-                      {/* Labels */}
-                      <div className="absolute inset-0 flex items-center justify-between px-2 text-[10px]">
-                        <span className="text-muted-foreground">0%</span>
-                        <span className="bg-emerald-100 text-emerald-800 px-1.5 py-0.5 rounded font-medium">
-                          15% ~ 40%
-                        </span>
-                        <span className="text-muted-foreground">100%</span>
-                      </div>
-                    </div>
-                    <p className="text-[10px] text-muted-foreground">
-                      상대방 과실: 현재 증거 기준 60~85% 예상
-                    </p>
-                  </div>
-
-                  {/* Damage Exposure Range */}
-                  <div className="space-y-3">
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-medium">손해배상 인정 범위</span>
-                      <span className="text-xs text-muted-foreground">유사 판례 기준</span>
-                    </div>
-                    <div className="relative h-8 bg-secondary/50 rounded-lg overflow-hidden">
-                      {/* Full bar background */}
-                      <div className="absolute inset-0 flex items-center px-2">
-                        <div className="flex-1 h-2 bg-muted rounded-full" />
-                      </div>
-                      {/* Range indicator */}
-                      <div
-                        className="absolute top-1/2 -translate-y-1/2 h-4 bg-blue-500/80 rounded"
-                        style={{ left: "20%", width: "40%" }}
-                      />
-                      {/* Labels */}
-                      <div className="absolute inset-0 flex items-center justify-between px-2 text-[10px]">
-                        <span className="text-muted-foreground">0원</span>
-                        <span className="bg-blue-100 text-blue-800 px-1.5 py-0.5 rounded font-medium">
-                          500만 ~ 2,000만원
-                        </span>
-                        <span className="text-muted-foreground">5천만원</span>
-                      </div>
-                    </div>
-                    <p className="text-[10px] text-muted-foreground">
-                      정신적 피해 입증 시 상향 가능, 미입증 시 하향 조정
-                    </p>
-                  </div>
-                </div>
-                <p className="text-[10px] text-muted-foreground mt-4 pt-3 border-t border-border/60">
-                  위 범위는 유사 판례를 참고한 예상치이며, 실제 판결은 재판부 판단에 따라 달라질 수 있습니다.
-                </p>
-              </CardContent>
-            )}
-          </Card>
+          )}
         </TabsContent>
       </Tabs>
 
@@ -1187,25 +1885,25 @@ export function CaseDetailPage({
                 <SelectContent>
                   <SelectItem value="의뢰인">
                     <div className="flex items-center gap-2">
-                      <div className="w-2 h-2 rounded-full bg-emerald-500" />
+                      <div className="w-2 h-2 rounded-full bg-[#6D5EF5]" />
                       우리측 (의뢰인)
                     </div>
                   </SelectItem>
                   <SelectItem value="상대방">
                     <div className="flex items-center gap-2">
-                      <div className="w-2 h-2 rounded-full bg-amber-600" />
+                      <div className="w-2 h-2 rounded-full bg-[#F59E0B]" />
                       상대측 (피고소인)
                     </div>
                   </SelectItem>
                   <SelectItem value="증거">
                     <div className="flex items-center gap-2">
-                      <div className="w-2 h-2 rounded-full bg-blue-500" />
+                      <div className="w-2 h-2 rounded-full bg-[#38BDF8]" />
                       증거 발생/확보
                     </div>
                   </SelectItem>
                   <SelectItem value="기타">
                     <div className="flex items-center gap-2">
-                      <div className="w-2 h-2 rounded-full bg-gray-400" />
+                      <div className="w-2 h-2 rounded-full bg-[#94A3B8]" />
                       기타
                     </div>
                   </SelectItem>
@@ -1311,25 +2009,25 @@ export function CaseDetailPage({
                   <SelectContent>
                     <SelectItem value="의뢰인">
                       <div className="flex items-center gap-2">
-                        <div className="w-2 h-2 rounded-full bg-emerald-500" />
+                        <div className="w-2 h-2 rounded-full bg-[#6D5EF5]" />
                         우리측 (의뢰인)
                       </div>
                     </SelectItem>
                     <SelectItem value="상대방">
                       <div className="flex items-center gap-2">
-                        <div className="w-2 h-2 rounded-full bg-amber-600" />
+                        <div className="w-2 h-2 rounded-full bg-[#F59E0B]" />
                         상대측 (피고소인)
                       </div>
                     </SelectItem>
                     <SelectItem value="증거">
                       <div className="flex items-center gap-2">
-                        <div className="w-2 h-2 rounded-full bg-blue-500" />
+                        <div className="w-2 h-2 rounded-full bg-[#38BDF8]" />
                         증거 발생/확보
                       </div>
                     </SelectItem>
                     <SelectItem value="기타">
                       <div className="flex items-center gap-2">
-                        <div className="w-2 h-2 rounded-full bg-gray-400" />
+                        <div className="w-2 h-2 rounded-full bg-[#94A3B8]" />
                         기타
                       </div>
                     </SelectItem>

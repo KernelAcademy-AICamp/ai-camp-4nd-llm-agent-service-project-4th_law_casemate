@@ -2,7 +2,7 @@
 
 import { useNavigate } from "react-router-dom";
 import React from "react";
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -61,11 +61,13 @@ interface UploadedFile {
   fromFileManager?: boolean;
   date?: string;
   description?: string;
+  file?: File; // 실제 File 객체 (업로드용)
 }
 
 interface FolderStructure {
   name: string;
   path: string;
+  category_id: number;
   children?: FolderStructure[];
   files?: {
     id: string;
@@ -76,79 +78,69 @@ interface FolderStructure {
   }[];
 }
 
-// 파일 관리의 폴더 구조 (계층형)
-const folderStructure: FolderStructure[] = [
-  {
-    name: "계약서류",
-    path: "계약서류",
-    children: [
-      {
-        name: "임대차",
-        path: "계약서류/임대차",
-        files: [
-          { id: "mf1", name: "임대차계약서_원본.pdf", type: "application/pdf", size: 2450000, uploadedAt: "2024-01-15" },
-          { id: "mf2", name: "임대차계약서_스캔.pdf", type: "application/pdf", size: 1820000, uploadedAt: "2024-01-15" },
-        ],
-      },
-      {
-        name: "매매",
-        path: "계약서류/매매",
-        files: [
-          { id: "mf9", name: "매매계약서.pdf", type: "application/pdf", size: 1920000, uploadedAt: "2024-01-10" },
-        ],
-      },
-    ],
-    files: [
-      { id: "mf10", name: "계약일반_서류.pdf", type: "application/pdf", size: 890000, uploadedAt: "2024-01-08" },
-    ],
-  },
-  {
-    name: "증거자료",
-    path: "증거자료",
-    children: [
-      {
-        name: "사진",
-        path: "증거자료/사진",
-        files: [
-          { id: "mf3", name: "현장사진_01.jpg", type: "image/jpeg", size: 3200000, uploadedAt: "2024-01-18" },
-          { id: "mf4", name: "현장사진_02.jpg", type: "image/jpeg", size: 2980000, uploadedAt: "2024-01-18" },
-          { id: "mf11", name: "피해사진_03.jpg", type: "image/jpeg", size: 2150000, uploadedAt: "2024-01-19" },
-        ],
-      },
-      {
-        name: "녹취",
-        path: "증거자료/녹취",
-        files: [
-          { id: "mf5", name: "녹취록_20240120.mp3", type: "audio/mpeg", size: 15600000, uploadedAt: "2024-01-20" },
-          { id: "mf12", name: "녹취록_20240125.mp3", type: "audio/mpeg", size: 12300000, uploadedAt: "2024-01-25" },
-        ],
-      },
-      {
-        name: "대화기록",
-        path: "증거자료/대화기록",
-        files: [
-          { id: "mf7", name: "카카오톡_대화내역.pdf", type: "application/pdf", size: 5400000, uploadedAt: "2024-01-25" },
-        ],
-      },
-    ],
-  },
-  {
-    name: "서신/통지",
-    path: "서신/통지",
-    files: [
-      { id: "mf6", name: "내용증명_발송본.pdf", type: "application/pdf", size: 890000, uploadedAt: "2024-01-22" },
-      { id: "mf13", name: "내용증명_회신.pdf", type: "application/pdf", size: 720000, uploadedAt: "2024-01-28" },
-    ],
-  },
-  {
-    name: "금융/거래",
-    path: "금융/거래",
-    files: [
-      { id: "mf8", name: "영수증_모음.pdf", type: "application/pdf", size: 1250000, uploadedAt: "2024-01-28" },
-      { id: "mf14", name: "계좌이체내역.pdf", type: "application/pdf", size: 980000, uploadedAt: "2024-01-30" },
-    ],
-  },
-];
+// 카테고리 API 응답 타입
+interface CategoryApiResponse {
+  category_id: number;
+  name: string;
+  firm_id: number;
+  parent_id: number | null;
+  order_index: number;
+}
+
+// 증거 파일 API 응답 타입
+interface EvidenceFileApiResponse {
+  evidence_id: number;
+  file_name: string;
+  file_type: string;
+  file_size: number;
+  file_path: string;
+  starred: boolean;
+  linked_case_ids: number[];
+  category_id: number | null;
+  created_at: string;
+  uploader_id: number;
+}
+
+// 카테고리를 계층 구조로 변환하는 함수
+const buildCategoryTree = (categories: CategoryApiResponse[]): FolderStructure[] => {
+  // parent_id가 null인 최상위 카테고리들 찾기
+  const rootCategories = categories.filter(cat => cat.parent_id === null);
+
+  // 재귀적으로 자식 카테고리 찾기
+  const buildChildren = (parentId: number, parentPath: string): FolderStructure[] => {
+    const children = categories.filter(cat => cat.parent_id === parentId);
+
+    return children
+      .sort((a, b) => a.order_index - b.order_index)
+      .map(cat => {
+        const currentPath = parentPath ? `${parentPath}/${cat.name}` : cat.name;
+        const subChildren = buildChildren(cat.category_id, currentPath);
+
+        return {
+          name: cat.name,
+          path: currentPath,
+          category_id: cat.category_id,
+          children: subChildren.length > 0 ? subChildren : undefined,
+          files: [], // 파일은 나중에 API에서 가져올 수 있도록 비워둠
+        };
+      });
+  };
+
+  // 최상위 카테고리부터 트리 구축
+  return rootCategories
+    .sort((a, b) => a.order_index - b.order_index)
+    .map(cat => {
+      const children = buildChildren(cat.category_id, cat.name);
+
+      return {
+        name: cat.name,
+        path: cat.name,
+        category_id: cat.category_id,
+        children: children.length > 0 ? children : undefined,
+        files: [], // 파일은 나중에 API에서 가져올 수 있도록 비워둠
+      };
+    });
+};
 
 export function NewCasePage({ }: NewCasePageProps) {
   const navigate = useNavigate();
@@ -177,11 +169,21 @@ export function NewCasePage({ }: NewCasePageProps) {
   const [dragOverItemId, setDragOverItemId] = useState<string | null>(null);
 
   // 파일 관리에서 불러오기 관련
+  const [folderStructure, setFolderStructure] = useState<FolderStructure[]>([]);
   const [selectedFolderPath, setSelectedFolderPath] = useState<string[]>([]);
   const [selectedManagedFiles, setSelectedManagedFiles] = useState<string[]>([]);
   const [linkedFiles, setLinkedFiles] = useState<UploadedFile[]>([]);
   const [managedDate, setManagedDate] = useState("");
   const [managedDescription, setManagedDescription] = useState("");
+
+  // 카테고리별 파일 캐시
+  const [categoryFiles, setCategoryFiles] = useState<Record<number, {
+    id: string;
+    name: string;
+    type: string;
+    size: number;
+    uploadedAt: string;
+  }[]>>({});
 
   const handleDragOver = useCallback((e: React.DragEvent, itemId: string) => {
     e.preventDefault();
@@ -202,6 +204,7 @@ export function NewCasePage({ }: NewCasePageProps) {
       name: file.name,
       type: file.type,
       size: file.size,
+      file: file, // 실제 File 객체 저장
     }));
 
     setEvidenceItems((prev) =>
@@ -225,6 +228,7 @@ export function NewCasePage({ }: NewCasePageProps) {
       name: file.name,
       type: file.type,
       size: file.size,
+      file: file, // 실제 File 객체 저장
     }));
 
     setEvidenceItems((prev) =>
@@ -292,7 +296,7 @@ export function NewCasePage({ }: NewCasePageProps) {
   // 폴더 경로를 따라가서 현재 폴더/파일 정보 가져오기
   const getCurrentFolderContent = () => {
     if (selectedFolderPath.length === 0) {
-      return { folders: folderStructure, files: [] };
+      return { folders: folderStructure, files: [], categoryId: null };
     }
 
     let current: FolderStructure[] = folderStructure;
@@ -307,9 +311,14 @@ export function NewCasePage({ }: NewCasePageProps) {
       }
     }
 
+    // 캐시된 파일 반환
+    const categoryId = currentFolder?.category_id;
+    const cachedFiles = categoryId ? categoryFiles[categoryId] : [];
+
     return {
       folders: currentFolder?.children || [],
-      files: currentFolder?.files || [],
+      files: cachedFiles || [],
+      categoryId: categoryId || null,
     };
   };
 
@@ -366,28 +375,226 @@ export function NewCasePage({ }: NewCasePageProps) {
     setLinkedFiles((prev) => prev.filter((f) => f.id !== fileId));
   };
 
+  // 카테고리의 파일 목록 로드
+  const loadCategoryFiles = async (categoryId: number) => {
+    // 이미 로드된 경우 스킵
+    if (categoryFiles[categoryId]) {
+      return;
+    }
+
+    try {
+      const token = localStorage.getItem("access_token");
+      if (!token) return;
+
+      const response = await fetch(
+        `http://localhost:8000/api/v1/evidence/list?category_id=${categoryId}`,
+        {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+
+      if (response.ok) {
+        const data = await response.json();
+        const files: EvidenceFileApiResponse[] = data.files || [];
+
+        // API 응답을 UI 형식으로 변환
+        const transformedFiles = files.map((file) => ({
+          id: String(file.evidence_id),
+          name: file.file_name,
+          type: file.file_type,
+          size: file.file_size,
+          uploadedAt: new Date(file.created_at).toISOString().split("T")[0], // YYYY-MM-DD 형식
+        }));
+
+        // 캐시에 저장
+        setCategoryFiles((prev) => ({
+          ...prev,
+          [categoryId]: transformedFiles,
+        }));
+
+        console.log(`카테고리 ${categoryId} 파일 로드 완료:`, transformedFiles.length);
+      } else {
+        console.error("파일 목록 로드 실패:", response.status);
+      }
+    } catch (error) {
+      console.error("파일 목록 로드 중 오류:", error);
+    }
+  };
+
+  // 컴포넌트 마운트 시 카테고리 가져오기
+  useEffect(() => {
+    const fetchCategories = async () => {
+      try {
+        const token = localStorage.getItem("access_token");
+        if (!token) return;
+
+        const response = await fetch("http://localhost:8000/api/v1/evidence/categories", {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          const categories: CategoryApiResponse[] = data.categories || [];
+
+          // 카테고리를 계층 구조로 변환
+          const tree = buildCategoryTree(categories);
+          setFolderStructure(tree);
+
+          console.log("카테고리 로드 완료:", tree);
+        } else {
+          console.error("카테고리 로드 실패:", response.status);
+        }
+      } catch (error) {
+        console.error("카테고리 로드 중 오류:", error);
+      }
+    };
+
+    fetchCategories();
+  }, []);
+
+  // 폴더 선택 변경 시 파일 로드
+  useEffect(() => {
+    const { categoryId } = getCurrentFolderContent();
+    if (categoryId && !categoryFiles[categoryId]) {
+      loadCategoryFiles(categoryId);
+    }
+  }, [selectedFolderPath, folderStructure]);
+
   const handleContinue = () => {
     setStep("evidence");
   };
 
-  const handleSubmit = () => {
-    console.log({
-      caseName,
-      caseType,
-      clientName,
-      clientRole,
-      incidentDate: isIncidentPeriod
-        ? `${incidentDate} ~ ${incidentDateEnd}`
-        : incidentDate,
-      notificationDate: isNotificationPeriod
-        ? `${notificationDate} ~ ${notificationDateEnd}`
-        : notificationDate,
-      deadline: isDeadlinePeriod ? `${deadline} ~ ${deadlineEnd}` : deadline,
-      consultationNote,
-      evidenceItems,
-      linkedFiles,
-    });
-    navigate(-1);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const handleSubmit = async () => {
+    if (!caseName.trim()) {
+      alert("사건 명을 입력해주세요.");
+      return;
+    }
+
+    setIsSubmitting(true);
+
+    try {
+      const token = localStorage.getItem("access_token");
+      if (!token) {
+        alert("로그인이 필요합니다.");
+        navigate("/");
+        return;
+      }
+
+      const response = await fetch("http://localhost:8000/api/v1/cases", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          title: caseName,
+          case_type: caseType || null,
+          client_name: clientName || null,
+          client_role: clientRole || null,
+          incident_date: incidentDate || null,
+          incident_date_end: isIncidentPeriod ? incidentDateEnd || null : null,
+          notification_date: notificationDate || null,
+          notification_date_end: isNotificationPeriod ? notificationDateEnd || null : null,
+          deadline_at: deadline || null,
+          deadline_at_end: isDeadlinePeriod ? deadlineEnd || null : null,
+          description: consultationNote || null,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.detail || "사건 등록에 실패했습니다");
+      }
+
+      console.log("사건 등록 성공:", data);
+      const caseId = data.id;
+
+      // 증거 파일 업로드 및 매핑 처리
+      try {
+        // 1. evidenceItems에서 업로드할 파일 수집
+        for (const item of evidenceItems) {
+          for (const uploadedFile of item.files) {
+            if (uploadedFile.file) {
+              // 실제 File 객체가 있는 경우 (새로 업로드된 파일)
+              const formData = new FormData();
+              formData.append("file", uploadedFile.file);
+
+              // 파일 업로드
+              const uploadResponse = await fetch(
+                "http://localhost:8000/api/v1/evidence/upload",
+                {
+                  method: "POST",
+                  headers: {
+                    Authorization: `Bearer ${token}`,
+                  },
+                  body: formData,
+                }
+              );
+
+              if (uploadResponse.ok) {
+                const uploadData = await uploadResponse.json();
+                const evidenceId = uploadData.evidence_id;
+
+                // 사건과 매핑 생성 (날짜 및 설명 포함)
+                const mappingParams = new URLSearchParams();
+                if (item.date) mappingParams.append("evidence_date", item.date);
+                if (item.description)
+                  mappingParams.append("description", item.description);
+
+                await fetch(
+                  `http://localhost:8000/api/v1/evidence/${evidenceId}/link-case-with-details/${caseId}?${mappingParams.toString()}`,
+                  {
+                    method: "POST",
+                    headers: {
+                      Authorization: `Bearer ${token}`,
+                    },
+                  }
+                );
+
+                console.log(`증거 파일 연결 완료: ${uploadedFile.name}`);
+              } else {
+                console.error(
+                  `파일 업로드 실패: ${uploadedFile.name}`,
+                  await uploadResponse.text()
+                );
+              }
+            }
+          }
+        }
+
+        // 2. linkedFiles에서 파일 관리 파일 매핑 (이미 업로드된 파일)
+        // linkedFiles는 파일 관리 시스템에서 가져온 것이므로 evidence_id를 알아야 함
+        // 현재 구조상 linkedFiles의 id는 "mf1-linked-timestamp" 형태이므로
+        // 실제 evidence_id를 추출하거나 다른 방식으로 처리 필요
+        // 임시로 이 부분은 스킵 (파일 관리 시스템이 별도 구현 필요)
+
+        console.log("모든 증거 파일 처리 완료");
+      } catch (evidenceError) {
+        console.error("증거 파일 처리 중 오류:", evidenceError);
+        alert(
+          "사건은 등록되었으나 일부 증거 파일 처리에 실패했습니다. 나중에 증거를 추가해주세요."
+        );
+      }
+
+      alert("사건이 등록되었습니다.");
+      navigate("/cases");
+    } catch (error) {
+      console.error("사건 등록 실패:", error);
+      const errorMessage =
+        error instanceof Error ? error.message : "사건 등록 중 오류가 발생했습니다.";
+      alert(errorMessage);
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const { folders: currentFolders, files: currentFiles } = getCurrentFolderContent();
@@ -458,15 +665,15 @@ export function NewCasePage({ }: NewCasePageProps) {
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-5">
-            {/* 사건 명 + 사건 종류 (같은 줄) */}
+            {/* 사건명 + 사건 종류 (같은 줄) */}
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label htmlFor="caseName" className="text-sm font-medium">
-                  사건 명
+                  사건명
                 </Label>
                 <Input
                   id="caseName"
-                  placeholder="예: 임대차보증금 반환 청구"
+                  placeholder="예: 온라인 명예훼손 손해배상"
                   value={caseName}
                   onChange={(e) => setCaseName(e.target.value)}
                   className="h-10"
@@ -499,7 +706,7 @@ export function NewCasePage({ }: NewCasePageProps) {
                 </Label>
                 <Input
                   id="clientName"
-                  placeholder="의뢰인 이름 입력"
+                  placeholder="이름 입력"
                   value={clientName}
                   onChange={(e) => setClientName(e.target.value)}
                   className="h-10"
@@ -667,7 +874,7 @@ export function NewCasePage({ }: NewCasePageProps) {
               </Label>
               <Textarea
                 id="consultationNote"
-                placeholder="상담 내용을 입력해주세요..."
+                placeholder="상담 내용을 입력해 주세요."
                 value={consultationNote}
                 onChange={(e) => setConsultationNote(e.target.value)}
                 rows={5}
@@ -797,7 +1004,7 @@ export function NewCasePage({ }: NewCasePageProps) {
                     <div className="col-span-2 space-y-1">
                       <Label className="text-xs text-muted-foreground">증거 설명</Label>
                       <Input
-                        placeholder="이 증거에 대한 설명..."
+                        placeholder="예. 수집 경위, 증명 취지 등"
                         value={item.description}
                         onChange={(e) =>
                           updateEvidenceItem(item.id, "description", e.target.value)
@@ -1026,7 +1233,7 @@ export function NewCasePage({ }: NewCasePageProps) {
                         <div className="col-span-2 space-y-1">
                           <Label className="text-xs text-muted-foreground">증거 설명</Label>
                           <Input
-                            placeholder="이 증거에 대한 설명..."
+                            placeholder="예. 수집 경위, 증명 취지 등"
                             value={managedDescription}
                             onChange={(e) => setManagedDescription(e.target.value)}
                             className="h-8 text-sm bg-background/50 border-border/40"
@@ -1117,10 +1324,12 @@ export function NewCasePage({ }: NewCasePageProps) {
 
           {/* Actions */}
           <div className="flex justify-between">
-            <Button variant="outline" onClick={() => setStep("info")}>
+            <Button variant="outline" onClick={() => setStep("info")} disabled={isSubmitting}>
               이전 단계
             </Button>
-            <Button onClick={handleSubmit}>사건 등록 완료</Button>
+            <Button onClick={handleSubmit} disabled={isSubmitting}>
+              {isSubmitting ? "등록 중..." : "사건 등록 완료"}
+            </Button>
           </div>
         </div>
       )}

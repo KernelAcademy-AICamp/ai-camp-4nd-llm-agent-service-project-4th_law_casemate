@@ -1,7 +1,7 @@
 "use client";
 
+import { useState } from "react";
 import { NavLink, useLocation } from "react-router-dom";
-import { Button } from "@/components/ui/button";
 import {
   Scale,
   Home,
@@ -10,136 +10,207 @@ import {
   Search,
   Settings,
   LogOut,
-  X,
+  PanelLeftClose,
+  PanelLeftOpen,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import {
+  Tooltip,
+  TooltipTrigger,
+  TooltipContent,
+} from "@/components/ui/tooltip";
+import { SettingsDialog } from "@/components/legal/settings-dialog";
 
 interface SidebarProps {
-  isOpen: boolean;
+  collapsed: boolean;
+  onToggle: () => void;
   onLogout: () => void;
-  onClose: () => void;
 }
 
-export function Sidebar({
-  isOpen,
-  onLogout,
-  onClose,
-}: SidebarProps) {
+const navItems = [
+  { to: "/", icon: Home, label: "홈", end: true },
+  { to: "/cases", icon: Folder, label: "사건 관리" },
+  { to: "/evidence/upload", icon: FileText, label: "파일 관리" },
+  { to: "/precedents", icon: Search, label: "판례 검색" },
+];
+
+export function Sidebar({ collapsed, onToggle, onLogout }: SidebarProps) {
   const location = useLocation();
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const isCasesActive =
     location.pathname.startsWith("/cases") ||
     location.pathname === "/new-case" ||
     location.pathname === "/dashboard";
 
+  const isItemActive = (to: string) => {
+    if (to === "/") return location.pathname === "/" || location.pathname === "/home";
+    if (to === "/cases") return isCasesActive;
+    if (to === "/precedents") return location.pathname.startsWith("/precedents");
+    return location.pathname === to;
+  };
+
   return (
     <aside
       className={cn(
-        "fixed inset-y-0 left-0 z-50 w-64 bg-card flex flex-col transition-transform duration-300 ease-out border-r border-border",
-        isOpen ? "translate-x-0" : "-translate-x-full"
+        "fixed top-0 left-0 bottom-0 z-40 flex flex-col bg-card border-r border-border/30 transition-all duration-300 ease-out"
       )}
+      style={{ width: collapsed ? 72 : 256 }}
     >
       {/* Header - Logo */}
-      <div className="h-14 flex items-center justify-between px-4 border-b border-border">
-        <div className="flex items-center gap-2.5">
-          <Scale className="h-5 w-5 text-foreground" />
-          <span className="text-base font-semibold tracking-tight text-foreground">
-            Casemate
-          </span>
-        </div>
-        <Button
-          variant="ghost"
-          size="icon"
-          className="text-muted-foreground hover:text-foreground h-8 w-8"
-          onClick={onClose}
-        >
-          <X className="h-4 w-4" />
-          <span className="sr-only">사이드바 닫기</span>
-        </Button>
+      <div className={cn(
+        "h-[60px] flex items-center shrink-0 mt-0.5",
+        collapsed ? "justify-center px-0" : "justify-between px-4"
+      )}>
+        {collapsed ? (
+          <button
+            type="button"
+            onClick={onToggle}
+            className="p-2 rounded-xl cursor-pointer hover:opacity-80 transition-opacity duration-150"
+            style={{ background: "linear-gradient(135deg, #6D5EF5, #A78BFA)" }}
+          >
+            <Scale className="h-[18px] w-[18px] text-white" />
+          </button>
+        ) : (
+          <div className="flex items-center gap-2.5">
+            <div
+              className="p-2 rounded-xl"
+              style={{ background: "linear-gradient(135deg, #6D5EF5, #A78BFA)" }}
+            >
+              <Scale className="h-[18px] w-[18px] text-white" />
+            </div>
+            <span className="text-base font-bold tracking-tight text-foreground">
+              Casemate
+            </span>
+          </div>
+        )}
       </div>
 
       {/* Navigation */}
-      <nav className="flex-1 py-4 px-3 overflow-y-auto">
-        <div className="space-y-1">
-          {/* Home */}
-          <NavLink
-            to="/"
-            onClick={onClose}
-            className={({ isActive }) => cn(
-              "w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors",
-              isActive
-                ? "bg-muted text-foreground"
-                : "text-muted-foreground hover:bg-muted/50 hover:text-foreground"
-            )}
-          >
-            <Home className="h-[18px] w-[18px]" />
-            홈
-          </NavLink>
+      <nav className="flex-1 py-4 overflow-y-auto px-2">
+        <div className="space-y-1.5">
+          {/* Toggle button — inside nav list so other icons stay fixed */}
+          {collapsed ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  onClick={onToggle}
+                  className="w-full flex items-center py-2.5 px-0 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors duration-150"
+                >
+                  <span className="w-[52px] flex items-center justify-center shrink-0">
+                    <PanelLeftOpen className="h-[18px] w-[18px]" />
+                  </span>
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="right" sideOffset={8}>사이드바 열기</TooltipContent>
+            </Tooltip>
+          ) : (
+            <button
+              type="button"
+              onClick={onToggle}
+              className="w-full flex items-center py-2.5 px-0 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors duration-150"
+            >
+              <span className="w-[52px] flex items-center justify-center shrink-0">
+                <PanelLeftClose className="h-[18px] w-[18px]" />
+              </span>
+              <span className="truncate text-sm">사이드바 닫기</span>
+            </button>
+          )}
+          {navItems.map(({ to, icon: Icon, label }) => {
+            const active = isItemActive(to);
+            const link = (
+              <NavLink
+                key={to}
+                to={to}
+                className={cn(
+                  "w-full flex items-center rounded-lg text-sm font-medium transition-colors duration-150 py-2.5 px-0",
+                  active
+                    ? "bg-primary/10 text-primary font-semibold"
+                    : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+                )}
+              >
+                <span className="w-[52px] flex items-center justify-center shrink-0">
+                  <Icon className="h-[18px] w-[18px]" />
+                </span>
+                {!collapsed && <span className="truncate">{label}</span>}
+              </NavLink>
+            );
 
-          {/* Cases */}
-          <NavLink
-            to="/cases"
-            onClick={onClose}
-            className={({ isActive }) => cn(
-              "w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors",
-              isActive || isCasesActive
-                ? "bg-muted text-foreground"
-                : "text-muted-foreground hover:bg-muted/50 hover:text-foreground"
-            )}
-          >
-            <Folder className="h-[18px] w-[18px]" />
-            사건 관리
-          </NavLink>
-
-          {/* Files */}
-          <NavLink
-            to="/evidence/upload"
-            onClick={onClose}
-            className={({ isActive }) => cn(
-              "w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors",
-              isActive
-                ? "bg-muted text-foreground"
-                : "text-muted-foreground hover:bg-muted/50 hover:text-foreground"
-            )}
-          >
-            <FileText className="h-[18px] w-[18px]" />
-            파일 관리
-          </NavLink>
-
-          {/* Precedents */}
-          <NavLink
-            to="/precedents"
-            onClick={onClose}
-            className={({ isActive }) => cn(
-              "w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors",
-              isActive || location.pathname.startsWith("/precedents/")
-                ? "bg-muted text-foreground"
-                : "text-muted-foreground hover:bg-muted/50 hover:text-foreground"
-            )}
-          >
-            <Search className="h-[18px] w-[18px]" />
-            판례 검색
-          </NavLink>
+            if (collapsed) {
+              return (
+                <Tooltip key={to}>
+                  <TooltipTrigger asChild>{link}</TooltipTrigger>
+                  <TooltipContent side="right" sideOffset={8}>
+                    {label}
+                  </TooltipContent>
+                </Tooltip>
+              );
+            }
+            return link;
+          })}
         </div>
       </nav>
 
       {/* Footer - Settings & Logout */}
-      <div className="py-3 px-3 border-t border-border space-y-1">
-        <button
-          type="button"
-          className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium text-muted-foreground hover:bg-muted/50 hover:text-foreground transition-colors"
-        >
-          <Settings className="h-[18px] w-[18px]" />
-          설정
-        </button>
-        <button
-          type="button"
-          onClick={onLogout}
-          className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium text-muted-foreground hover:bg-muted/50 hover:text-foreground transition-colors"
-        >
-          <LogOut className="h-[18px] w-[18px]" />
-          로그아웃
-        </button>
+      <div className="py-3 pb-8 mt-2 space-y-0.5 px-2">
+        {collapsed ? (
+          <>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  onClick={() => setSettingsOpen(true)}
+                  className="w-full flex items-center py-2.5 px-0 rounded-lg text-sm font-medium text-muted-foreground hover:bg-muted/60 hover:text-foreground transition-colors duration-150"
+                >
+                  <span className="w-[52px] flex items-center justify-center shrink-0">
+                    <Settings className="h-[18px] w-[18px]" />
+                  </span>
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="right" sideOffset={8}>설정</TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  onClick={onLogout}
+                  className="w-full flex items-center py-2.5 px-0 rounded-lg text-sm font-medium text-muted-foreground hover:bg-muted/60 hover:text-foreground transition-colors duration-150"
+                >
+                  <span className="w-[52px] flex items-center justify-center shrink-0">
+                    <LogOut className="h-[18px] w-[18px]" />
+                  </span>
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="right" sideOffset={8}>로그아웃</TooltipContent>
+            </Tooltip>
+          </>
+        ) : (
+          <>
+            <button
+              type="button"
+              onClick={() => navigate("/settings")}
+              className="w-full flex items-center py-2.5 px-0 rounded-lg text-sm font-medium text-muted-foreground hover:bg-muted/60 hover:text-foreground transition-colors duration-150"
+            >
+              <span className="w-[52px] flex items-center justify-center shrink-0">
+                <Settings className="h-[18px] w-[18px]" />
+              </span>
+              <span className="truncate">설정</span>
+            </button>
+            <button
+              type="button"
+              onClick={onLogout}
+              className="w-full flex items-center py-2.5 px-0 rounded-lg text-sm font-medium text-muted-foreground hover:bg-muted/60 hover:text-foreground transition-colors duration-150"
+            >
+              <span className="w-[52px] flex items-center justify-center shrink-0">
+                <LogOut className="h-[18px] w-[18px]" />
+              </span>
+              <span className="truncate">로그아웃</span>
+            </button>
+          </>
+        )}
       </div>
+
+      <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
     </aside>
   );
 }

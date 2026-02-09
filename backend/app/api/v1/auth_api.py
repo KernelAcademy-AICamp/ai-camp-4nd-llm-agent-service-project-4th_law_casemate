@@ -167,3 +167,27 @@ def get_user_info(current_user: User = Depends(get_current_user)):
     헤더에 유효한 JWT 토큰이 있어야 작동합니다.
     """
     return current_user
+
+
+class UpdateProfileRequest(BaseModel):
+    name: str | None = None
+    role: str | None = None
+
+
+@router.put("/me", response_model=UserOut)
+def update_profile(
+    request: UpdateProfileRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """프로필 수정 (이름, 직업)"""
+    user = db.query(User).filter(User.id == current_user.id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="사용자를 찾을 수 없습니다.")
+    if request.name is not None:
+        user.name = request.name.strip()
+    if request.role is not None:
+        user.role = request.role
+    db.commit()
+    db.refresh(user)
+    return user

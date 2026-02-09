@@ -3,12 +3,16 @@
 판례/법령 검색 엔드포인트 제공
 """
 
+import logging
 from fastapi import APIRouter, Query, HTTPException
 from pydantic import BaseModel
 from typing import Optional
-from app.services.search_service import SearchService
+from app.services.precedent_search_service import PrecedentSearchService
 from app.services.similar_search_service import SimilarSearchService
-from app.services.summary_service import SummaryService
+from app.services.precedent_summary_service import SummaryService
+from app.services.comparison_service import ComparisonService
+
+logger = logging.getLogger(__name__)
 
 
 class SummarizeRequest(BaseModel):
@@ -21,12 +25,19 @@ class SimilarCasesRequest(BaseModel):
     exclude_case_number: Optional[str] = None  # 현재 판례 제외
 
 
-router = APIRouter(prefix="/api/search", tags=["search"])
+class CompareRequest(BaseModel):
+    origin_facts: str  # 현재 사건의 사실관계
+    origin_claims: str  # 현재 사건의 청구내용
+    target_case_number: str  # 비교할 유사 판례 사건번호
+
+
+router = APIRouter(prefix="/search", tags=["search"])
 
 # 서비스 인스턴스
-search_service = SearchService()
+search_service = PrecedentSearchService()
 similar_search_service = SimilarSearchService()
 summary_service = SummaryService()
+comparison_service = ComparisonService()
 
 
 @router.get("/cases")
@@ -75,11 +86,15 @@ async def get_case_detail(case_number: str):
     판례 상세 조회
 
     - **case_number**: 사건번호 (예: 대법원 2020다12345)
+    - Qdrant에 없으면 법령 API에서 실시간 조회
     """
     try:
-        result = search_service.get_case_detail(case_number=case_number)
+        # Qdrant 우선 조회, 없으면 법령 API fallback (서비스 레이어 통합)
+        result = await search_service.get_case_detail_with_fallback(case_number)
+
         if result is None:
             raise HTTPException(status_code=404, detail="판례를 찾을 수 없습니다.")
+
         return result
     except HTTPException:
         raise
@@ -128,3 +143,29 @@ async def search_similar_cases(request: SimilarCasesRequest):
         return results
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"유사 판례 검색 중 오류 발생: {str(e)}")
+
+
+@router.post("/cases/compare")
+async def compare_cases(request: CompareRequest):
+    """
+    현재 사건과 유사 판례 비교 분석 (RAG)
+
+    - **origin_facts**: 현재 사건의 사실관계
+    - **origin_claims**: 현재 사건의 청구내용
+    - **target_case_number**: 비교할 유사 판례 사건번호
+    """
+    try:
+        result = comparison_service.compare(
+            origin_facts=request.origin_facts,
+            origin_claims=request.origin_claims,
+            target_case_number=request.target_case_number,
+        )
+
+        if not result.get("success"):
+            raise HTTPException(status_code=404, detail=result.get("error"))
+
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"비교 분석 중 오류 발생: {str(e)}")

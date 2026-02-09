@@ -1,11 +1,11 @@
 import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.api import routes
-from app.routers import search
 from tool.database import SessionLocal, init_db
 from sqlalchemy import text
 from app.models.user import User  # User 모델 import
+from app.models.law_firm import LawFirm  # LawFirm 모델 import
+from app.models import evidence  # Evidence 관련 모델들 import
 
 # 로깅 설정
 logging.basicConfig(
@@ -27,10 +27,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# API 라우터 포함
-app.include_router(routes.router, prefix="/api")
-app.include_router(search.router)  # 검색 API (/api/search)
 
 # v1 API 라우터 포함
 from app.api.v1 import router as v1_router

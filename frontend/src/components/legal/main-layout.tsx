@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import { Sidebar } from "./sidebar";
 import { Button } from "@/components/ui/button";
@@ -9,7 +9,9 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Menu, User, LogOut, Settings, Scale } from "lucide-react";
+import { User, LogOut, Scale } from "lucide-react";
+import { TooltipProvider } from "@/components/ui/tooltip";
+import { ProfileDialog } from "@/components/legal/profile-dialog";
 
 interface MainLayoutProps {
   onLogout: () => void;
@@ -22,9 +24,14 @@ interface MainLayoutProps {
 }
 
 export function MainLayout({ onLogout, userInfo }: MainLayoutProps) {
-  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(true);
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [localUserInfo, setLocalUserInfo] = useState(userInfo);
+  useEffect(() => { setLocalUserInfo(userInfo); }, [userInfo]);
   const location = useLocation();
   const navigate = useNavigate();
+
+  const isHomePage = location.pathname === "/" || location.pathname === "/home";
 
   const getPageTitle = () => {
     const path = location.pathname;
@@ -40,89 +47,94 @@ export function MainLayout({ onLogout, userInfo }: MainLayoutProps) {
     return "대시보드";
   };
 
-
   return (
-    <div className="min-h-screen flex bg-background">
-      {/* Sidebar */}
-      <Sidebar
-        isOpen={sidebarOpen}
-        onLogout={onLogout}
-        onClose={() => setSidebarOpen(false)}
-      />
-
-      {/* Main Content */}
-      <div className="flex-1 flex flex-col transition-all duration-300">
-        {/* Top Header */}
-        <header className="h-14 bg-card border-b border-border flex items-center justify-between px-4 lg:px-6 sticky top-0 z-30">
-          <div className="flex items-center gap-3">
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={() => setSidebarOpen(!sidebarOpen)}
-              className="shrink-0 h-9 w-9"
-            >
-              <Menu className="h-[18px] w-[18px]" />
-              <span className="sr-only">메뉴 토글</span>
-            </Button>
-            <div className="hidden sm:flex items-center gap-2 text-muted-foreground">
-              <Scale className="h-4 w-4" />
-              <span className="text-sm font-medium">Casemate</span>
-              <span className="text-muted-foreground/50">/</span>
-            </div>
-            <h1 className="text-sm font-medium truncate">{getPageTitle()}</h1>
-          </div>
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="icon" className="h-9 w-9">
-                <User className="h-[18px] w-[18px]" />
-                <span className="sr-only">프로필</span>
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-56">
-              <div className="px-2 py-1.5">
-                <p className="text-sm font-medium">{userInfo?.name || '사용자'}</p>
-                <p className="text-xs text-muted-foreground">{userInfo?.email || ''}</p>
-                {userInfo?.role && (
-                  <p className="text-xs text-muted-foreground mt-0.5">
-                    {userInfo.role === 'lawyer' ? '변호사' : userInfo.role === 'legal-officer' ? '법무사' : userInfo.role}
-                  </p>
-                )}
-              </div>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem>
-                <User className="h-4 w-4 mr-2" />
-                내 프로필
-              </DropdownMenuItem>
-              <DropdownMenuItem>
-                <Settings className="h-4 w-4 mr-2" />
-                설정
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={onLogout} className="text-destructive">
-                <LogOut className="h-4 w-4 mr-2" />
-                로그아웃
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </header>
-
-        {/* Page Content */}
-        <main className="flex-1 p-4 lg:p-8 lg:px-[4.5rem]">
-          <Outlet />
-        </main>
-      </div>
-
-      {/* Sidebar Overlay */}
-      {sidebarOpen && (
-        <div
-          className="fixed inset-0 bg-foreground/20 z-40"
-          onClick={() => setSidebarOpen(false)}
-          onKeyDown={(e) => e.key === "Escape" && setSidebarOpen(false)}
-          role="button"
-          tabIndex={0}
-          aria-label="사이드바 닫기"
+    <TooltipProvider delayDuration={200}>
+      <div className="min-h-screen flex bg-background">
+        {/* Sidebar */}
+        <Sidebar
+          collapsed={sidebarCollapsed}
+          onToggle={() => setSidebarCollapsed(!sidebarCollapsed)}
+          onLogout={onLogout}
         />
-      )}
-    </div>
+
+        {/* Main Content */}
+        <div
+          className="flex-1 flex flex-col transition-all duration-300"
+          style={{ marginLeft: sidebarCollapsed ? 72 : 256 }}
+        >
+          {/* Top Header */}
+          <header className="h-[60px] glass-panel border-b border-border/30 flex items-center justify-between px-4 lg:px-6 sticky top-0 z-30">
+            <div className="flex items-center gap-3">
+              <div className="hidden sm:flex items-center gap-2 text-muted-foreground/70">
+                <Scale className="h-4 w-4" />
+                <span
+                  className="text-sm font-medium cursor-pointer hover:text-foreground transition-colors"
+                  onClick={() => navigate("/home")}
+                >
+                  Casemate
+                </span>
+                <span className="text-muted-foreground/50">/</span>
+              </div>
+              <h1 className="text-sm font-semibold truncate">{getPageTitle()}</h1>
+            </div>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="ghost" size="icon" className="h-9 w-9 rounded-full">
+                  <User className="h-[18px] w-[18px]" />
+                  <span className="sr-only">프로필</span>
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-60 p-0 overflow-hidden">
+                <div className="px-4 py-5 bg-muted/30">
+                  <p className="text-sm font-semibold text-foreground">
+                    {localUserInfo?.name || "사용자"}
+                  </p>
+                  <p className="text-xs text-muted-foreground mt-1.5">
+                    {localUserInfo?.email || ""}
+                  </p>
+                  {localUserInfo?.role && (
+                    <span className="inline-block text-[11px] text-muted-foreground bg-muted px-2 py-0.5 rounded-full mt-2.5">
+                      {localUserInfo.role === "lawyer"
+                        ? "변호사"
+                        : localUserInfo.role === "legal-officer"
+                          ? "법무사"
+                          : localUserInfo.role}
+                    </span>
+                  )}
+                </div>
+                <DropdownMenuSeparator className="m-0" />
+                <div className="p-1">
+                  <DropdownMenuItem onClick={() => setProfileOpen(true)} className="px-3 py-2 cursor-pointer">
+                    <User className="h-4 w-4 mr-2.5" />
+                    프로필 수정
+                  </DropdownMenuItem>
+                </div>
+                <DropdownMenuSeparator className="m-0" />
+                <div className="p-1">
+                  <DropdownMenuItem onClick={onLogout} className="px-3 py-2 text-destructive cursor-pointer">
+                    <LogOut className="h-4 w-4 mr-2.5" />
+                    로그아웃
+                  </DropdownMenuItem>
+                </div>
+              </DropdownMenuContent>
+            </DropdownMenu>
+
+            <ProfileDialog
+              open={profileOpen}
+              onOpenChange={setProfileOpen}
+              userInfo={localUserInfo}
+              onProfileUpdated={(updated) => {
+                setLocalUserInfo((prev) => prev ? { ...prev, ...updated } : prev);
+              }}
+            />
+          </header>
+
+          {/* Page Content */}
+          <main className={isHomePage ? "flex-1 flex flex-col" : "flex-1 flex flex-col p-6 lg:p-10 lg:px-[5rem]"}>
+            <Outlet />
+          </main>
+        </div>
+      </div>
+    </TooltipProvider>
   );
 }

@@ -45,6 +45,7 @@ import {
   Clock,
   HardDrive,
   Home,
+  Loader2,
 } from "lucide-react";
 import {
   DropdownMenu,
@@ -115,6 +116,13 @@ export function EvidenceUploadPage({
   const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set());
   const [sidebarView, setSidebarView] = useState<"folders" | "recent" | "starred">("folders");
 
+  // 업로드 상태 관리
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState({ current: 0, total: 0 });
+
+  // 파일 목록 로딩 상태 관리
+  const [isLoadingFiles, setIsLoadingFiles] = useState(false);
+
   // 카테고리 추가 Dialog 상태
   const [showAddCategoryDialog, setShowAddCategoryDialog] = useState(false);
   const [categoryName, setCategoryName] = useState("");
@@ -123,6 +131,7 @@ export function EvidenceUploadPage({
   // 삭제 확인 Dialog 상태
   const [showDeleteConfirmDialog, setShowDeleteConfirmDialog] = useState(false);
   const [fileToDelete, setFileToDelete] = useState<ManagedFile | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   // 카테고리 목록 가져오기
   useEffect(() => {
@@ -170,6 +179,7 @@ export function EvidenceUploadPage({
     const token = localStorage.getItem('access_token');
     if (!token) return;
 
+    setIsLoadingFiles(true);
     try {
       const response = await fetch('http://localhost:8000/api/v1/evidence/list', {
         headers: {
@@ -198,6 +208,8 @@ export function EvidenceUploadPage({
       }
     } catch (error) {
       console.error('증거 목록 조회 실패:', error);
+    } finally {
+      setIsLoadingFiles(false);
     }
   }, []);
 
@@ -224,8 +236,13 @@ export function EvidenceUploadPage({
       const token = localStorage.getItem('access_token');
       let uploadSuccessCount = 0;
 
+      // 업로드 시작
+      setIsUploading(true);
+      setUploadProgress({ current: 0, total: droppedFiles.length });
+
       // 각 파일을 순차적으로 업로드
-      for (const file of droppedFiles) {
+      for (let i = 0; i < droppedFiles.length; i++) {
+        const file = droppedFiles[i];
         try {
           // FormData 생성
           const formData = new FormData();
@@ -253,11 +270,17 @@ export function EvidenceUploadPage({
           const data = await response.json();
           console.log('업로드 API 응답:', data);
           uploadSuccessCount++;
+
+          // 진행률 업데이트
+          setUploadProgress({ current: i + 1, total: droppedFiles.length });
         } catch (error) {
           console.error(`파일 업로드 실패 (${file.name}):`, error);
           alert(`파일 업로드 실패: ${file.name}`);
         }
       }
+
+      // 업로드 완료
+      setIsUploading(false);
 
       // 업로드 성공한 파일이 있으면 목록 새로고침
       if (uploadSuccessCount > 0) {
@@ -272,10 +295,16 @@ export function EvidenceUploadPage({
     if (!selectedFilesInput) return;
 
     const token = localStorage.getItem('access_token');
+    const filesArray = Array.from(selectedFilesInput);
     let uploadSuccessCount = 0;
 
+    // 업로드 시작
+    setIsUploading(true);
+    setUploadProgress({ current: 0, total: filesArray.length });
+
     // 각 파일을 순차적으로 업로드
-    for (const file of Array.from(selectedFilesInput)) {
+    for (let i = 0; i < filesArray.length; i++) {
+      const file = filesArray[i];
       try {
         // FormData 생성
         const formData = new FormData();
@@ -303,16 +332,25 @@ export function EvidenceUploadPage({
         const data = await response.json();
         console.log('업로드 API 응답:', data);
         uploadSuccessCount++;
+
+        // 진행률 업데이트
+        setUploadProgress({ current: i + 1, total: filesArray.length });
       } catch (error) {
         console.error(`파일 업로드 실패 (${file.name}):`, error);
         alert(`파일 업로드 실패: ${file.name}`);
       }
     }
 
+    // 업로드 완료
+    setIsUploading(false);
+
     // 업로드 성공한 파일이 있으면 목록 새로고침
     if (uploadSuccessCount > 0) {
       await fetchEvidences();
     }
+
+    // input 초기화
+    e.target.value = '';
   };
 
   const deleteFile = (fileId: string) => {
@@ -326,13 +364,15 @@ export function EvidenceUploadPage({
   };
 
   const confirmDeleteFile = async () => {
-    if (!fileToDelete) return;
+    if (!fileToDelete || isDeleting) return;
 
     const token = localStorage.getItem('access_token');
     if (!token) {
       alert('로그인이 필요합니다.');
       return;
     }
+
+    setIsDeleting(true);
 
     try {
       const evidenceId = fileToDelete.id;
@@ -368,6 +408,8 @@ export function EvidenceUploadPage({
     } catch (error) {
       console.error('증거 삭제 실패:', error);
       alert(`증거 삭제 실패: ${error}`);
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -523,6 +565,76 @@ export function EvidenceUploadPage({
   const getCaseName = (caseId: string) => {
     const foundCase = cases.find((c) => c.id === caseId);
     return foundCase?.name || caseId;
+  };
+
+  // 단일 파일 다운로드
+  const downloadFile = async (fileId: string, fileName: string) => {
+    const token = localStorage.getItem('access_token');
+    if (!token) {
+      alert('로그인이 필요합니다.');
+      return;
+    }
+
+    try {
+      // Signed URL 가져오기
+      const response = await fetch(`http://localhost:8000/api/v1/evidence/${fileId}/url`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+
+      if (!response.ok) {
+        throw new Error(`URL 생성 실패: ${response.statusText}`);
+      }
+
+      const data = await response.json();
+      const signedUrl = data.signed_url;
+
+      // fetch로 파일 다운로드
+      const fileResponse = await fetch(signedUrl);
+      if (!fileResponse.ok) {
+        throw new Error('파일 다운로드 실패');
+      }
+
+      // Blob으로 변환
+      const blob = await fileResponse.blob();
+
+      // Blob URL 생성 및 다운로드
+      const blobUrl = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = blobUrl;
+      link.download = fileName;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+
+      // Blob URL 해제
+      window.URL.revokeObjectURL(blobUrl);
+    } catch (error) {
+      console.error('파일 다운로드 실패:', error);
+      alert(`파일 다운로드 실패: ${error}`);
+    }
+  };
+
+  // 선택된 파일들 다운로드
+  const downloadSelectedFiles = async () => {
+    const token = localStorage.getItem('access_token');
+    if (!token) {
+      alert('로그인이 필요합니다.');
+      return;
+    }
+
+    const selectedFilesList = files.filter((f) => selectedFiles.has(f.id));
+
+    for (const file of selectedFilesList) {
+      try {
+        await downloadFile(file.id, file.name);
+        // 각 다운로드 사이에 짧은 딜레이
+        await new Promise(resolve => setTimeout(resolve, 500));
+      } catch (error) {
+        console.error(`파일 다운로드 실패 (${file.name}):`, error);
+      }
+    }
   };
 
   const toggleFileSelection = (fileId: string) => {
@@ -781,13 +893,24 @@ export function EvidenceUploadPage({
             onChange={handleFileSelect}
             className="hidden"
             id="file-upload-main"
+            disabled={isUploading}
           />
           <Button
             size="sm"
             onClick={() => document.getElementById("file-upload-main")?.click()}
+            disabled={isUploading}
           >
-            <Upload className="h-4 w-4 mr-1.5" />
-            업로드
+            {isUploading ? (
+              <>
+                <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
+                업로드 중...
+              </>
+            ) : (
+              <>
+                <Upload className="h-4 w-4 mr-1.5" />
+                업로드
+              </>
+            )}
           </Button>
         </div>
       </div>
@@ -871,7 +994,7 @@ export function EvidenceUploadPage({
                 <Trash2 className="h-3.5 w-3.5 mr-1.5" />
                 삭제
               </Button>
-              <Button variant="outline" size="sm">
+              <Button variant="outline" size="sm" onClick={downloadSelectedFiles}>
                 <Download className="h-3.5 w-3.5 mr-1.5" />
                 다운로드
               </Button>
@@ -887,11 +1010,12 @@ export function EvidenceUploadPage({
 
           {/* Drop Zone (when dragging) */}
           <div
-            onDragOver={handleDragOver}
-            onDragLeave={handleDragLeave}
-            onDrop={handleDrop}
-            className={`flex-1 overflow-auto transition-colors rounded-lg ${dragOver ? "bg-secondary/50 border-2 border-dashed border-foreground/30" : ""
-              }`}
+            onDragOver={isUploading ? undefined : handleDragOver}
+            onDragLeave={isUploading ? undefined : handleDragLeave}
+            onDrop={isUploading ? undefined : handleDrop}
+            className={`flex-1 overflow-auto transition-colors rounded-lg ${
+              dragOver && !isUploading ? "bg-secondary/50 border-2 border-dashed border-foreground/30" : ""
+            } ${isUploading ? "opacity-60 pointer-events-none" : ""}`}
           >
             {dragOver ? (
               <div className="h-full flex items-center justify-center">
@@ -900,6 +1024,16 @@ export function EvidenceUploadPage({
                   <p className="text-sm font-medium">파일을 여기에 놓으세요</p>
                   <p className="text-xs text-muted-foreground mt-1">
                     "{folders.find((f) => f.id === selectedFolder)?.name || "내 드라이브"}" 폴더에 업로드됩니다
+                  </p>
+                </div>
+              </div>
+            ) : isLoadingFiles ? (
+              <div className="h-full flex items-center justify-center">
+                <div className="flex flex-col items-center">
+                  <video src="/assets/loading-card.mp4" autoPlay loop muted playsInline className="h-20 w-20 mb-3" style={{ mixBlendMode: 'multiply', opacity: 0.3 }} />
+                  <p className="text-sm font-medium">파일 목록을 불러오는 중...</p>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    잠시만 기다려 주세요
                   </p>
                 </div>
               </div>
@@ -928,7 +1062,7 @@ export function EvidenceUploadPage({
                         />
                       </th>
                       <th className="text-left px-3 py-2 text-xs font-medium text-muted-foreground">이름</th>
-                      <th className="text-left px-3 py-2 text-xs font-medium text-muted-foreground w-28">수정한 날짜</th>
+                      <th className="text-left px-3 py-2 text-xs font-medium text-muted-foreground w-28">업로드 날짜</th>
                       <th className="text-left px-3 py-2 text-xs font-medium text-muted-foreground w-20">크기</th>
                       <th className="text-left px-3 py-2 text-xs font-medium text-muted-foreground w-32">연결된 사건</th>
                       <th className="w-10" />
@@ -991,7 +1125,7 @@ export function EvidenceUploadPage({
                                   <Link2 className="h-4 w-4 mr-2" />
                                   사건에 연결
                                 </DropdownMenuItem>
-                                <DropdownMenuItem>
+                                <DropdownMenuItem onClick={() => downloadFile(file.id, file.name)}>
                                   <Download className="h-4 w-4 mr-2" />
                                   다운로드
                                 </DropdownMenuItem>
@@ -1062,6 +1196,10 @@ export function EvidenceUploadPage({
                             <DropdownMenuItem onClick={() => openLinkModal(file)}>
                               <Link2 className="h-4 w-4 mr-2" />
                               사건에 연결
+                            </DropdownMenuItem>
+                            <DropdownMenuItem onClick={() => downloadFile(file.id, file.name)}>
+                              <Download className="h-4 w-4 mr-2" />
+                              다운로드
                             </DropdownMenuItem>
                             <DropdownMenuSeparator />
                             <DropdownMenuItem
@@ -1206,6 +1344,46 @@ export function EvidenceUploadPage({
         </div>
       )}
 
+      {/* Upload Progress Modal */}
+      {isUploading && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <Card className="w-full max-w-md">
+            <CardHeader>
+              <CardTitle className="text-base flex items-center gap-2">
+                <Loader2 className="h-5 w-5 animate-spin text-primary" />
+                파일 업로드 중
+              </CardTitle>
+              <CardDescription className="text-sm">
+                파일을 업로드하는 중입니다. 잠시만 기다려 주세요.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="space-y-2">
+                <div className="flex justify-between text-sm">
+                  <span className="text-muted-foreground">진행률</span>
+                  <span className="font-medium">
+                    {uploadProgress.current} / {uploadProgress.total}
+                  </span>
+                </div>
+                <div className="h-2 bg-secondary rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-primary transition-all duration-300"
+                    style={{
+                      width: `${uploadProgress.total > 0 ? (uploadProgress.current / uploadProgress.total) * 100 : 0}%`
+                    }}
+                  />
+                </div>
+                <p className="text-xs text-muted-foreground text-center mt-2">
+                  {uploadProgress.current === uploadProgress.total && uploadProgress.total > 0
+                    ? "업로드 완료 중..."
+                    : "파일을 업로드하고 있습니다..."}
+                </p>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
       {/* Delete Confirmation Dialog */}
       {showDeleteConfirmDialog && fileToDelete && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
@@ -1241,14 +1419,23 @@ export function EvidenceUploadPage({
                     setShowDeleteConfirmDialog(false);
                     setFileToDelete(null);
                   }}
+                  disabled={isDeleting}
                 >
                   취소
                 </Button>
                 <Button
                   variant="destructive"
                   onClick={confirmDeleteFile}
+                  disabled={isDeleting}
                 >
-                  삭제
+                  {isDeleting ? (
+                    <>
+                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                      삭제 중...
+                    </>
+                  ) : (
+                    "삭제"
+                  )}
                 </Button>
               </div>
             </CardContent>

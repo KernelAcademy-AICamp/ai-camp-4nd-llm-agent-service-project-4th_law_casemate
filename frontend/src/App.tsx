@@ -18,6 +18,8 @@ function App() {
   const [isLoggedIn, setIsLoggedIn] = useState(false)
   const [userInfo, setUserInfo] = useState<any>(null)
   const [isLoading, setIsLoading] = useState(true)
+  const [authOverlay, setAuthOverlay] = useState(false)
+  const [authAnimating, setAuthAnimating] = useState(false)
 
   // 앱 시작 시 토큰 확인 및 자동 로그인
   useEffect(() => {
@@ -30,8 +32,8 @@ function App() {
       }
 
       try {
-        // /api/v1/auth/me 엔드포인트로 사용자 정보 가져오기
-        const response = await fetch('http://localhost:8000/api/v1/auth/me', {
+        // /api/v1/me 엔드포인트로 사용자 정보 가져오기
+        const response = await fetch('http://localhost:8000/api/v1/me', {
           headers: {
             'Authorization': `Bearer ${token}` // 토큰을 헤더에 담아 전송
           }
@@ -64,6 +66,41 @@ function App() {
     checkAuth()
   }, [])
 
+  // 로그인 처리
+  const handleLogin = async () => {
+    const token = localStorage.getItem('access_token')
+    if (!token) return
+
+    try {
+      const response = await fetch('http://localhost:8000/api/v1/me', {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      })
+
+      if (response.ok) {
+        const userData = await response.json()
+        setUserInfo(userData)
+        // 1) 오버레이 정상 상태로 렌더 + 홈 화면 동시 렌더
+        setAuthOverlay(true)
+        setIsLoggedIn(true)
+        // 2) 다음 프레임에서 exit 애니메이션 트리거 (CSS 트랜지션 발동)
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            setAuthAnimating(true)
+          })
+        })
+        // 3) 애니메이션 완료 후 오버레이 제거
+        setTimeout(() => {
+          setAuthOverlay(false)
+          setAuthAnimating(false)
+        }, 600)
+      }
+    } catch (error) {
+      console.error('로그인 후 사용자 정보 가져오기 실패:', error)
+    }
+  }
+
   // 로그아웃 처리
   const handleLogout = () => {
     localStorage.removeItem('access_token')
@@ -92,7 +129,7 @@ function App() {
         {/* Public Route */}
         <Route
           path="/login"
-          element={isLoggedIn ? <Navigate to="/" replace /> : <AuthPage onLogin={() => setIsLoggedIn(true)} />}
+          element={isLoggedIn ? <Navigate to="/" replace /> : <AuthPage onLogin={handleLogin} />}
         />
 
         {/* Protected Routes */}
@@ -114,6 +151,13 @@ function App() {
         {/* Fallback */}
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
+
+      {/* 로그인→홈 트랜지션: auth 오버레이가 슬라이드 아웃하며 홈 화면 드러냄 */}
+      {authOverlay && (
+        <div className="fixed inset-0 z-50 pointer-events-none">
+          <AuthPage onLogin={() => {}} exiting={authAnimating} />
+        </div>
+      )}
       </SearchProvider>
     </BrowserRouter>
   )

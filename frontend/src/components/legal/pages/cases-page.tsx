@@ -1,124 +1,245 @@
 "use client";
 
 import { useNavigate } from "react-router-dom";
-import { type CaseData, sampleCases } from "@/lib/sample-data";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import { Progress } from "@/components/ui/progress";
 import { Input } from "@/components/ui/input";
-import { Plus, Search, ArrowUpRight } from "lucide-react";
-import { useState } from "react";
+import { Plus, Search, ArrowUpRight, Loader2 } from "lucide-react";
+import { useState, useEffect } from "react";
 
-interface CasesPageProps {
-  cases?: CaseData[];
+// API 응답 타입
+interface CaseApiResponse {
+  id: number;
+  title: string;
+  client_name: string | null;
+  case_type: string | null;
+  status: string | null;
+  created_at: string | null;
 }
 
-export function CasesPage({ cases: propCases }: CasesPageProps) {
+// 화면 표시용 타입
+interface CaseDisplayItem {
+  id: string;
+  title: string;
+  clientName: string;
+  caseType: string;
+  status: string;
+  createdAt: string;
+}
+
+// 사건 유형별 태그 스타일
+function caseTypeStyle(type: string): { bg: string; text: string } {
+  if (type.includes("민사")) return { bg: "rgba(180,83,9,0.06)", text: "#B45309" };
+  if (type.includes("형사")) return { bg: "rgba(67,56,202,0.06)", text: "#4338CA" };
+  if (type.includes("가사")) return { bg: "rgba(109,94,245,0.06)", text: "#6D5EF5" };
+  if (type.includes("행정")) return { bg: "rgba(37,99,235,0.06)", text: "#2563EB" };
+  return { bg: "rgba(100,116,139,0.06)", text: "#64748B" }; // 기타
+}
+
+// 상태별 색상 dot
+function statusDot(status: string) {
+  switch (status) {
+    case "완료":
+      return "bg-emerald-400";
+    case "분석중":
+      return "bg-amber-400";
+    case "증거수집":
+      return "bg-blue-400";
+    default:
+      return "bg-slate-300";
+  }
+}
+
+export function CasesPage() {
   const navigate = useNavigate();
-  const cases = propCases || sampleCases;
+  const [cases, setCases] = useState<CaseDisplayItem[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
 
+  // API에서 사건 목록 조회
+  useEffect(() => {
+    const fetchCases = async () => {
+      try {
+        const token = localStorage.getItem("access_token");
+        if (!token) {
+          setError("로그인이 필요합니다.");
+          setIsLoading(false);
+          return;
+        }
+
+        const response = await fetch("http://localhost:8000/api/v1/cases", {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        });
+
+        if (!response.ok) {
+          if (response.status === 401) {
+            setError("로그인이 만료되었습니다. 다시 로그인해주세요.");
+            return;
+          }
+          throw new Error("사건 목록을 불러오는데 실패했습니다.");
+        }
+
+        const data = await response.json();
+
+        // API 응답을 화면 표시용 타입으로 변환
+        const displayCases: CaseDisplayItem[] = data.cases.map(
+          (c: CaseApiResponse) => ({
+            id: String(c.id),
+            title: c.title,
+            clientName: c.client_name || "",
+            caseType: c.case_type || "",
+            status: c.status || "접수",
+            createdAt: c.created_at
+              ? new Date(c.created_at).toLocaleDateString("ko-KR")
+              : "",
+          })
+        );
+
+        setCases(displayCases);
+      } catch (err) {
+        console.error("사건 목록 조회 실패:", err);
+        setError(
+          err instanceof Error ? err.message : "오류가 발생했습니다."
+        );
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    fetchCases();
+  }, []);
+
+  // 검색 필터링
   const filteredCases = cases.filter(
     (c) =>
-      c.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      c.client.toLowerCase().includes(searchQuery.toLowerCase())
+      c.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      c.clientName.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
-  const getRiskBadgeVariant = (risk: CaseData["riskLevel"]) => {
-    switch (risk) {
-      case "low":
-        return "secondary";
-      case "medium":
-        return "outline";
-      case "high":
-        return "destructive";
-    }
-  };
+  // 로딩 상태
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center" style={{ height: 'calc(100vh - 120px)' }}>
+        <video src="/assets/loading-card.mp4" autoPlay loop muted playsInline className="h-20 w-20" style={{ mixBlendMode: 'multiply', opacity: 0.3 }} />
+      </div>
+    );
+  }
 
-  const getRiskLabel = (risk: CaseData["riskLevel"]) => {
-    switch (risk) {
-      case "low":
-        return "낮음";
-      case "medium":
-        return "중간";
-      case "high":
-        return "높음";
-    }
-  };
+  // 에러 상태
+  if (error) {
+    return (
+      <div className="text-center py-16">
+        <p className="text-muted-foreground">{error}</p>
+        <Button
+          variant="outline"
+          className="mt-4"
+          onClick={() => navigate("/")}
+        >
+          로그인 페이지로
+        </Button>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
-      {/* Search and Actions */}
-      <div className="flex flex-col sm:flex-row gap-3">
-        <div className="relative flex-1">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-          <Input
-            placeholder="사건명 또는 의뢰인으로 검색..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="pl-10 h-10"
-          />
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-lg font-semibold text-foreground">사건 목록</h2>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            총 {filteredCases.length}건
+          </p>
         </div>
-        <Button onClick={() => navigate("/new-case")} className="gap-2 h-10">
+        <Button onClick={() => navigate("/new-case")} className="gap-2 h-9 text-sm">
           <Plus className="h-4 w-4" />
           새 사건 등록
         </Button>
       </div>
 
-      {/* Cases Grid - 4 columns */}
-      <div className="grid gap-4 grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+      {/* Search */}
+      <div className="relative max-w-sm">
+        <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground/50" />
+        <Input
+          placeholder="사건명 또는 의뢰인 검색..."
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          className="pl-10 h-9 text-sm"
+        />
+      </div>
+
+      {/* Cases Grid */}
+      <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
         {filteredCases.map((caseItem) => (
           <Card
             key={caseItem.id}
-            className="border-border/60 hover:border-border hover:shadow-sm transition-all cursor-pointer group"
+            className="border-border/40 cursor-pointer group hover:border-border/70 transition-all duration-200 hover:shadow-md"
             onClick={() => navigate(`/cases/${caseItem.id}`)}
           >
-            <CardContent className="p-4">
-              <div className="flex items-start justify-between mb-3">
-                <Badge
-                  variant={caseItem.status === "완료" ? "default" : "secondary"}
-                  className="text-xs font-normal"
-                >
-                  {caseItem.status}
-                </Badge>
-                <ArrowUpRight className="h-4 w-4 text-muted-foreground/40 group-hover:text-foreground transition-colors" />
+            <CardContent className="p-5">
+              {/* Row 1: 사건 유형 태그 + 화살표 */}
+              <div className="flex items-center justify-between mb-3">
+                {caseItem.caseType ? (
+                  <span
+                    className="text-[11px] font-normal px-2.5 py-0.5 rounded-full"
+                    style={{
+                      backgroundColor: caseTypeStyle(caseItem.caseType).bg,
+                      color: caseTypeStyle(caseItem.caseType).text,
+                    }}
+                  >
+                    {caseItem.caseType}
+                  </span>
+                ) : (
+                  <span />
+                )}
+                <ArrowUpRight className="h-3.5 w-3.5 text-muted-foreground/30 group-hover:text-muted-foreground group-hover:translate-x-0.5 group-hover:-translate-y-0.5 transition-all duration-200" />
               </div>
 
-              <h3 className="font-medium mb-1 line-clamp-2 leading-snug text-sm">
-                {caseItem.name}
+              {/* Row 2: 사건명 (주요 정보) */}
+              <h3 className="font-semibold text-[15px] leading-snug line-clamp-2 text-foreground mb-1.5">
+                {caseItem.title}
               </h3>
-              <p className="text-xs text-muted-foreground mb-4">
-                {caseItem.date} · 증거 {caseItem.evidenceCount}건
-              </p>
 
-              <div className="space-y-3">
-                <div>
-                  <div className="flex items-center justify-between text-xs mb-1">
-                    <span className="text-muted-foreground">진행률</span>
-                    <span className="font-medium">{caseItem.progress}%</span>
-                  </div>
-                  <Progress value={caseItem.progress} className="h-1" />
-                </div>
+              {/* Row 3: 의뢰인 */}
+              {caseItem.clientName && (
+                <p className="text-xs text-muted-foreground/60 mb-4">
+                  {caseItem.clientName}
+                </p>
+              )}
 
-                <div className="flex items-center justify-between">
-                  <span className="text-xs text-muted-foreground">리스크</span>
-                  <Badge
-                    variant={getRiskBadgeVariant(caseItem.riskLevel)}
-                    className="text-xs font-normal"
-                  >
-                    {getRiskLabel(caseItem.riskLevel)}
-                  </Badge>
+              {/* Row 4: 하단 메타 — 상태 + 날짜 */}
+              <div className="flex items-center justify-between pt-3 border-t border-border/30">
+                <div className="flex items-center gap-1.5">
+                  <span className={`w-1.5 h-1.5 rounded-full ${statusDot(caseItem.status)}`} />
+                  <span className="text-xs text-muted-foreground/70">{caseItem.status}</span>
                 </div>
+                <span className="text-[11px] text-muted-foreground/45">{caseItem.createdAt}</span>
               </div>
             </CardContent>
           </Card>
         ))}
       </div>
 
+      {/* Empty State */}
       {filteredCases.length === 0 && (
         <div className="text-center py-16">
-          <p className="text-muted-foreground">검색 결과가 없습니다.</p>
+          <p className="text-sm text-muted-foreground">
+            {searchQuery ? "검색 결과가 없습니다." : "등록된 사건이 없습니다."}
+          </p>
+          {!searchQuery && (
+            <Button
+              variant="outline"
+              className="mt-4 gap-2"
+              onClick={() => navigate("/new-case")}
+            >
+              <Plus className="h-4 w-4" />
+              첫 사건 등록하기
+            </Button>
+          )}
         </div>
       )}
     </div>
