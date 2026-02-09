@@ -88,6 +88,9 @@ import {
   Clock,
   TrendingUp,
   XCircle,
+  User,
+  UserX,
+  Circle,
 } from "lucide-react";
 import { RelationshipEditor } from "@/components/legal/relationship-editor";
 import { DocumentEditor } from "@/components/legal/document-editor";
@@ -131,6 +134,7 @@ export function CaseDetailPage({
   const [timelineEvents, setTimelineEvents] =
     useState<TimelineEvent[]>([]);
   const [timelineLoading, setTimelineLoading] = useState(false);
+  const [timelineLayout, setTimelineLayout] = useState<"linear" | "zigzag">("linear");
   const [editingEvent, setEditingEvent] = useState<TimelineEvent | null>(null);
   const [isAddingEvent, setIsAddingEvent] = useState(false);
   const [newEvent, setNewEvent] = useState<Partial<TimelineEvent>>({
@@ -856,26 +860,39 @@ export function CaseDetailPage({
   const getTypeColor = (type: TimelineEvent["type"]) => {
     switch (type) {
       case "의뢰인":
-        return "border-emerald-500 bg-emerald-50 text-emerald-800";
+        return "border-[#6D5EF5]/20 bg-[#6D5EF5]/5 text-[#6D5EF5]";
       case "상대방":
-        return "border-amber-600 bg-amber-50 text-amber-900";
+        return "border-[#F59E0B]/20 bg-[#F59E0B]/5 text-[#B45309]";
       case "증거":
-        return "border-blue-500 bg-blue-50 text-blue-800";
+        return "border-[#38BDF8]/20 bg-[#38BDF8]/5 text-[#0284C7]";
       default:
-        return "border-border bg-secondary text-secondary-foreground";
+        return "border-[#94A3B8]/20 bg-[#94A3B8]/5 text-[#64748B]";
     }
   };
 
   const getTimelineDotColor = (type: TimelineEvent["type"]) => {
     switch (type) {
       case "의뢰인":
-        return "bg-emerald-500";
+        return "bg-gradient-to-br from-[#6D5EF5] to-[#A78BFA]";
       case "상대방":
-        return "bg-amber-600";
+        return "bg-gradient-to-br from-[#F59E0B] to-[#FBBF24]";
       case "증거":
-        return "bg-blue-500";
+        return "bg-gradient-to-br from-[#38BDF8] to-[#7DD3FC]";
       default:
-        return "bg-foreground";
+        return "bg-gradient-to-br from-[#94A3B8] to-[#CBD5E1]";
+    }
+  };
+
+  const getTypeIcon = (type: TimelineEvent["type"]) => {
+    switch (type) {
+      case "의뢰인":
+        return <User className="h-4 w-4" />;
+      case "상대방":
+        return <UserX className="h-4 w-4" />;
+      case "증거":
+        return <FileText className="h-4 w-4" />;
+      default:
+        return <Circle className="h-4 w-4" />;
     }
   };
 
@@ -899,6 +916,43 @@ export function CaseDetailPage({
       month: "long",
       day: "numeric",
     });
+  };
+
+  // 타임라인 헬퍼 함수들
+  const parseDateParts = (dateStr: string) => {
+    const date = new Date(dateStr);
+    const dayOfWeekNames = ["일", "월", "화", "수", "목", "금", "토"];
+    return {
+      day: date.getDate(),
+      month: date.getMonth() + 1,
+      year: date.getFullYear(),
+      dayOfWeek: dayOfWeekNames[date.getDay()],
+    };
+  };
+
+  const formatMonthYear = (dateStr: string) => {
+    const { year, month } = parseDateParts(dateStr);
+    return `${year}년 ${month}월`;
+  };
+
+  const isNewMonth = (currentDate: string, previousDate: string | null) => {
+    if (!previousDate) return true;
+    const current = parseDateParts(currentDate);
+    const previous = parseDateParts(previousDate);
+    return current.year !== previous.year || current.month !== previous.month;
+  };
+
+  const groupEventsByDate = (events: TimelineEvent[]) => {
+    const groups: { date: string; events: TimelineEvent[] }[] = [];
+    for (const event of events) {
+      const lastGroup = groups[groups.length - 1];
+      if (lastGroup && lastGroup.date === event.date) {
+        lastGroup.events.push(event);
+      } else {
+        groups.push({ date: event.date, events: [event] });
+      }
+    }
+    return groups;
   };
 
   // 로딩 상태
@@ -1445,21 +1499,38 @@ export function CaseDetailPage({
                   실제 발생한 사건들을 시간순으로 정리
                 </p>
               </div>
-              <div className="flex items-center gap-4">
+              <div className="flex items-center gap-3">
                 {/* Legend */}
-                <div className="hidden sm:flex items-center gap-3 text-xs text-muted-foreground">
-                  <div className="flex items-center gap-1.5">
-                    <div className="w-2.5 h-2.5 rounded-full bg-emerald-500" />
-                    <span>우리측</span>
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    <div className="w-2.5 h-2.5 rounded-full bg-amber-600" />
-                    <span>상대측</span>
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    <div className="w-2.5 h-2.5 rounded-full bg-blue-500" />
-                    <span>증거</span>
-                  </div>
+                <div className="hidden sm:flex items-center gap-2 text-xs">
+                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#6D5EF5]/10 text-[#6D5EF5] font-medium">
+                    <User className="h-3 w-3" />
+                    우리측
+                  </span>
+                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#F59E0B]/10 text-[#B45309] font-medium">
+                    <UserX className="h-3 w-3" />
+                    상대측
+                  </span>
+                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#38BDF8]/10 text-[#0284C7] font-medium">
+                    <FileText className="h-3 w-3" />
+                    증거
+                  </span>
+                </div>
+                {/* Layout toggle */}
+                <div className="flex items-center bg-secondary/50 rounded-md p-0.5">
+                  <button
+                    type="button"
+                    onClick={() => setTimelineLayout("linear")}
+                    className={`px-2 py-1 text-xs rounded transition-colors ${timelineLayout === "linear" ? "bg-background shadow-sm font-medium text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+                  >
+                    목록
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setTimelineLayout("zigzag")}
+                    className={`px-2 py-1 text-xs rounded transition-colors ${timelineLayout === "zigzag" ? "bg-background shadow-sm font-medium text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+                  >
+                    지그재그
+                  </button>
                 </div>
                 <Button
                   size="sm"
@@ -1484,108 +1555,243 @@ export function CaseDetailPage({
                     샘플 타임라인 생성
                   </Button>
                 </div>
-              ) : (
-                <>
-                  {/* Zigzag Timeline */}
-                  <div className="relative py-8">
-                    {/* Center Line */}
-                    <div className="absolute left-1/2 top-0 bottom-0 w-px bg-border -translate-x-1/2" />
+              ) : timelineLayout === "linear" ? (
+                /* ===== A. 좌측 날짜 목록형 (max-w 적용) ===== */
+                <div className="relative py-4 max-w-2xl mx-auto">
+                  {(() => {
+                    const dateGroups = groupEventsByDate(timelineEvents);
 
-                    {/* Timeline Events */}
-                    <div className="space-y-8">
-                      {timelineEvents.map((event, index) => {
-                        const isLeft = index % 2 === 0;
-                        return (
-                          <div
-                            key={event.id}
-                            className={`relative flex items-center ${isLeft ? "justify-start" : "justify-end"}`}
-                          >
-                            {/* Center Number Circle with Color */}
-                            <div className="absolute left-1/2 -translate-x-1/2 z-10">
-                              <div className={`w-10 h-10 rounded-full flex items-center justify-center text-sm font-semibold ${getTimelineDotColor(event.type)} text-white`}>
-                                {index + 1}
+                    return dateGroups.map((group, groupIdx) => {
+                      const prevDate = groupIdx > 0 ? dateGroups[groupIdx - 1].date : null;
+                      const showMonthHeader = isNewMonth(group.date, prevDate);
+                      const dateParts = parseDateParts(group.date);
+                      return (
+                        <div key={group.date + groupIdx}>
+                          {showMonthHeader && (
+                            <div className="flex items-center gap-3 mb-6 mt-2">
+                              <div className="flex-1 h-px bg-gradient-to-r from-transparent to-[#6D5EF5]/20" />
+                              <span className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-[#6D5EF5]/10 text-[#6D5EF5] text-xs font-semibold">
+                                <Calendar className="h-3 w-3" />
+                                {formatMonthYear(group.date)}
+                              </span>
+                              <div className="flex-1 h-px bg-gradient-to-l from-transparent to-[#6D5EF5]/20" />
+                            </div>
+                          )}
+
+                          {group.events.map((event, eventIdx) => {
+                            const isFirstInGroup = eventIdx === 0;
+                            const isLastEvent = groupIdx === dateGroups.length - 1 && eventIdx === group.events.length - 1;
+
+                            return (
+                              <div key={event.id} className="flex group relative">
+                                {/* Date Column */}
+                                <div className="w-16 sm:w-20 shrink-0 hidden sm:flex flex-col items-center pt-1">
+                                  {isFirstInGroup && (
+                                    <>
+                                      <span className="text-2xl font-bold text-foreground leading-none">
+                                        {dateParts.day}
+                                      </span>
+                                      <span className="text-[11px] text-muted-foreground mt-0.5">
+                                        {dateParts.month}월 {dateParts.dayOfWeek}
+                                      </span>
+                                    </>
+                                  )}
+                                </div>
+
+                                {/* Dot + Line */}
+                                <div className="w-8 sm:w-10 shrink-0 flex flex-col items-center relative">
+                                  {!(groupIdx === 0 && eventIdx === 0) ? (
+                                    <div className="w-px flex-1 bg-[#6D5EF5]/15 min-h-[8px]" />
+                                  ) : (
+                                    <div className="flex-1 min-h-[8px]" />
+                                  )}
+                                  <div className={`w-8 h-8 rounded-full flex items-center justify-center ${getTimelineDotColor(event.type)} text-white ring-[3px] ring-background shadow-sm shrink-0 z-10`}>
+                                    {getTypeIcon(event.type)}
+                                  </div>
+                                  {!isLastEvent ? (
+                                    <div className="w-px flex-1 bg-[#6D5EF5]/15 min-h-[8px]" />
+                                  ) : (
+                                    <div className="flex-1 min-h-[8px]" />
+                                  )}
+                                </div>
+
+                                {/* Card */}
+                                <div className="flex-1 pb-5 pl-3 sm:pl-4">
+                                  {/* Mobile date */}
+                                  <div className="sm:hidden flex items-center gap-1.5 text-xs text-muted-foreground mb-1">
+                                    <span className="font-semibold text-foreground">{dateParts.month}/{dateParts.day}</span>
+                                    <span className="text-muted-foreground/50">{dateParts.dayOfWeek}</span>
+                                  </div>
+
+                                  <div className={`px-4 py-3 rounded-xl border shadow-sm hover:shadow-md transition-all duration-200 ${getTypeColor(event.type)}`}>
+                                    <div className="flex items-center gap-2 mb-1.5 flex-wrap">
+                                      <Badge
+                                        variant="outline"
+                                        className={`text-[11px] font-medium px-2 py-0 rounded-full border ${event.type === "의뢰인"
+                                          ? "border-[#6D5EF5]/30 bg-[#6D5EF5]/10 text-[#6D5EF5]"
+                                          : event.type === "상대방"
+                                            ? "border-[#F59E0B]/30 bg-[#F59E0B]/10 text-[#B45309]"
+                                            : event.type === "증거"
+                                              ? "border-[#38BDF8]/30 bg-[#38BDF8]/10 text-[#0284C7]"
+                                              : "border-[#94A3B8]/30 bg-[#94A3B8]/10 text-[#64748B]"
+                                          }`}
+                                      >
+                                        {getTypeLabel(event.type)}
+                                      </Badge>
+                                      {event.time && (
+                                        <span className="hidden sm:inline-flex items-center gap-1 text-[11px] text-muted-foreground">
+                                          <Clock className="h-3 w-3" />
+                                          {event.time}
+                                        </span>
+                                      )}
+                                      {event.actor && (
+                                        <span className="text-[11px] text-muted-foreground">· {event.actor}</span>
+                                      )}
+                                    </div>
+                                    <h4 className="text-sm font-semibold text-foreground">
+                                      {event.title}
+                                    </h4>
+                                    {event.description && (
+                                      <p className="text-xs text-muted-foreground leading-relaxed mt-1">
+                                        {event.description}
+                                      </p>
+                                    )}
+                                    <div className="mt-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                      <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => setEditingEvent(event)}>
+                                        <Edit2 className="h-3 w-3" />
+                                      </Button>
+                                      <Button variant="ghost" size="icon" className="h-6 w-6 text-destructive" onClick={() => handleDeleteEvent(event.id)}>
+                                        <Trash2 className="h-3 w-3" />
+                                      </Button>
+                                    </div>
+                                  </div>
+                                </div>
                               </div>
+                            );
+                          })}
+                        </div>
+                      );
+                    });
+                  })()}
+                </div>
+              ) : (
+                /* ===== B. 지그재그 + 큰 날짜 ===== */
+                <div className="relative py-8 max-w-3xl mx-auto">
+                  {(() => {
+                    // 월 헤더를 위해 flat list + 메타 생성
+                    const flatEvents: { event: TimelineEvent; showMonth: boolean; showDate: boolean }[] = [];
+                    for (let i = 0; i < timelineEvents.length; i++) {
+                      const event = timelineEvents[i];
+                      const prev = i > 0 ? timelineEvents[i - 1] : null;
+                      flatEvents.push({
+                        event,
+                        showMonth: isNewMonth(event.date, prev?.date || null),
+                        showDate: !prev || prev.date !== event.date,
+                      });
+                    }
+
+                    return flatEvents.map(({ event, showMonth, showDate }, index) => {
+                      const isLeft = index % 2 === 0;
+                      const dateParts = parseDateParts(event.date);
+                      const isFirst = index === 0;
+                      const isLast = index === flatEvents.length - 1;
+
+                      return (
+                        <div key={event.id}>
+                          {/* Month header */}
+                          {showMonth && (
+                            <div className="flex items-center gap-3 mb-8 mt-4 relative z-10">
+                              <div className="flex-1 h-px bg-gradient-to-r from-transparent to-[#6D5EF5]/20" />
+                              <span className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-[#6D5EF5]/10 text-[#6D5EF5] text-xs font-semibold">
+                                <Calendar className="h-3 w-3" />
+                                {formatMonthYear(event.date)}
+                              </span>
+                              <div className="flex-1 h-px bg-gradient-to-l from-transparent to-[#6D5EF5]/20" />
+                            </div>
+                          )}
+
+                          <div className={`relative flex items-start mb-10 ${isLeft ? "justify-start" : "justify-end"}`}>
+                            {/* Center dot + 세로선 세그먼트 */}
+                            <div className="absolute left-1/2 -translate-x-1/2 z-10 flex flex-col items-center">
+                              {/* 윗쪽 세로선 (첫 이벤트 제외) */}
+                              {!isFirst && (
+                                <div className="w-px bg-[#6D5EF5]/15" style={{ height: showMonth ? 52 : 40, marginBottom: -1 }} />
+                              )}
+                              <div className={`w-9 h-9 rounded-full flex items-center justify-center ${getTimelineDotColor(event.type)} text-white ring-4 ring-background shadow-md shrink-0`}>
+                                {getTypeIcon(event.type)}
+                              </div>
+                              {/* 아랫쪽 세로선 (마지막 이벤트 제외) */}
+                              {!isLast && (
+                                <div className="w-px bg-[#6D5EF5]/15 flex-1" style={{ minHeight: 40, marginTop: -1 }} />
+                              )}
                             </div>
 
-                            {/* Event Card */}
-                            <div
-                              className={`w-[calc(50%-3rem)] group ${isLeft ? "pr-4 text-right" : "pl-4 text-left"}`}
-                            >
-                              <div
-                                className={`p-5 rounded-xl border-2 bg-card hover:shadow-md transition-all ${getTypeColor(event.type)}`}
-                              >
-                                {/* Header */}
-                                <div
-                                  className={`flex items-center gap-2 mb-2 ${isLeft ? "justify-end" : "justify-start"}`}
-                                >
+                            {/* Card area (한쪽에만) */}
+                            <div className={`w-[calc(50%-2.5rem)] group ${isLeft ? "pr-2" : "pl-2"}`}>
+                              {/* 날짜 — 카드 위에 크게 */}
+                              {showDate && (
+                                <div className={`flex items-baseline gap-1.5 mb-2 ${isLeft ? "justify-end" : "justify-start"}`}>
+                                  <span className="text-xl font-bold text-foreground leading-none tracking-tight">
+                                    {dateParts.day}일
+                                  </span>
+                                  <span className="text-xs text-muted-foreground">
+                                    {dateParts.dayOfWeek}
+                                  </span>
+                                  {event.time && (
+                                    <span className="text-xs text-muted-foreground/60 ml-1">
+                                      {event.time}
+                                    </span>
+                                  )}
+                                </div>
+                              )}
+
+                              {/* Card */}
+                              <div className={`p-4 rounded-xl border shadow-sm hover:shadow-md transition-all duration-200 ${getTypeColor(event.type)} ${isLeft ? "text-right" : "text-left"}`}>
+                                <div className={`flex items-center gap-2 mb-1.5 ${isLeft ? "justify-end" : "justify-start"}`}>
                                   <Badge
                                     variant="outline"
-                                    className={`text-xs font-medium px-2 py-0.5 ${event.type === "의뢰인"
-                                      ? "border-emerald-300 bg-emerald-100 text-emerald-700"
+                                    className={`text-[11px] font-medium px-2 py-0 rounded-full border ${event.type === "의뢰인"
+                                      ? "border-[#6D5EF5]/30 bg-[#6D5EF5]/10 text-[#6D5EF5]"
                                       : event.type === "상대방"
-                                        ? "border-amber-300 bg-amber-100 text-amber-800"
+                                        ? "border-[#F59E0B]/30 bg-[#F59E0B]/10 text-[#B45309]"
                                         : event.type === "증거"
-                                          ? "border-blue-300 bg-blue-100 text-blue-700"
-                                          : "border-border bg-secondary text-muted-foreground"
+                                          ? "border-[#38BDF8]/30 bg-[#38BDF8]/10 text-[#0284C7]"
+                                          : "border-[#94A3B8]/30 bg-[#94A3B8]/10 text-[#64748B]"
                                       }`}
                                   >
                                     {getTypeLabel(event.type)}
                                   </Badge>
                                   {event.actor && (
-                                    <span className="text-xs text-muted-foreground">{event.actor}</span>
+                                    <span className="text-[11px] text-muted-foreground">{event.actor}</span>
                                   )}
                                 </div>
 
-                                {/* Title */}
-                                <h4 className="text-base font-semibold mb-1">
+                                <h4 className="text-sm font-semibold mb-0.5 text-foreground">
                                   {event.title}
                                 </h4>
 
-                                {/* Description */}
-                                <p className="text-sm text-muted-foreground leading-[1.8] mb-3">
-                                  {event.description}
-                                </p>
+                                {event.description && (
+                                  <p className="text-xs text-muted-foreground leading-relaxed">
+                                    {event.description}
+                                  </p>
+                                )}
 
-                                {/* Date & Time */}
-                                <div
-                                  className={`pt-3 border-t border-current/10 flex items-center gap-2 text-xs text-muted-foreground ${isLeft ? "justify-end" : "justify-start"}`}
-                                >
-                                  <Calendar className="h-3 w-3" />
-                                  <span>{formatDate(event.date)}</span>
-                                  <span className="opacity-50">|</span>
-                                  <Clock className="h-3 w-3" />
-                                  <span>{event.time}</span>
-                                </div>
-
-                                {/* Action Buttons - Show on Hover */}
-                                <div
-                                  className={`mt-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity ${isLeft ? "justify-end" : "justify-start"}`}
-                                >
-                                  <Button
-                                    variant="ghost"
-                                    size="icon"
-                                    className="h-7 w-7"
-                                    onClick={() => setEditingEvent(event)}
-                                  >
+                                <div className={`mt-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity ${isLeft ? "justify-end" : "justify-start"}`}>
+                                  <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => setEditingEvent(event)}>
                                     <Edit2 className="h-3 w-3" />
                                   </Button>
-                                  <Button
-                                    variant="ghost"
-                                    size="icon"
-                                    className="h-7 w-7 text-destructive"
-                                    onClick={() => handleDeleteEvent(event.id)}
-                                  >
+                                  <Button variant="ghost" size="icon" className="h-6 w-6 text-destructive" onClick={() => handleDeleteEvent(event.id)}>
                                     <Trash2 className="h-3 w-3" />
                                   </Button>
                                 </div>
                               </div>
                             </div>
                           </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                </>
+                        </div>
+                      );
+                    });
+                  })()}
+                </div>
               )}
             </CardContent>
           </Card>
@@ -1679,25 +1885,25 @@ export function CaseDetailPage({
                 <SelectContent>
                   <SelectItem value="의뢰인">
                     <div className="flex items-center gap-2">
-                      <div className="w-2 h-2 rounded-full bg-emerald-500" />
+                      <div className="w-2 h-2 rounded-full bg-[#6D5EF5]" />
                       우리측 (의뢰인)
                     </div>
                   </SelectItem>
                   <SelectItem value="상대방">
                     <div className="flex items-center gap-2">
-                      <div className="w-2 h-2 rounded-full bg-amber-600" />
+                      <div className="w-2 h-2 rounded-full bg-[#F59E0B]" />
                       상대측 (피고소인)
                     </div>
                   </SelectItem>
                   <SelectItem value="증거">
                     <div className="flex items-center gap-2">
-                      <div className="w-2 h-2 rounded-full bg-blue-500" />
+                      <div className="w-2 h-2 rounded-full bg-[#38BDF8]" />
                       증거 발생/확보
                     </div>
                   </SelectItem>
                   <SelectItem value="기타">
                     <div className="flex items-center gap-2">
-                      <div className="w-2 h-2 rounded-full bg-gray-400" />
+                      <div className="w-2 h-2 rounded-full bg-[#94A3B8]" />
                       기타
                     </div>
                   </SelectItem>
@@ -1803,25 +2009,25 @@ export function CaseDetailPage({
                   <SelectContent>
                     <SelectItem value="의뢰인">
                       <div className="flex items-center gap-2">
-                        <div className="w-2 h-2 rounded-full bg-emerald-500" />
+                        <div className="w-2 h-2 rounded-full bg-[#6D5EF5]" />
                         우리측 (의뢰인)
                       </div>
                     </SelectItem>
                     <SelectItem value="상대방">
                       <div className="flex items-center gap-2">
-                        <div className="w-2 h-2 rounded-full bg-amber-600" />
+                        <div className="w-2 h-2 rounded-full bg-[#F59E0B]" />
                         상대측 (피고소인)
                       </div>
                     </SelectItem>
                     <SelectItem value="증거">
                       <div className="flex items-center gap-2">
-                        <div className="w-2 h-2 rounded-full bg-blue-500" />
+                        <div className="w-2 h-2 rounded-full bg-[#38BDF8]" />
                         증거 발생/확보
                       </div>
                     </SelectItem>
                     <SelectItem value="기타">
                       <div className="flex items-center gap-2">
-                        <div className="w-2 h-2 rounded-full bg-gray-400" />
+                        <div className="w-2 h-2 rounded-full bg-[#94A3B8]" />
                         기타
                       </div>
                     </SelectItem>

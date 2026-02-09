@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { NavLink, useLocation } from "react-router-dom";
 import {
   Scale,
@@ -9,8 +10,8 @@ import {
   Search,
   Settings,
   LogOut,
-  ChevronsLeft,
-  ChevronsRight,
+  PanelLeftClose,
+  PanelLeftOpen,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
@@ -18,6 +19,7 @@ import {
   TooltipTrigger,
   TooltipContent,
 } from "@/components/ui/tooltip";
+import { SettingsDialog } from "@/components/legal/settings-dialog";
 
 interface SidebarProps {
   collapsed: boolean;
@@ -34,6 +36,7 @@ const navItems = [
 
 export function Sidebar({ collapsed, onToggle, onLogout }: SidebarProps) {
   const location = useLocation();
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const isCasesActive =
     location.pathname.startsWith("/cases") ||
     location.pathname === "/new-case" ||
@@ -92,9 +95,11 @@ export function Sidebar({ collapsed, onToggle, onLogout }: SidebarProps) {
                 <button
                   type="button"
                   onClick={onToggle}
-                  className="w-full flex items-center justify-center py-2.5 rounded-lg text-muted-foreground/50 hover:text-foreground hover:bg-muted/50 transition-colors duration-150"
+                  className="w-full flex items-center py-2.5 px-0 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors duration-150"
                 >
-                  <ChevronsRight className="h-[18px] w-[18px]" />
+                  <span className="w-[52px] flex items-center justify-center shrink-0">
+                    <PanelLeftOpen className="h-[18px] w-[18px]" />
+                  </span>
                 </button>
               </TooltipTrigger>
               <TooltipContent side="right" sideOffset={8}>사이드바 열기</TooltipContent>
@@ -103,9 +108,12 @@ export function Sidebar({ collapsed, onToggle, onLogout }: SidebarProps) {
             <button
               type="button"
               onClick={onToggle}
-              className="w-full flex items-center justify-center py-2.5 rounded-lg text-muted-foreground/50 hover:text-foreground hover:bg-muted/50 transition-colors duration-150"
+              className="w-full flex items-center py-2.5 px-0 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors duration-150"
             >
-              <ChevronsLeft className="h-[18px] w-[18px]" />
+              <span className="w-[52px] flex items-center justify-center shrink-0">
+                <PanelLeftClose className="h-[18px] w-[18px]" />
+              </span>
+              <span className="truncate text-sm">사이드바 닫기</span>
             </button>
           )}
           {navItems.map(({ to, icon: Icon, label }) => {
@@ -144,14 +152,15 @@ export function Sidebar({ collapsed, onToggle, onLogout }: SidebarProps) {
       </nav>
 
       {/* Footer - Settings & Logout */}
-      <div className="py-3 mt-2 space-y-0.5 px-2">
+      <div className="py-3 pb-8 mt-2 space-y-0.5 px-2">
         {collapsed ? (
           <>
             <Tooltip>
               <TooltipTrigger asChild>
                 <button
                   type="button"
-                  className="w-full flex items-center py-2.5 px-0 rounded-lg text-sm font-medium text-muted-foreground/70 hover:bg-accent/30 hover:text-foreground transition-colors duration-150"
+                  onClick={() => setSettingsOpen(true)}
+                  className="w-full flex items-center py-2.5 px-0 rounded-lg text-sm font-medium text-muted-foreground hover:bg-muted/60 hover:text-foreground transition-colors duration-150"
                 >
                   <span className="w-[52px] flex items-center justify-center shrink-0">
                     <Settings className="h-[18px] w-[18px]" />
@@ -165,7 +174,7 @@ export function Sidebar({ collapsed, onToggle, onLogout }: SidebarProps) {
                 <button
                   type="button"
                   onClick={onLogout}
-                  className="w-full flex items-center py-2.5 px-0 rounded-lg text-sm font-medium text-muted-foreground/70 hover:bg-accent/30 hover:text-foreground transition-colors duration-150"
+                  className="w-full flex items-center py-2.5 px-0 rounded-lg text-sm font-medium text-muted-foreground hover:bg-muted/60 hover:text-foreground transition-colors duration-150"
                 >
                   <span className="w-[52px] flex items-center justify-center shrink-0">
                     <LogOut className="h-[18px] w-[18px]" />
@@ -179,7 +188,8 @@ export function Sidebar({ collapsed, onToggle, onLogout }: SidebarProps) {
           <>
             <button
               type="button"
-              className="w-full flex items-center py-2.5 px-0 rounded-lg text-sm font-medium text-muted-foreground/70 hover:bg-accent/30 hover:text-foreground transition-colors duration-150"
+              onClick={() => navigate("/settings")}
+              className="w-full flex items-center py-2.5 px-0 rounded-lg text-sm font-medium text-muted-foreground hover:bg-muted/60 hover:text-foreground transition-colors duration-150"
             >
               <span className="w-[52px] flex items-center justify-center shrink-0">
                 <Settings className="h-[18px] w-[18px]" />
@@ -189,7 +199,7 @@ export function Sidebar({ collapsed, onToggle, onLogout }: SidebarProps) {
             <button
               type="button"
               onClick={onLogout}
-              className="w-full flex items-center py-2.5 px-0 rounded-lg text-sm font-medium text-muted-foreground/70 hover:bg-accent/30 hover:text-foreground transition-colors duration-150"
+              className="w-full flex items-center py-2.5 px-0 rounded-lg text-sm font-medium text-muted-foreground hover:bg-muted/60 hover:text-foreground transition-colors duration-150"
             >
               <span className="w-[52px] flex items-center justify-center shrink-0">
                 <LogOut className="h-[18px] w-[18px]" />
@@ -200,6 +210,7 @@ export function Sidebar({ collapsed, onToggle, onLogout }: SidebarProps) {
         )}
       </div>
 
+      <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
     </aside>
   );
 }
