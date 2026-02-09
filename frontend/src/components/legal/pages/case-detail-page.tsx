@@ -9,6 +9,8 @@ import {
 } from "@/lib/sample-data";
 import { useSearch, type SimilarCaseResult } from "@/contexts/search-context";
 import { Loader2 } from "lucide-react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 // API 응답 타입
 interface CaseApiResponse {
@@ -547,11 +549,11 @@ export function CaseDetailPage({
     }
   };
 
-  // 컴포넌트 마운트 시 유사 판례 검색 및 타임라인 데이터 가져오기
+  // 컴포넌트 마운트 시 유사 판례 검색 (타임라인은 탭 클릭 시에만 로드)
   useEffect(() => {
     fetchSimilarCases();
-    fetchTimeline();
-  }, [fetchSimilarCases, fetchTimeline]);
+    // fetchTimeline(); // 타임라인은 탭 클릭 시에만 로드
+  }, [fetchSimilarCases]);
   // 관련 법령 검색 (2단계 파이프라인: 법적 쟁점 추출 → 검색)
   const fetchRelatedLaws = async () => {
     if (!id) return;
@@ -1226,9 +1228,11 @@ export function CaseDetailPage({
                           className="text-sm"
                         />
                       ) : (
-                        <p className="text-sm text-muted-foreground leading-[1.8]">
-                          {overviewData.summary}
-                        </p>
+                        <div className="text-sm text-muted-foreground leading-[1.8] prose prose-sm max-w-none">
+                          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                            {overviewData.summary}
+                          </ReactMarkdown>
+                        </div>
                       )}
                     </div>
 
@@ -1247,9 +1251,14 @@ export function CaseDetailPage({
                           className="text-sm"
                         />
                       ) : (
-                        <p className="text-sm text-muted-foreground leading-[1.8] whitespace-pre-line">
-                          {formatFacts(overviewData.facts)}
-                        </p>
+                        <div className="text-sm text-muted-foreground leading-relaxed prose prose-sm max-w-none [&>ul]:list-disc [&>ul]:pl-5 [&>ul]:space-y-1.5 [&>ol]:list-decimal [&>ol]:pl-5 [&>ol]:space-y-1.5">
+                          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                            {overviewData.facts?.split('\n')
+                              .filter(line => line.trim())
+                              .map(line => line.startsWith('-') ? line : `- ${line}`)
+                              .join('\n')}
+                          </ReactMarkdown>
+                        </div>
                       )}
                     </div>
 
@@ -1284,8 +1293,31 @@ export function CaseDetailPage({
                           className="text-sm"
                         />
                       ) : (
-                        <div className="text-sm text-muted-foreground leading-[1.8] whitespace-pre-wrap">
-                          {formatClaims(overviewData.claims)}
+                        <div className="text-sm text-muted-foreground leading-relaxed prose prose-sm max-w-none [&>ul]:list-disc [&>ul]:pl-5 [&>ul]:space-y-1.5 [&>ol]:list-decimal [&>ol]:pl-5 [&>ol]:space-y-1.5 [&>p]:mb-2">
+                          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                            {(() => {
+                              // JSON 형식인지 확인
+                              if (overviewData.claims?.startsWith('{') || overviewData.claims?.startsWith('{"')) {
+                                try {
+                                  const claimsObj = JSON.parse(overviewData.claims);
+                                  let markdown = '';
+                                  for (const [category, items] of Object.entries(claimsObj)) {
+                                    markdown += `**${category}**\n\n`;
+                                    if (Array.isArray(items)) {
+                                      items.forEach((item: string) => {
+                                        markdown += `- ${item}\n`;
+                                      });
+                                    }
+                                    markdown += '\n';
+                                  }
+                                  return markdown;
+                                } catch {
+                                  return overviewData.claims;
+                                }
+                              }
+                              return overviewData.claims;
+                            })()}
+                          </ReactMarkdown>
                         </div>
                       )}
                     </div>

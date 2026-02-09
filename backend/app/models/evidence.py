@@ -34,6 +34,7 @@ class Case(Base):
     opponent_role = Column(String(50), nullable=True)  # 상대방 역할 (피고/피고소인 등)
     case_type = Column(String(50), nullable=True)
     status = Column(String(50), server_default="접수", nullable=True)
+    availability = Column(String(1), server_default="o", nullable=True)  # o:open, c:close, h:hold
     incident_date = Column(Date, nullable=True)
     incident_date_end = Column(Date, nullable=True)
     notification_date = Column(Date, nullable=True)
