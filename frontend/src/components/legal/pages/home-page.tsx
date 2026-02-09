@@ -1,290 +1,429 @@
 "use client";
 
+import { useState, useRef, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import { type CaseData, sampleCases } from "@/lib/sample-data";
+import { Scale, ArrowUp, FolderOpen, MessageSquare } from "lucide-react";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import {
-  Plus,
-  FolderOpen,
-  FileText,
-  Scale,
-  ChevronRight,
-  AlertCircle,
-  TrendingUp,
-  CheckCircle2,
-  Clock,
-  BarChart3,
-} from "lucide-react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+  Tooltip,
+  TooltipTrigger,
+  TooltipContent,
+} from "@/components/ui/tooltip";
 
-interface HomePageProps {
-  cases?: CaseData[];
+// ── Types ──
+interface Message {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
 }
 
-export function HomePage({ cases: propCases }: HomePageProps) {
-  const navigate = useNavigate();
-  const cases = propCases || sampleCases;
-  const needsAttentionCount = cases.filter(
-    (c) => c.riskLevel === "high" || c.status === "분석중"
-  ).length;
-  const completedCount = cases.filter((c) => c.status === "완료").length;
-  const inProgressCount = cases.filter((c) => c.status !== "완료").length;
-  const recentCase = cases.length > 0 ? cases[0] : null;
+// ── Constants ──
+const hintPhrases = [
+  "의뢰인 진술과 카톡 내용을 기준으로 사실관계만 정리해줘...",
+  "오늘 상담한 사건에서 쟁점이 될 수 있는 포인트를 정리해줘...",
+];
 
-  // Mock performance data
-  const performanceData = {
-    totalCases: cases.length,
-    completedThisMonth: 2,
-    avgProcessingTime: "12일",
-    successRate: 87,
+const TYPING_SPEED = 58; // ms per character
+const PAUSE_AFTER_COMPLETE = 2000; // ms pause after phrase is fully typed
+
+const dummyResponses: Record<string, string> = {
+  분석: "사건의 주요 쟁점을 분석해 드리겠습니다.\n\n1. **계약 위반 여부**: 당사자 간 계약서 제3조의 이행 의무 충족 여부가 핵심입니다.\n2. **손해배상 범위**: 직접 손해와 간접 손해의 인과관계를 입증해야 합니다.\n3. **시효 문제**: 청구권 소멸시효(3년)의 기산점 확인이 필요합니다.\n\n추가 정보를 입력해 주시면 더 상세한 분석이 가능합니다.",
+  판례: "유사 판례를 검색하고 있습니다.\n\n**대법원 2023다12345** - 계약 불이행에 따른 손해배상 청구 사건\n- 판결 요지: 계약상 의무 불이행 시 통상손해와 특별손해를 구분하여 배상 범위를 산정\n- 시사점: 예견 가능성 입증이 특별손해 인정의 핵심\n\n**서울고등법원 2022나56789** - 용역계약 해지 분쟁\n- 판결 요지: 일방적 해지 시 신뢰이익 보호 원칙 적용",
+  계약서: "계약서 검토를 도와드리겠습니다.\n\n검토할 계약서를 업로드해 주시거나, 주요 내용을 입력해 주시면 다음 항목을 중심으로 분석합니다:\n\n- **당사자 정보** 및 권리/의무 관계\n- **위험 조항** (면책, 손해배상 제한, 준거법)\n- **해지/해제 조건**\n- **분쟁 해결 방법** (중재/소송)\n\n사건 관리 페이지에서 파일을 첨부할 수도 있습니다.",
+  소장: "소장 초안 작성을 도와드리겠습니다.\n\n기본 구조를 안내해 드립니다:\n\n1. **당사자 표시**: 원고/피고 인적사항\n2. **청구취지**: 구체적 청구 내용\n3. **청구원인**: 사실관계 및 법률적 근거\n4. **입증방법**: 증거 목록\n\n어떤 유형의 소송인지 알려주시면 맞춤형 초안을 작성해 드리겠습니다.\n(예: 손해배상, 임금청구, 부당해고 등)",
+};
+
+function getDummyResponse(input: string): string {
+  const lower = input.toLowerCase();
+  for (const [keyword, response] of Object.entries(dummyResponses)) {
+    if (lower.includes(keyword)) return response;
+  }
+  return `말씀하신 내용을 확인했습니다.\n\n"${input}"\n\n해당 요청에 대해 분석을 진행하겠습니다. 사건 관리 페이지에서 관련 사건을 선택하시면 더 정확한 결과를 받으실 수 있습니다.\n\n추가 질문이 있으시면 언제든지 물어보세요.`;
+}
+
+// ── Typing Hint Hook ──
+function useTypingHint(active: boolean, userStartedTyping: boolean) {
+  const [hintText, setHintText] = useState("");
+  const [hintDone, setHintDone] = useState(false);
+  const cancelledRef = useRef(false);
+
+  useEffect(() => {
+    if (!active || hintDone || userStartedTyping) {
+      cancelledRef.current = true;
+      return;
+    }
+
+    cancelledRef.current = false;
+    let timeout: ReturnType<typeof setTimeout>;
+
+    async function run() {
+      // 홈 화면 인식 후 타이핑 시작하도록 초기 딜레이
+      await new Promise<void>((r) => {
+        timeout = setTimeout(r, 800);
+      });
+      if (cancelledRef.current) return;
+
+      for (let p = 0; p < hintPhrases.length; p++) {
+        if (cancelledRef.current) return;
+        const phrase = hintPhrases[p];
+
+        // Type each character
+        for (let i = 0; i <= phrase.length; i++) {
+          if (cancelledRef.current) return;
+          await new Promise<void>((r) => {
+            timeout = setTimeout(r, TYPING_SPEED);
+          });
+          if (cancelledRef.current) return;
+          setHintText(phrase.slice(0, i));
+        }
+
+        // Pause after full phrase
+        if (cancelledRef.current) return;
+        await new Promise<void>((r) => {
+          timeout = setTimeout(r, PAUSE_AFTER_COMPLETE);
+        });
+
+        // Clear instantly
+        if (cancelledRef.current) return;
+        setHintText("");
+      }
+
+      // All done
+      setHintDone(true);
+    }
+
+    run();
+
+    return () => {
+      cancelledRef.current = true;
+      clearTimeout(timeout);
+    };
+  }, [active, hintDone, userStartedTyping]);
+
+  // If user starts typing, immediately kill the hint
+  useEffect(() => {
+    if (userStartedTyping) {
+      cancelledRef.current = true;
+      setHintText("");
+      setHintDone(true);
+    }
+  }, [userStartedTyping]);
+
+  return { hintText, hintDone };
+}
+
+// ── Component ──
+export function HomePage() {
+  const navigate = useNavigate();
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [input, setInput] = useState("");
+  const [isTyping, setIsTyping] = useState(false);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const hasMessages = messages.length > 0;
+
+  const userStartedTyping = input.length > 0 || hasMessages;
+  const { hintText, hintDone } = useTypingHint(
+    !hasMessages,
+    userStartedTyping
+  );
+
+  const scrollToBottom = useCallback(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, []);
+
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages, isTyping, scrollToBottom]);
+
+  const sendMessage = useCallback(
+    (text: string) => {
+      const trimmed = text.trim();
+      if (!trimmed || isTyping) return;
+
+      const userMsg: Message = {
+        id: Date.now().toString(),
+        role: "user",
+        content: trimmed,
+      };
+      setMessages((prev) => [...prev, userMsg]);
+      setInput("");
+      setIsTyping(true);
+
+      if (textareaRef.current) {
+        textareaRef.current.style.height = "auto";
+      }
+
+      setTimeout(() => {
+        const assistantMsg: Message = {
+          id: (Date.now() + 1).toString(),
+          role: "assistant",
+          content: getDummyResponse(trimmed),
+        };
+        setMessages((prev) => [...prev, assistantMsg]);
+        setIsTyping(false);
+      }, 1500);
+    },
+    [isTyping]
+  );
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      sendMessage(input);
+    }
   };
 
-  return (
-    <div className="max-w-6xl mx-auto py-8">
-      {/* Page Header */}
-      <div className="mb-10">
-        <h1 className="text-2xl font-semibold text-foreground tracking-tight">
-          안녕하세요, 변호사님
-        </h1>
-        <p className="mt-1.5 text-sm text-muted-foreground">
-          오늘의 업무 현황과 사건 진행 상태를 확인하세요.
-        </p>
-      </div>
+  const handleTextareaInput = () => {
+    const el = textareaRef.current;
+    if (el) {
+      el.style.height = "auto";
+      el.style.height = Math.min(el.scrollHeight, 160) + "px";
+    }
+  };
 
-      {/* Section 1: Start Here - Primary Actions */}
-      <section className="mb-12">
-        <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-4">
-          시작하기
-        </h2>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {/* Primary Action - Create New Case */}
-          <button
-            type="button"
-            onClick={() => navigate("/new-case")}
-            className="group relative bg-primary text-primary-foreground p-6 rounded-lg border border-primary text-left transition-all hover:shadow-sm"
-          >
-            <div className="flex items-start gap-4">
-              <div className="p-3 bg-primary-foreground/10 rounded-lg">
-                <Plus className="h-6 w-6" />
-              </div>
-              <div className="flex-1 min-w-0">
-                <h3 className="text-lg font-semibold">새 사건 등록</h3>
-                <p className="mt-1 text-sm text-primary-foreground/70 line-clamp-2">
-                  새로운 법률 사건을 등록하고 증거 분석을 시작합니다.
-                </p>
-              </div>
+  // Show native placeholder only when hint is done and input is empty
+  const showNativePlaceholder = hintDone && !input;
+
+  // --- Gradient Background ---
+  const gradientBg = (
+    <div
+      className="absolute inset-0 pointer-events-none transition-opacity duration-700"
+      style={{
+        opacity: hasMessages ? 0.35 : 1,
+        background: "linear-gradient(135deg, #FEF0DC 0%, #FEF0E6 25%, #FCEDF3 50%, #F4EFFE 75%, #EFEBFD 100%)",
+        maskImage: "linear-gradient(to top, white 0%, white 20%, rgba(255,255,255,0) 65%)",
+        WebkitMaskImage: "linear-gradient(to top, white 0%, white 20%, rgba(255,255,255,0) 65%)",
+      }}
+    />
+  );
+
+  // --- Landing Mode (no messages) ---
+  if (!hasMessages) {
+    return (
+      <div
+        className="relative flex flex-col items-center justify-center"
+        style={{ height: "calc(100vh - 56px)" }}
+      >
+        {gradientBg}
+
+        <div className="relative z-10 flex flex-col items-center w-full max-w-2xl px-4">
+          {/* Greeting */}
+          <div className="mb-8 text-center">
+            <div
+              className="inline-flex items-center justify-center w-12 h-12 rounded-2xl mb-4"
+              style={{
+                background: "linear-gradient(135deg, #6D5EF5, #A78BFA)",
+              }}
+            >
+              <Scale className="h-6 w-6 text-white" />
             </div>
-            <ChevronRight className="absolute right-4 top-1/2 -translate-y-1/2 h-5 w-5 text-primary-foreground/50 group-hover:translate-x-0.5 transition-transform" />
-          </button>
+            <h1 className="text-[32px] font-semibold text-foreground tracking-tight">
+              무엇을 도와드릴까요?
+            </h1>
+            <p className="mt-2 text-sm text-muted-foreground">
+              업무 관련 질문을 입력해 주세요
+            </p>
+          </div>
 
-          {/* Secondary Action - Continue Existing Case */}
-          <button
-            type="button"
-            onClick={() => navigate("/cases")}
-            className="group relative bg-card text-card-foreground p-6 rounded-lg border border-border text-left transition-all hover:border-muted-foreground/30 hover:shadow-sm"
-          >
-            <div className="flex items-start gap-4">
-              <div className="p-3 bg-muted rounded-lg">
-                <FolderOpen className="h-6 w-6 text-muted-foreground" />
-              </div>
-              <div className="flex-1 min-w-0">
-                <h3 className="text-lg font-semibold">진행중인 사건</h3>
-                <p className="mt-1 text-sm text-muted-foreground line-clamp-2">
-                  {recentCase
-                    ? `최근 사건: ${recentCase.name}`
-                    : "진행중인 사건이 없습니다."}
-                </p>
-              </div>
-            </div>
-            <ChevronRight className="absolute right-4 top-1/2 -translate-y-1/2 h-5 w-5 text-muted-foreground/50 group-hover:translate-x-0.5 transition-transform" />
-          </button>
-
-          {/* Secondary Action - Manage Files */}
-          <button
-            type="button"
-            onClick={() => navigate("/evidence/upload")}
-            className="group relative bg-card text-card-foreground p-6 rounded-lg border border-border text-left transition-all hover:border-muted-foreground/30 hover:shadow-sm"
-          >
-            <div className="flex items-start gap-4">
-              <div className="p-3 bg-muted rounded-lg">
-                <FileText className="h-6 w-6 text-muted-foreground" />
-              </div>
-              <div className="flex-1 min-w-0">
-                <h3 className="text-lg font-semibold">파일 관리</h3>
-                <p className="mt-1 text-sm text-muted-foreground line-clamp-2">
-                  증거 자료를 업로드하고 AI 분석을 진행합니다.
-                </p>
-              </div>
-            </div>
-            <ChevronRight className="absolute right-4 top-1/2 -translate-y-1/2 h-5 w-5 text-muted-foreground/50 group-hover:translate-x-0.5 transition-transform" />
-          </button>
-
-          {/* Secondary Action - Explore Precedents */}
-          <button
-            type="button"
-            onClick={() => navigate("/precedents")}
-            className="group relative bg-card text-card-foreground p-6 rounded-lg border border-border text-left transition-all hover:border-muted-foreground/30 hover:shadow-sm"
-          >
-            <div className="flex items-start gap-4">
-              <div className="p-3 bg-muted rounded-lg">
-                <Scale className="h-6 w-6 text-muted-foreground" />
-              </div>
-              <div className="flex-1 min-w-0">
-                <h3 className="text-lg font-semibold">판례 검색</h3>
-                <p className="mt-1 text-sm text-muted-foreground line-clamp-2">
-                  다양한 판례 검색과 AI 요약 분석을 제공합니다.
-                </p>
-              </div>
-            </div>
-            <ChevronRight className="absolute right-4 top-1/2 -translate-y-1/2 h-5 w-5 text-muted-foreground/50 group-hover:translate-x-0.5 transition-transform" />
-          </button>
-        </div>
-      </section>
-
-      {/* Section 2: Current Status */}
-      <section className="mb-12">
-        <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-4">
-          현재 상태
-        </h2>
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-          {/* Total Cases */}
-          <Card className="border-border/60">
-            <CardContent className="p-5">
-              <div className="flex items-center justify-between mb-3">
-                <div className="p-2 bg-muted rounded-lg">
-                  <FolderOpen className="h-4 w-4 text-muted-foreground" />
-                </div>
-              </div>
-              <p className="text-2xl font-semibold text-foreground">
-                {cases.length}
-              </p>
-              <p className="text-xs text-muted-foreground mt-1">전체 사건</p>
-            </CardContent>
-          </Card>
-
-          {/* In Progress */}
-          <Card className="border-border/60">
-            <CardContent className="p-5">
-              <div className="flex items-center justify-between mb-3">
-                <div className="p-2 bg-muted rounded-lg">
-                  <Clock className="h-4 w-4 text-muted-foreground" />
-                </div>
-              </div>
-              <p className="text-2xl font-semibold text-foreground">
-                {inProgressCount}
-              </p>
-              <p className="text-xs text-muted-foreground mt-1">진행중</p>
-            </CardContent>
-          </Card>
-
-          {/* Needs Attention */}
-          <Card className="border-border/60">
-            <CardContent className="p-5">
-              <div className="flex items-center justify-between mb-3">
-                <div className="p-2 bg-muted rounded-lg">
-                  <AlertCircle className="h-4 w-4 text-amber-600" />
-                </div>
-              </div>
-              <div className="flex items-center gap-2">
-                <p className="text-2xl font-semibold text-foreground">
-                  {needsAttentionCount}
-                </p>
-              </div>
-              <p className="text-xs text-muted-foreground mt-1">확인 필요</p>
-            </CardContent>
-          </Card>
-
-          {/* Completed */}
-          <Card className="border-border/60">
-            <CardContent className="p-5">
-              <div className="flex items-center justify-between mb-3">
-                <div className="p-2 bg-muted rounded-lg">
-                  <CheckCircle2 className="h-4 w-4 text-muted-foreground" />
-                </div>
-              </div>
-              <p className="text-2xl font-semibold text-foreground">
-                {completedCount}
-              </p>
-              <p className="text-xs text-muted-foreground mt-1">완료</p>
-            </CardContent>
-          </Card>
-        </div>
-      </section>
-
-      {/* Section 3: Performance Report (Reports integrated into Home) */}
-      <section>
-        <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-4">
-          성과 현황
-        </h2>
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-          {/* Main Performance Card */}
-          <Card className="border-border/60 lg:col-span-2">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-base font-medium flex items-center gap-2">
-                <BarChart3 className="h-4 w-4 text-muted-foreground" />
-                사건 분석 현황
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="grid grid-cols-3 gap-6">
-                <div className="space-y-1">
-                  <p className="text-3xl font-semibold text-foreground">
-                    {performanceData.successRate}%
-                  </p>
-                  <p className="text-xs text-muted-foreground">
-                    분석 정확도
-                  </p>
-                  <div className="w-full h-1.5 bg-muted rounded-full mt-2">
-                    <div
-                      className="h-full bg-foreground rounded-full"
-                      style={{ width: `${performanceData.successRate}%` }}
-                    />
+          {/* Chat Input */}
+          <div className="w-full relative mb-6">
+            <div className="flex items-end gap-2 bg-card border border-border/50 rounded-2xl px-4 py-3 shadow-sm focus-within:border-primary/40 focus-within:shadow-md transition-all">
+              <div className="flex-1 relative">
+                <textarea
+                  ref={textareaRef}
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  onInput={handleTextareaInput}
+                  onKeyDown={handleKeyDown}
+                  placeholder={showNativePlaceholder ? "메시지를 입력하세요..." : ""}
+                  rows={1}
+                  className="w-full resize-none bg-transparent text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none leading-relaxed"
+                  style={{ maxHeight: 160 }}
+                />
+                {/* Typing hint overlay */}
+                {hintText && !input && (
+                  <div className="absolute inset-0 flex items-center pointer-events-none text-sm leading-relaxed" style={{ color: '#A0A7B5' }}>
+                    {hintText}
                   </div>
-                </div>
-                <div className="space-y-1">
-                  <p className="text-3xl font-semibold text-foreground">
-                    {performanceData.completedThisMonth}
-                  </p>
-                  <p className="text-xs text-muted-foreground">
-                    이번 달 완료
-                  </p>
-                </div>
-                <div className="space-y-1">
-                  <p className="text-3xl font-semibold text-foreground">
-                    {performanceData.avgProcessingTime}
-                  </p>
-                  <p className="text-xs text-muted-foreground">
-                    평균 처리 시간
-                  </p>
-                </div>
+                )}
               </div>
-            </CardContent>
-          </Card>
+              <button
+                type="button"
+                onClick={() => sendMessage(input)}
+                disabled={!input.trim()}
+                className="shrink-0 w-8 h-8 rounded-full flex items-center justify-center transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+                style={{
+                  background: input.trim()
+                    ? "linear-gradient(135deg, #6D5EF5, #A78BFA)"
+                    : "var(--muted)",
+                }}
+              >
+                <ArrowUp className="h-4 w-4 text-white" />
+              </button>
+            </div>
+          </div>
 
-          {/* Quick Stats */}
-          <Card className="border-border/60">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-base font-medium flex items-center gap-2">
-                <TrendingUp className="h-4 w-4 text-muted-foreground" />
-                주간 활동
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="flex items-center justify-between py-2 border-b border-border/60">
-                <span className="text-sm text-muted-foreground">새 사건</span>
-                <span className="text-sm font-medium">+2</span>
-              </div>
-              <div className="flex items-center justify-between py-2 border-b border-border/60">
-                <span className="text-sm text-muted-foreground">증거 분석</span>
-                <span className="text-sm font-medium">15건</span>
-              </div>
-              <div className="flex items-center justify-between py-2">
-                <span className="text-sm text-muted-foreground">판례 검색</span>
-                <span className="text-sm font-medium">8건</span>
-              </div>
-            </CardContent>
-          </Card>
+          {/* Quick Actions */}
+          <div className="flex gap-3 justify-center">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  onClick={() => navigate("/cases")}
+                  className="flex items-center gap-2.5 px-4 py-3 rounded-xl border text-xs transition-all"
+                  style={{
+                    background: "rgba(109,94,245,0.04)",
+                    borderColor: "rgba(109,94,245,0.10)",
+                    color: "#7C6EF6",
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.background = "rgba(109,94,245,0.08)";
+                    e.currentTarget.style.borderColor = "rgba(109,94,245,0.18)";
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.background = "rgba(109,94,245,0.04)";
+                    e.currentTarget.style.borderColor = "rgba(109,94,245,0.10)";
+                  }}
+                >
+                  <FolderOpen className="h-4 w-4" />
+                  최근 사건
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" sideOffset={8}>최근 사건 바로가기</TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  onClick={() => sendMessage("마지막 대화를 이어서 진행해줘")}
+                  className="flex items-center gap-2.5 px-4 py-3 rounded-xl border text-xs transition-all"
+                  style={{
+                    background: "rgba(109,94,245,0.04)",
+                    borderColor: "rgba(109,94,245,0.10)",
+                    color: "#7C6EF6",
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.background = "rgba(109,94,245,0.08)";
+                    e.currentTarget.style.borderColor = "rgba(109,94,245,0.18)";
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.background = "rgba(109,94,245,0.04)";
+                    e.currentTarget.style.borderColor = "rgba(109,94,245,0.10)";
+                  }}
+                >
+                  <MessageSquare className="h-4 w-4" />
+                  지난 대화
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" sideOffset={8}>이전 대화 이어가기</TooltipContent>
+            </Tooltip>
+          </div>
         </div>
-      </section>
+      </div>
+    );
+  }
+
+  // --- Chat Mode (has messages) ---
+  return (
+    <div
+      className="relative flex flex-col"
+      style={{ height: "calc(100vh - 56px)" }}
+    >
+      {gradientBg}
+
+      {/* Messages */}
+      <ScrollArea className="flex-1 relative z-10" ref={scrollRef}>
+        <div className="max-w-3xl mx-auto px-4 py-6 space-y-4">
+          {messages.map((msg) => (
+            <div
+              key={msg.id}
+              className={
+                msg.role === "user" ? "flex justify-end" : "flex justify-start gap-3"
+              }
+            >
+              {msg.role === "assistant" && (
+                <div
+                  className="shrink-0 w-8 h-8 rounded-xl flex items-center justify-center mt-0.5"
+                  style={{
+                    background: "linear-gradient(135deg, #6D5EF5, #A78BFA)",
+                  }}
+                >
+                  <Scale className="h-4 w-4 text-white" />
+                </div>
+              )}
+              <div
+                className={
+                  msg.role === "user"
+                    ? "max-w-[75%] px-4 py-3 rounded-2xl rounded-br-md text-sm text-primary-foreground whitespace-pre-wrap leading-relaxed"
+                    : "max-w-[75%] px-4 py-3 rounded-2xl rounded-tl-md bg-card border border-border/40 text-sm text-card-foreground whitespace-pre-wrap leading-relaxed"
+                }
+                style={
+                  msg.role === "user"
+                    ? { background: "linear-gradient(135deg, #6D5EF5, #8B7AF7)" }
+                    : undefined
+                }
+              >
+                {msg.content}
+              </div>
+            </div>
+          ))}
+
+          {/* Typing Indicator */}
+          {isTyping && (
+            <div className="flex justify-start gap-3">
+              <div
+                className="shrink-0 w-8 h-8 rounded-xl flex items-center justify-center mt-0.5"
+                style={{
+                  background: "linear-gradient(135deg, #6D5EF5, #A78BFA)",
+                }}
+              >
+                <Scale className="h-4 w-4 text-white" />
+              </div>
+              <div className="px-4 py-3 rounded-2xl rounded-tl-md bg-card border border-border/40 flex items-center gap-1.5">
+                <span className="typing-dot w-2 h-2 rounded-full bg-muted-foreground/50" />
+                <span className="typing-dot w-2 h-2 rounded-full bg-muted-foreground/50" />
+                <span className="typing-dot w-2 h-2 rounded-full bg-muted-foreground/50" />
+              </div>
+            </div>
+          )}
+        </div>
+      </ScrollArea>
+
+      {/* Bottom Fixed Input */}
+      <div className="relative z-10 border-t border-border/30 bg-card/80 backdrop-blur-sm px-4 py-3">
+        <div className="max-w-3xl mx-auto">
+          <div className="flex items-end gap-2 bg-card border border-border/50 rounded-2xl px-4 py-3 shadow-sm focus-within:border-primary/40 focus-within:shadow-md transition-all">
+            <textarea
+              ref={textareaRef}
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onInput={handleTextareaInput}
+              onKeyDown={handleKeyDown}
+              placeholder="메시지를 입력하세요..."
+              rows={1}
+              className="flex-1 resize-none bg-transparent text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none leading-relaxed"
+              style={{ maxHeight: 160 }}
+            />
+            <button
+              type="button"
+              onClick={() => sendMessage(input)}
+              disabled={!input.trim() || isTyping}
+              className="shrink-0 w-8 h-8 rounded-full flex items-center justify-center transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+              style={{
+                background:
+                  input.trim() && !isTyping
+                    ? "linear-gradient(135deg, #6D5EF5, #A78BFA)"
+                    : "var(--muted)",
+              }}
+            >
+              <ArrowUp className="h-4 w-4 text-white" />
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

@@ -1029,8 +1029,8 @@ export function EvidenceUploadPage({
               </div>
             ) : isLoadingFiles ? (
               <div className="h-full flex items-center justify-center">
-                <div className="text-center">
-                  <Loader2 className="h-12 w-12 mx-auto text-muted-foreground/50 mb-3 animate-spin" />
+                <div className="flex flex-col items-center">
+                  <video src="/assets/loading-card.mp4" autoPlay loop muted playsInline className="h-20 w-20 mb-3" style={{ mixBlendMode: 'multiply', opacity: 0.3 }} />
                   <p className="text-sm font-medium">파일 목록을 불러오는 중...</p>
                   <p className="text-xs text-muted-foreground mt-1">
                     잠시만 기다려 주세요

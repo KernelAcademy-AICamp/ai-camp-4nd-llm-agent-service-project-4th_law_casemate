@@ -1,4 +1,4 @@
-from sqlalchemy import Column, BigInteger, String, DateTime, text
+from sqlalchemy import Column, BigInteger, String, DateTime, ForeignKey, text
 from datetime import datetime
 from tool.database import Base
 
@@ -11,7 +11,7 @@ class User(Base):
     email = Column(String, unique=True, index=True, nullable=False)
     password = Column(String, nullable=False)
     role = Column(String, nullable=True)
-    firm_id = Column(BigInteger, nullable=True)  # 사무실 ID
+    firm_id = Column(BigInteger, ForeignKey('law_firms.id', ondelete='SET NULL'), nullable=True)  # 사무실 ID
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

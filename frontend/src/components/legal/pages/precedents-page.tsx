@@ -153,7 +153,8 @@ export function PrecedentsPage({ }: PrecedentsPageProps) {
         )}
 
         {loading && (
-          <div className="text-center py-10 text-muted-foreground">
+          <div className="flex flex-col items-center justify-center py-10 text-muted-foreground">
+            <video src="/assets/loading-card.mp4" autoPlay loop muted playsInline className="h-20 w-20 mb-2" style={{ mixBlendMode: 'multiply', opacity: 0.3 }} />
             불러오는 중...
           </div>
         )}
