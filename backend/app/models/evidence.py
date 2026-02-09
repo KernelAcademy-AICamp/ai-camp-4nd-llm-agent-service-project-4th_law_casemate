@@ -95,6 +95,7 @@ class CaseAnalysis(Base):
     legal_laws = Column(Text, nullable=True)  # 관련 법조문 (JSON)
     similar_precedents = Column(Text, nullable=True)  # 유사 판례 검색 결과 (JSON)
     search_query = Column(Text, nullable=True)  # 판례 검색용 변환 쿼리 (GPT 캐싱)
+    legal_search_results = Column(Text, nullable=True)  # 법령 벡터 검색 결과 캐시 (JSON)
     description_hash = Column(String(64), nullable=True)  # 원문 변경 감지용 해시
     analyzed_at = Column(DateTime, nullable=True)  # 분석 실행 시점
     created_at = Column(DateTime, server_default=func.now())

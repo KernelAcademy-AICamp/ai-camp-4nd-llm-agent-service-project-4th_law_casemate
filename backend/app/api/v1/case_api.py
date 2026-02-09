@@ -8,6 +8,7 @@
 
 import os
 import json
+import hashlib
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
@@ -260,6 +261,11 @@ async def analyze_case(
 
         if force:
             print(f"🔄 강제 재분석 모드: 캐시 무시")
+            # 하위 캐시 초기화 (재분석 후 법령 검색도 다시 해야 하므로)
+            if cached_summary:
+                cached_summary.legal_keywords = None
+                cached_summary.legal_laws = None
+                cached_summary.legal_search_results = None
 
         print(f"📭 캐시 미스: LLM 분석 시작")
 
@@ -427,18 +433,25 @@ async def analyze_case(
         print(f"   summary: {summary[:80] if len(summary) > 80 else summary}...")
         print(f"   facts type: {type(facts).__name__}, length: {len(facts)}")
 
+        # description_hash 계산
+        description_hash = hashlib.sha256(case.description.encode()).hexdigest()
+
         # 분석 결과를 case_analyses 테이블에 저장 (기존 레코드 있으면 업데이트)
         if cached_summary:
             cached_summary.summary = summary
             cached_summary.facts = facts
             cached_summary.claims = claims
+            cached_summary.description_hash = description_hash
+            cached_summary.analyzed_at = datetime.now()
             print(f"💾 캐시 업데이트 완료: case_id={case_id}")
         else:
             new_summary = CaseAnalysis(
                 case_id=case_id,
                 summary=summary,
                 facts=facts,
-                claims=claims
+                claims=claims,
+                description_hash=description_hash,
+                analyzed_at=datetime.now(),
             )
             db.add(new_summary)
             print(f"💾 캐시 신규 저장 완료: case_id={case_id}")
@@ -500,6 +513,20 @@ async def update_case(
 
         # 원문 업데이트
         case.description = request.description
+
+        # 원문 변경 시 분석 캐시 전체 무효화
+        case_analysis = db.query(CaseAnalysis).filter(CaseAnalysis.case_id == case_id).first()
+        if case_analysis:
+            case_analysis.summary = None
+            case_analysis.facts = None
+            case_analysis.claims = None
+            case_analysis.legal_keywords = None
+            case_analysis.legal_laws = None
+            case_analysis.legal_search_results = None
+            case_analysis.description_hash = None
+            case_analysis.analyzed_at = None
+            print(f"🗑️ 분석 캐시 무효화 완료: case_id={case_id}")
+
         db.commit()
         db.refresh(case)
 
