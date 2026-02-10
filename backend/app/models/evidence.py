@@ -77,6 +77,7 @@ class EvidenceAnalysis(Base):
 
     id = Column(BigInteger, primary_key=True, index=True, autoincrement=False, server_default=text('get_time_id()'))  # DB DEFAULT로 시간 기반 ID 생성
     evidence_id = Column(BigInteger, ForeignKey('evidences.id', ondelete='SET NULL'), nullable=True)  # 증거 ID
+    case_id = Column(BigInteger, ForeignKey('cases.id', ondelete='SET NULL'), nullable=True)  # 사건 ID (같은 증거도 사건마다 다른 분석)
     summary = Column(Text, nullable=True)  # STT 결과 또는 요약
     legal_relevance = Column(Text, nullable=True)  # 법적 관련성 분석
     risk_level = Column(String(20), nullable=True)  # 위험 수준 (high, medium, low)

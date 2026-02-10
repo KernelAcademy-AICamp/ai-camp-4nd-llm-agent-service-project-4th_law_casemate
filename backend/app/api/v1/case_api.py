@@ -14,12 +14,12 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional
 from datetime import date, datetime
-from openai import OpenAI
+from openai import OpenAI, AsyncOpenAI
 
 from tool.database import get_db, SessionLocal
 from tool.security import get_current_user
 from app.models.user import User
-from app.models.evidence import Case, CaseAnalysis
+from app.models.evidence import Case, CaseAnalysis, Evidence, CaseEvidenceMapping, EvidenceAnalysis
 from app.services.timeline_service import TimeLineService
 from app.services.relationship_service import RelationshipService
 from app.models.timeline import TimeLine
@@ -303,6 +303,169 @@ class CaseAnalyzeResponse(BaseModel):
     claims: str
 
 
+async def reanalyze_case_evidences(db: Session, case_id: int) -> int:
+    """
+    사건의 모든 증거를 재분석하는 함수 (백그라운드 실행용)
+
+    Args:
+        db: 데이터베이스 세션
+        case_id: 사건 ID
+
+    Returns:
+        재분석된 증거 개수
+    """
+    try:
+        # 1. 사건 정보 조회
+        case = db.query(Case).filter(Case.id == case_id).first()
+        if not case:
+            print(f"⚠️ [Evidence Reanalysis] 사건을 찾을 수 없음: case_id={case_id}")
+            return 0
+
+        # 2. 해당 사건의 모든 증거 조회
+        evidence_mappings = db.query(CaseEvidenceMapping).filter(
+            CaseEvidenceMapping.case_id == case_id
+        ).all()
+
+        if not evidence_mappings:
+            print(f"⚠️ [Evidence Reanalysis] 연결된 증거 없음: case_id={case_id}")
+            return 0
+
+        print(f"📊 [Evidence Reanalysis] 재분석 대상: {len(evidence_mappings)}개 증거")
+
+        # 3. AsyncOpenAI 클라이언트 생성
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            print(f"❌ [Evidence Reanalysis] OPENAI_API_KEY 없음")
+            return 0
+
+        client = AsyncOpenAI(api_key=api_key)
+
+        # 4. 사건 맥락 준비
+        case_context = f"""
+**사건 맥락:**
+- 사건명: {case.title}
+- 사건 유형: {case.case_type if case.case_type else '미분류'}
+- 의뢰인: {case.client_name} ({case.client_role})
+- 상대방: {case.opponent_name} ({case.opponent_role})
+- 사건 설명: {case.description[:300] if case.description else '없음'}
+"""
+
+        analyzed_count = 0
+
+        # 5. 각 증거에 대해 재분석 수행
+        for idx, mapping in enumerate(evidence_mappings):
+            try:
+                # 증거 조회
+                evidence = db.query(Evidence).filter(
+                    Evidence.id == mapping.evidence_id
+                ).first()
+
+                if not evidence or not evidence.content or len(evidence.content.strip()) < 20:
+                    print(f"  [{idx+1}/{len(evidence_mappings)}] 건너뜀: evidence_id={mapping.evidence_id} (내용 없음)")
+                    continue
+
+                print(f"  [{idx+1}/{len(evidence_mappings)}] 분석 중: {evidence.file_name}")
+
+                # GPT 프롬프트
+                prompt = f"""당신은 법률 전문가입니다. 다음 증거 자료를 특정 사건의 맥락에서 분석해주세요.
+
+**파일명:** {evidence.file_name}
+**문서 유형:** {evidence.doc_type if evidence.doc_type else '미분류'}
+{case_context}
+**증거 내용:**
+{evidence.content}
+
+---
+
+다음 형식으로 JSON 응답을 작성해주세요:
+
+```json
+{{
+  "summary": "증거 내용을 3-5문장으로 요약",
+  "legal_relevance": "이 사건에서 이 증거가 법적으로 어떤 의미를 가지는지, 어떤 주장을 뒷받침하는지 분석 (3-5문장)",
+  "risk_level": "high, medium, low 중 하나 (상대방에게 불리한 정도)"
+}}
+```
+
+**주의사항:**
+- summary: 핵심 내용만 간결하게 요약
+- legal_relevance: 사건 맥락을 고려하여 법적 쟁점, 증거 가치, 활용 방안을 구체적으로 작성
+- risk_level: 상대방 입장에서 불리한 정도를 평가 (높을수록 우리에게 유리)
+"""
+
+                # GPT 호출
+                response = await client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[
+                        {"role": "system", "content": "당신은 법률 증거 분석 전문가입니다."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=0.3,
+                    max_tokens=1500
+                )
+
+                content = response.choices[0].message.content or ""
+
+                # JSON 파싱
+                import re
+                try:
+                    json_match = re.search(r'```json\s*(.*?)\s*```', content, re.DOTALL)
+                    if json_match:
+                        json_str = json_match.group(1)
+                    else:
+                        json_str = content
+
+                    parsed = json.loads(json_str)
+                    summary = parsed.get("summary", "")
+                    legal_relevance = parsed.get("legal_relevance", "")
+                    risk_level = parsed.get("risk_level", "medium")
+                except (json.JSONDecodeError, AttributeError) as e:
+                    print(f"    ⚠️ JSON 파싱 실패: {str(e)}")
+                    summary = content[:500]
+                    legal_relevance = "자동 분석 실패"
+                    risk_level = "medium"
+
+                # DB 저장 (기존 분석 업데이트 또는 생성)
+                existing_analysis = db.query(EvidenceAnalysis).filter(
+                    EvidenceAnalysis.evidence_id == evidence.id,
+                    EvidenceAnalysis.case_id == case_id
+                ).first()
+
+                if existing_analysis:
+                    existing_analysis.summary = summary
+                    existing_analysis.legal_relevance = legal_relevance
+                    existing_analysis.risk_level = risk_level
+                    existing_analysis.ai_model = "gpt-4o-mini"
+                    existing_analysis.created_at = datetime.now()
+                else:
+                    new_analysis = EvidenceAnalysis(
+                        evidence_id=evidence.id,
+                        case_id=case_id,
+                        summary=summary,
+                        legal_relevance=legal_relevance,
+                        risk_level=risk_level,
+                        ai_model="gpt-4o-mini"
+                    )
+                    db.add(new_analysis)
+
+                db.commit()
+                analyzed_count += 1
+                print(f"    ✅ 완료: risk_level={risk_level}")
+
+            except Exception as e:
+                print(f"    ❌ 증거 분석 실패 (evidence_id={mapping.evidence_id}): {str(e)}")
+                db.rollback()
+                continue
+
+        return analyzed_count
+
+    except Exception as e:
+        print(f"❌ [Evidence Reanalysis] 전체 실패: {str(e)}")
+        import traceback
+        print(traceback.format_exc())
+        return 0
+
+
 async def generate_timeline_and_relationships_background(case_id: int):
     """
     백그라운드에서 타임라인과 관계도를 자동 생성하는 함수
@@ -343,8 +506,13 @@ async def generate_timeline_and_relationships_background(case_id: int):
         relationship_data = await relationship_service.generate_relationship()
         print(f"[Background Task] 관계도 생성 완료: {len(relationship_data['persons'])}명, {len(relationship_data['relationships'])}개 관계")
 
+        # 5. 증거 재분석 (사건 맥락 기반)
+        print(f"[Background Task] 증거 재분석 시작...")
+        evidence_count = await reanalyze_case_evidences(db, case_id)
+        print(f"[Background Task] 증거 재분석 완료: {evidence_count}개")
+
         print(f"\n{'='*80}")
-        print(f"[Background Task] 타임라인 및 관계도 자동 생성 완료")
+        print(f"[Background Task] 타임라인, 관계도, 증거 분석 완료")
         print(f"{'='*80}\n")
 
     except Exception as e:

@@ -1718,7 +1718,7 @@ export function CaseDetailPage({
                     {allEvidence.map((evidence, idx) => (
                       <tr
                         key={evidence.id}
-                        onClick={() => navigate(`/evidence/${evidence.id}`)}
+                        onClick={() => navigate(`/evidence/${evidence.id}?caseId=${id}`)}
                         className={`cursor-pointer hover:bg-secondary/30 transition-colors ${idx !== allEvidence.length - 1 ? 'border-b border-border/40' : ''}`}
                       >
                         <td className="px-3 py-2.5">

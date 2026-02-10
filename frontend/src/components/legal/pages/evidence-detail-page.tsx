@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { type EvidenceData, sampleEvidenceByDate } from "@/lib/sample-data";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -37,6 +37,8 @@ export function EvidenceDetailPage({
 }: EvidenceDetailPageProps) {
   const navigate = useNavigate();
   const { id } = useParams<{ id: string }>();
+  const [searchParams] = useSearchParams();
+  const caseId = searchParams.get('caseId'); // URL에서 caseId 추출
 
   const allEvidence = propAllEvidence || Object.values(sampleEvidenceByDate).flat();
   const evidence = propEvidence || allEvidence.find(e => e.id === id) || allEvidence[0];
@@ -60,7 +62,12 @@ export function EvidenceDetailPage({
 
     setIsLoadingAnalysis(true);
     try {
-      const response = await fetch(`http://localhost:8000/api/v1/evidence/${evidence.id}/analysis`, {
+      // case_id가 있으면 쿼리 파라미터로 전달
+      const url = caseId
+        ? `http://localhost:8000/api/v1/evidence/${evidence.id}/analysis?case_id=${caseId}`
+        : `http://localhost:8000/api/v1/evidence/${evidence.id}/analysis`;
+
+      const response = await fetch(url, {
         headers: {
           'Authorization': `Bearer ${token}`
         }
@@ -89,7 +96,12 @@ export function EvidenceDetailPage({
 
     setIsAnalyzing(true);
     try {
-      const response = await fetch(`http://localhost:8000/api/v1/evidence/${evidence.id}/analyze`, {
+      // case_id가 있으면 쿼리 파라미터로 전달
+      const url = caseId
+        ? `http://localhost:8000/api/v1/evidence/${evidence.id}/analyze?case_id=${caseId}`
+        : `http://localhost:8000/api/v1/evidence/${evidence.id}/analyze`;
+
+      const response = await fetch(url, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${token}`
@@ -108,7 +120,9 @@ export function EvidenceDetailPage({
       setHasAnalysis(true);
       setAnalysisData(data.analysis);
 
-      alert('분석이 완료되었습니다!');
+      alert(caseId
+        ? '사건 맥락을 고려한 분석이 완료되었습니다!'
+        : '분석이 완료되었습니다!');
     } catch (error: any) {
       console.error('분석 실패:', error);
       alert(`분석 실패: ${error.message}`);
