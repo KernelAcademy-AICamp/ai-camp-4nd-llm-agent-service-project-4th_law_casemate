@@ -717,3 +717,49 @@ async def update_case_summary(
         db.rollback()
         print(f"❌ AI 분석 결과 수정 실패: {str(e)}")
         raise HTTPException(status_code=500, detail=f"AI 분석 결과 수정 실패: {str(e)}")
+
+
+@router.delete("/{case_id}")
+async def delete_case(
+    case_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    사건 삭제 (소프트 삭제)
+
+    - JWT 인증 필요
+    - 같은 law_firm_id 소속만 삭제 가능
+    - 실제로 DB에서 삭제하지 않고 availability를 'c'(closed)로 변경
+    """
+    print("=" * 50)
+    print(f"🗑️  사건 삭제 요청: case_id={case_id}, user_id={current_user.id}")
+    print("=" * 50)
+
+    try:
+        # 사건 조회 및 권한 검증
+        case = db.query(Case).filter(Case.id == case_id).first()
+
+        if not case:
+            raise HTTPException(status_code=404, detail="사건을 찾을 수 없습니다")
+
+        if case.law_firm_id != current_user.firm_id:
+            raise HTTPException(status_code=403, detail="해당 사건에 접근할 권한이 없습니다")
+
+        # 소프트 삭제: availability를 'c'로 변경
+        case.availability = 'c'
+        db.commit()
+
+        print(f"✅ 사건 삭제 완료: case_id={case_id}, title={case.title}")
+
+        return {
+            "message": "사건이 삭제되었습니다",
+            "case_id": case_id
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        print(f"❌ 사건 삭제 실패: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"사건 삭제 실패: {str(e)}")
