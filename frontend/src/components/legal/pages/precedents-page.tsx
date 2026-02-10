@@ -115,6 +115,14 @@ export function PrecedentsPage({ }: PrecedentsPageProps) {
     return `${dateStr.slice(0, 4)}.${dateStr.slice(4, 6)}.${dateStr.slice(6, 8)}`;
   };
 
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center" style={{ height: 'calc(100vh - 120px)' }}>
+        <video src="/assets/loading-card.mp4" autoPlay loop muted playsInline className="h-28 w-28" style={{ mixBlendMode: 'multiply', opacity: 0.3 }} />
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
       {/* Search Section */}
@@ -144,7 +152,7 @@ export function PrecedentsPage({ }: PrecedentsPageProps) {
 
       {/* Results */}
       <div className="space-y-4">
-        {!loading && (
+        {(
           <div className="flex items-center justify-between">
             <h2 className="text-sm font-medium text-muted-foreground">
               {hasSearched ? `검색 결과 ${results.length}건` : `최신 판례 ${results.length}건`}
@@ -152,20 +160,13 @@ export function PrecedentsPage({ }: PrecedentsPageProps) {
           </div>
         )}
 
-        {loading && (
-          <div className="flex flex-col items-center justify-center py-10 text-muted-foreground">
-            <video src="/assets/loading-card.mp4" autoPlay loop muted playsInline className="h-20 w-20 mb-2" style={{ mixBlendMode: 'multiply', opacity: 0.3 }} />
-            불러오는 중...
-          </div>
-        )}
-
-        {!loading && hasSearched && results.length === 0 && (
+        {hasSearched && results.length === 0 && (
           <div className="text-center py-10 text-muted-foreground">
             검색 결과가 없습니다.
           </div>
         )}
 
-        {!loading && (
+        {(
           <div className="space-y-3">
             {paginatedResults.map((result, index) => (
             <Card

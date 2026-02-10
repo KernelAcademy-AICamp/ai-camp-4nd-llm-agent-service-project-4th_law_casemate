@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect, useCallback } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useOutletContext } from "react-router-dom";
 import { Scale, ArrowUp, FolderOpen, MessageSquare } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
@@ -112,9 +112,26 @@ function useTypingHint(active: boolean, userStartedTyping: boolean) {
   return { hintText, hintDone };
 }
 
+// ── Types ──
+interface OutletContextType {
+  userInfo?: {
+    id: number;
+    name: string;
+    email: string;
+    role?: string;
+  };
+}
+
+function getRoleTitle(role?: string): string {
+  if (role === "lawyer") return " 변호사";
+  if (role === "legal-officer") return " 법무사";
+  return "";
+}
+
 // ── Component ──
 export function HomePage() {
   const navigate = useNavigate();
+  const { userInfo } = useOutletContext<OutletContextType>();
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [isTyping, setIsTyping] = useState(false);
@@ -211,15 +228,7 @@ export function HomePage() {
 
         <div className="relative z-10 flex flex-col items-center w-full max-w-2xl px-4">
           {/* Greeting */}
-          <div className="mb-8 text-center">
-            <div
-              className="inline-flex items-center justify-center w-12 h-12 rounded-2xl mb-4"
-              style={{
-                background: "linear-gradient(135deg, #6D5EF5, #A78BFA)",
-              }}
-            >
-              <Scale className="h-6 w-6 text-white" />
-            </div>
+          <div className="mb-12 text-center">
             <h1 className="text-[32px] font-semibold text-foreground tracking-tight">
               무엇을 도와드릴까요?
             </h1>
@@ -229,7 +238,7 @@ export function HomePage() {
           </div>
 
           {/* Chat Input */}
-          <div className="w-full relative mb-6">
+          <div className="w-full relative mb-12">
             <div className="flex items-end gap-2 bg-card border border-border/50 rounded-2xl px-4 py-3 shadow-sm focus-within:border-primary/40 focus-within:shadow-md transition-all">
               <div className="flex-1 relative">
                 <textarea
@@ -267,25 +276,16 @@ export function HomePage() {
           </div>
 
           {/* Quick Actions */}
-          <div className="flex gap-3 justify-center">
+          <div className="flex gap-5 justify-center">
             <Tooltip>
               <TooltipTrigger asChild>
                 <button
                   type="button"
                   onClick={() => navigate("/cases")}
-                  className="flex items-center gap-2.5 px-4 py-3 rounded-xl border text-xs transition-all"
+                  className="flex items-center gap-2.5 px-4 py-3 rounded-xl text-xs font-medium transition-opacity hover:opacity-85"
                   style={{
-                    background: "rgba(109,94,245,0.04)",
-                    borderColor: "rgba(109,94,245,0.10)",
-                    color: "#7C6EF6",
-                  }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.background = "rgba(109,94,245,0.08)";
-                    e.currentTarget.style.borderColor = "rgba(109,94,245,0.18)";
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.background = "rgba(109,94,245,0.04)";
-                    e.currentTarget.style.borderColor = "rgba(109,94,245,0.10)";
+                    background: "linear-gradient(135deg, #6D5EF5, #8B7AF7)",
+                    color: "#fff",
                   }}
                 >
                   <FolderOpen className="h-4 w-4" />
@@ -299,19 +299,10 @@ export function HomePage() {
                 <button
                   type="button"
                   onClick={() => sendMessage("마지막 대화를 이어서 진행해줘")}
-                  className="flex items-center gap-2.5 px-4 py-3 rounded-xl border text-xs transition-all"
+                  className="flex items-center gap-2.5 px-4 py-3 rounded-xl text-xs font-medium transition-opacity hover:opacity-85"
                   style={{
-                    background: "rgba(109,94,245,0.04)",
-                    borderColor: "rgba(109,94,245,0.10)",
-                    color: "#7C6EF6",
-                  }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.background = "rgba(109,94,245,0.08)";
-                    e.currentTarget.style.borderColor = "rgba(109,94,245,0.18)";
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.background = "rgba(109,94,245,0.04)";
-                    e.currentTarget.style.borderColor = "rgba(109,94,245,0.10)";
+                    background: "linear-gradient(135deg, #6D5EF5, #8B7AF7)",
+                    color: "#fff",
                   }}
                 >
                   <MessageSquare className="h-4 w-4" />

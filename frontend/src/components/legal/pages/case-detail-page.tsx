@@ -959,7 +959,7 @@ export function CaseDetailPage({
   if (isLoadingCase) {
     return (
       <div className="flex items-center justify-center" style={{ height: 'calc(100vh - 120px)' }}>
-        <video src="/assets/loading-card.mp4" autoPlay loop muted playsInline className="h-20 w-20" style={{ mixBlendMode: 'multiply', opacity: 0.3 }} />
+        <video src="/assets/loading-card.mp4" autoPlay loop muted playsInline className="h-28 w-28" style={{ mixBlendMode: 'multiply', opacity: 0.3 }} />
       </div>
     );
   }
@@ -1033,7 +1033,7 @@ export function CaseDetailPage({
             관계도
           </TabsTrigger>
           <TabsTrigger value="documents" className="text-sm">
-            문서작성
+            문서 작성
           </TabsTrigger>
         </TabsList>
 
@@ -1826,8 +1826,8 @@ export function CaseDetailPage({
           </Card>
         </TabsContent>
 
-        {/* ===== 문서작성 탭 ===== */}
-        <TabsContent value="documents" className="mt-6">
+        {/* ===== 문서 작성 탭 ===== */}
+        <TabsContent value="documents" className="mt-8">
           {caseData ? (
             <DocumentEditor caseData={caseData} />
           ) : (

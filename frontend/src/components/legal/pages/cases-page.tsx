@@ -124,7 +124,7 @@ export function CasesPage() {
   if (isLoading) {
     return (
       <div className="flex items-center justify-center" style={{ height: 'calc(100vh - 120px)' }}>
-        <video src="/assets/loading-card.mp4" autoPlay loop muted playsInline className="h-20 w-20" style={{ mixBlendMode: 'multiply', opacity: 0.3 }} />
+        <video src="/assets/loading-card.mp4" autoPlay loop muted playsInline className="h-28 w-28" style={{ mixBlendMode: 'multiply', opacity: 0.3 }} />
       </div>
     );
   }

@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from . import auth_api, evidence_api, timeline_api, search_api, case_api, search_laws, relationship_api
+from . import auth_api, evidence_api, timeline_api, search_api, case_api, search_laws, relationship_api, document_api
 
 router = APIRouter()
 
@@ -19,3 +19,5 @@ router.include_router(case_api.router, prefix="/cases")
 router.include_router(search_laws.router)
 # relationship_api 라우터 포함 (prefix: /relationships)
 router.include_router(relationship_api.router, prefix="/relationships")
+# document_api 라우터 포함 (prefix: /documents)
+router.include_router(document_api.router, prefix="/documents")

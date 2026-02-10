@@ -792,6 +792,14 @@ export function EvidenceUploadPage({
 
   const currentFolderPath = getFolderPath(selectedFolder);
 
+  if (isLoadingFiles) {
+    return (
+      <div className="flex items-center justify-center" style={{ height: 'calc(100vh - 120px)' }}>
+        <video src="/assets/loading-card.mp4" autoPlay loop muted playsInline className="h-28 w-28" style={{ mixBlendMode: 'multiply', opacity: 0.3 }} />
+      </div>
+    );
+  }
+
   return (
     <div className="h-[calc(100vh-7rem)] flex flex-col gap-4">
       {/* Back Button */}
@@ -1024,16 +1032,6 @@ export function EvidenceUploadPage({
                   <p className="text-sm font-medium">파일을 여기에 놓으세요</p>
                   <p className="text-xs text-muted-foreground mt-1">
                     "{folders.find((f) => f.id === selectedFolder)?.name || "내 드라이브"}" 폴더에 업로드됩니다
-                  </p>
-                </div>
-              </div>
-            ) : isLoadingFiles ? (
-              <div className="h-full flex items-center justify-center">
-                <div className="flex flex-col items-center">
-                  <video src="/assets/loading-card.mp4" autoPlay loop muted playsInline className="h-20 w-20 mb-3" style={{ mixBlendMode: 'multiply', opacity: 0.3 }} />
-                  <p className="text-sm font-medium">파일 목록을 불러오는 중...</p>
-                  <p className="text-xs text-muted-foreground mt-1">
-                    잠시만 기다려 주세요
                   </p>
                 </div>
               </div>
