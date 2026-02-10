@@ -9,6 +9,8 @@ import {
 } from "@/lib/sample-data";
 import { useSearch, type SimilarCaseResult } from "@/contexts/search-context";
 import { Loader2 } from "lucide-react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 // API 응답 타입
 interface CaseApiResponse {
@@ -91,6 +93,8 @@ import {
   User,
   UserX,
   Circle,
+  RefreshCw,
+  AlertCircle,
 } from "lucide-react";
 import { RelationshipEditor } from "@/components/legal/relationship-editor";
 import { DocumentEditor } from "@/components/legal/document-editor";
@@ -134,6 +138,22 @@ export function CaseDetailPage({
   const [timelineEvents, setTimelineEvents] =
     useState<TimelineEvent[]>([]);
   const [timelineLoading, setTimelineLoading] = useState(false);
+
+  // 관계도 상태
+  const [relationshipData, setRelationshipData] = useState<{
+    persons: any[];
+    relationships: any[];
+  }>({ persons: [], relationships: [] });
+  const [relationshipLoading, setRelationshipLoading] = useState(false);
+
+  // 재분석 필요 여부 상태
+  const [needsReanalysis, setNeedsReanalysis] = useState<{
+    needs: boolean;
+    reason: string | null;
+    count?: number;
+    last_analyzed?: string;
+  }>({ needs: false, reason: null });
+
   const [timelineLayout, setTimelineLayout] = useState<"linear" | "zigzag">("linear");
   const [editingEvent, setEditingEvent] = useState<TimelineEvent | null>(null);
   const [isAddingEvent, setIsAddingEvent] = useState(false);
@@ -154,6 +174,9 @@ export function CaseDetailPage({
     claims: "",
     legalBasis: "",
   });
+
+  // 메인 탭 상태
+  const [activeTab, setActiveTab] = useState<string>("overview");
 
   // 서브 탭 상태: "analysis" (AI 분석) | "original" (원문 보기)
   const [detailSubTab, setDetailSubTab] = useState<"analysis" | "original">("analysis");
@@ -508,50 +531,183 @@ export function CaseDetailPage({
     }
   }, [caseData]);
 
-  // 타임라인 생성 (샘플 데이터)
-  const generateTimeline = async () => {
+  // 관계도 데이터 가져오기
+  const fetchRelationships = useCallback(async () => {
     if (!caseData) return;
 
-    console.log("[Timeline Generate] 시작");
-    console.log("[Timeline Generate] Case ID:", caseData.id);
-    console.log("[Timeline Generate] Case Data:", caseData);
-
-    setTimelineLoading(true);
+    setRelationshipLoading(true);
     try {
-      const url = `http://localhost:8000/api/v1/timeline/${caseData.id}/generate?use_llm=false`;
-      console.log("[Timeline Generate] 요청 URL:", url);
+      const response = await fetch(`http://localhost:8000/api/v1/relationships/${caseData.id}`);
+      if (!response.ok) {
+        throw new Error("관계도 데이터를 가져오는 중 오류가 발생했습니다.");
+      }
+      const data = await response.json();
+      setRelationshipData(data);
+    } catch (err) {
+      console.error("관계도 데이터 가져오기 실패:", err);
+      setRelationshipData({ persons: [], relationships: [] });
+    } finally {
+      setRelationshipLoading(false);
+    }
+  }, [caseData]);
+
+  // 관계도 재생성 (기존 데이터 삭제 후 LLM으로 생성)
+  const regenerateRelationships = useCallback(async () => {
+    if (!caseData) return;
+
+    console.log("[Relationship Regenerate] 시작 - 기존 데이터 삭제 후 재생성");
+
+    setRelationshipLoading(true);
+    try {
+      const url = `http://localhost:8000/api/v1/relationships/${caseData.id}/generate?force=true`;
+      console.log("[Relationship Regenerate] 요청 URL:", url);
 
       const response = await fetch(url, {
         method: 'POST',
       });
 
-      console.log("[Timeline Generate] Response Status:", response.status);
-      console.log("[Timeline Generate] Response OK:", response.ok);
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error("[Relationship Regenerate] Error Response:", errorText);
+        throw new Error(`관계도 재생성 중 오류가 발생했습니다. Status: ${response.status}`);
+      }
+
+      const result = await response.json();
+      console.log("[Relationship Regenerate] 생성 완료:", result);
+
+      // API 응답 구조가 { message: "...", data: { persons: [...], relationships: [...] } } 형태일 수 있음
+      const data = result.data || result;
+      setRelationshipData(data);
+    } catch (err) {
+      console.error("[Relationship Regenerate] 실패:", err);
+      alert("관계도 재생성에 실패했습니다.");
+    } finally {
+      setRelationshipLoading(false);
+    }
+  }, [caseData]);
+
+  // 사건 삭제
+  const handleDeleteCase = useCallback(async () => {
+    if (!caseData || !id) return;
+
+    const confirmed = confirm(
+      `정말로 "${caseData.name}" 사건을 삭제하시겠습니까?\n\n이 작업은 되돌릴 수 없으며, 관련된 모든 데이터(타임라인, 관계도, 분석 결과 등)가 함께 삭제됩니다.`
+    );
+
+    if (!confirmed) return;
+
+    try {
+      const response = await fetch(`http://localhost:8000/api/v1/cases/${id}`, {
+        method: 'DELETE',
+      });
+
+      if (!response.ok) {
+        throw new Error('사건 삭제에 실패했습니다.');
+      }
+
+      alert('사건이 삭제되었습니다.');
+      navigate('/cases');
+    } catch (err) {
+      console.error('[Case Delete] 실패:', err);
+      alert('사건 삭제에 실패했습니다.');
+    }
+  }, [caseData, id, navigate]);
+
+  // 재분석 필요 여부 확인
+  const checkReanalysisStatus = useCallback(async () => {
+    if (!id) return;
+
+    try {
+      const response = await fetch(`http://localhost:8000/api/v1/cases/${id}/reanalysis-status`);
+      if (response.ok) {
+        const status = await response.json();
+        setNeedsReanalysis(status);
+      }
+    } catch (err) {
+      console.error('[Reanalysis Status] 확인 실패:', err);
+    }
+  }, [id]);
+
+  // 전체 재분석 실행
+  const handleFullReanalysis = useCallback(async () => {
+    if (!id) return;
+
+    const confirmed = confirm(
+      '사건을 전체 재분석합니다.\n\n개요, 타임라인, 관계도가 모두 새로 생성됩니다.\n계속하시겠습니까?'
+    );
+
+    if (!confirmed) return;
+
+    try {
+      // 1. AI 분석 실행 (force=true)
+      const analyzeResponse = await fetch(
+        `http://localhost:8000/api/v1/cases/${id}/analyze?force=true`,
+        { method: 'POST' }
+      );
+
+      if (!analyzeResponse.ok) {
+        throw new Error('AI 분석에 실패했습니다.');
+      }
+
+      // 2. 상태 업데이트
+      setNeedsReanalysis({ needs: false, reason: null });
+
+      // 3. 페이지 새로고침하여 최신 데이터 반영
+      window.location.reload();
+    } catch (err) {
+      console.error('[Full Reanalysis] 실패:', err);
+      alert('재분석에 실패했습니다.');
+    }
+  }, [id]);
+
+  // 재분석 상태 확인 (사건 로드 시)
+  useEffect(() => {
+    if (caseData?.id) {
+      checkReanalysisStatus();
+    }
+  }, [caseData?.id, checkReanalysisStatus]);
+
+  // 타임라인 재생성 (기존 데이터 삭제 후 LLM으로 생성)
+  const regenerateTimeline = async () => {
+    if (!caseData) return;
+
+    console.log("[Timeline Regenerate] 시작 - 기존 데이터 삭제 후 재생성");
+
+    setTimelineLoading(true);
+    try {
+      const url = `http://localhost:8000/api/v1/timeline/${caseData.id}/generate?force=true`;
+      console.log("[Timeline Regenerate] 요청 URL:", url);
+
+      const response = await fetch(url, {
+        method: 'POST',
+      });
 
       if (!response.ok) {
         const errorText = await response.text();
-        console.error("[Timeline Generate] Error Response:", errorText);
-        throw new Error(`타임라인 생성 중 오류가 발생했습니다. Status: ${response.status}`);
+        console.error("[Timeline Regenerate] Error Response:", errorText);
+        throw new Error(`타임라인 재생성 중 오류가 발생했습니다. Status: ${response.status}`);
       }
 
       const data = await response.json();
-      console.log("[Timeline Generate] 생성된 타임라인 개수:", data.length);
-      console.log("[Timeline Generate] 타임라인 데이터:", data);
+      console.log("[Timeline Regenerate] 생성된 타임라인 개수:", data.length);
 
       setTimelineEvents(data);
     } catch (err) {
-      console.error("[Timeline Generate] 실패:", err);
-      alert("타임라인 생성에 실패했습니다.");
+      console.error("[Timeline Regenerate] 실패:", err);
+      alert("타임라인 재생성에 실패했습니다.");
     } finally {
       setTimelineLoading(false);
     }
   };
 
-  // 컴포넌트 마운트 시 유사 판례 검색 및 타임라인 데이터 가져오기
+  // 타임라인 생성 (샘플 데이터 - 하위 호환성)
+  const generateTimeline = regenerateTimeline;
+
+  // 컴포넌트 마운트 시 유사 판례 검색 (타임라인은 탭 클릭 시에만 로드)
   useEffect(() => {
     fetchSimilarCases();
-    fetchTimeline();
-  }, [fetchSimilarCases, fetchTimeline]);
+    // fetchTimeline(); // 타임라인은 탭 클릭 시에만 로드
+  }, [fetchSimilarCases]);
   // 관련 법령 검색 (2단계 파이프라인: 법적 쟁점 추출 → 검색)
   const fetchRelatedLaws = async () => {
     if (!id) return;
@@ -814,33 +970,83 @@ export function CaseDetailPage({
     return String(claims);
   };
 
-  const handleSaveEvent = () => {
-    if (editingEvent) {
+  const handleSaveEvent = async () => {
+    if (!editingEvent || !caseData) return;
+
+    try {
+      const response = await fetch(`http://localhost:8000/api/v1/timeline/${editingEvent.id}`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          date: editingEvent.date,
+          time: editingEvent.time || "00:00",
+          title: editingEvent.title,
+          description: editingEvent.description || "",
+          type: editingEvent.type,
+          actor: editingEvent.actor || "",
+          firm_id: (caseData as any).law_firm_id || null,
+          evidence_id: null,
+          order_index: 0,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error("타임라인 수정에 실패했습니다.");
+      }
+
+      const updatedEvent = await response.json();
+
+      // 로컬 state 업데이트
       setTimelineEvents((prev) =>
-        prev.map((e) => (e.id === editingEvent.id ? editingEvent : e))
+        prev.map((e) => (e.id === editingEvent.id ? updatedEvent : e))
       );
       setEditingEvent(null);
+      alert("타임라인이 수정되었습니다.");
+    } catch (err) {
+      console.error("타임라인 수정 실패:", err);
+      alert("타임라인 수정에 실패했습니다.");
     }
   };
 
-  const handleAddEvent = () => {
-    if (newEvent.date && newEvent.title) {
-      const event: TimelineEvent = {
-        id: Date.now().toString(),
-        date: newEvent.date,
-        time: newEvent.time || "00:00",
-        title: newEvent.title,
-        description: newEvent.description || "",
-        type: (newEvent.type as TimelineEvent["type"]) || "기타",
-        actor: newEvent.actor || "",
-      };
+  const handleAddEvent = async () => {
+    if (!newEvent.date || !newEvent.title || !caseData) return;
+
+    try {
+      const response = await fetch(`http://localhost:8000/api/v1/timeline/${caseData.id}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          date: newEvent.date,
+          time: newEvent.time || "00:00",
+          title: newEvent.title,
+          description: newEvent.description || "",
+          type: (newEvent.type as TimelineEvent["type"]) || "기타",
+          actor: newEvent.actor || "",
+          firm_id: (caseData as any).law_firm_id || null,
+          evidence_id: null,
+          order_index: 0,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error("타임라인 추가에 실패했습니다.");
+      }
+
+      const createdEvent = await response.json();
+
+      // 로컬 state 업데이트 (정렬)
       setTimelineEvents((prev) =>
-        [...prev, event].sort((a, b) => {
+        [...prev, createdEvent].sort((a, b) => {
           const dateA = new Date(`${a.date}T${a.time}`);
           const dateB = new Date(`${b.date}T${b.time}`);
           return dateA.getTime() - dateB.getTime();
         })
       );
+
       setNewEvent({
         date: "",
         time: "",
@@ -850,11 +1056,32 @@ export function CaseDetailPage({
         actor: "",
       });
       setIsAddingEvent(false);
+      alert("타임라인이 추가되었습니다.");
+    } catch (err) {
+      console.error("타임라인 추가 실패:", err);
+      alert("타임라인 추가에 실패했습니다.");
     }
   };
 
-  const handleDeleteEvent = (id: string) => {
-    setTimelineEvents((prev) => prev.filter((e) => e.id !== id));
+  const handleDeleteEvent = async (id: string) => {
+    if (!confirm("이 타임라인 이벤트를 삭제하시겠습니까?")) return;
+
+    try {
+      const response = await fetch(`http://localhost:8000/api/v1/timeline/${id}`, {
+        method: "DELETE",
+      });
+
+      if (!response.ok) {
+        throw new Error("타임라인 삭제에 실패했습니다.");
+      }
+
+      // 로컬 state 업데이트
+      setTimelineEvents((prev) => prev.filter((e) => e.id !== id));
+      alert("타임라인이 삭제되었습니다.");
+    } catch (err) {
+      console.error("타임라인 삭제 실패:", err);
+      alert("타임라인 삭제에 실패했습니다.");
+    }
   };
 
   const getTypeColor = (type: TimelineEvent["type"]) => {
@@ -1002,12 +1229,23 @@ export function CaseDetailPage({
               사건 ID: {caseData.id} · {caseData.client} vs {caseData.opponent}
             </p>
           </div>
-          <Badge
-            variant={caseData.status === "완료" ? "default" : "secondary"}
-            className="w-fit text-xs font-normal"
-          >
-            {caseData.status}
-          </Badge>
+          <div className="flex items-center gap-2">
+            <Badge
+              variant={caseData.status === "완료" ? "default" : "secondary"}
+              className="w-fit text-xs font-normal"
+            >
+              {caseData.status}
+            </Badge>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-8 text-destructive hover:text-destructive hover:bg-destructive/10"
+              onClick={handleDeleteCase}
+            >
+              <Trash2 className="h-4 w-4 mr-2" />
+              사건 삭제
+            </Button>
+          </div>
         </div>
 
         <div className="flex items-center gap-4">
@@ -1020,8 +1258,61 @@ export function CaseDetailPage({
         </div>
       </div>
 
+      {/* 재분석 필요 배너 */}
+      {needsReanalysis.needs && (
+        <Card className="border-amber-200 bg-amber-50/50">
+          <CardContent className="p-4">
+            <div className="flex items-start justify-between gap-4">
+              <div className="flex-1">
+                <div className="flex items-center gap-2 mb-2">
+                  <AlertCircle className="h-5 w-5 text-amber-600" />
+                  <h3 className="font-semibold text-amber-900">사건 내용이 변경되었습니다</h3>
+                </div>
+                <p className="text-sm text-amber-800 mb-2">
+                  {needsReanalysis.reason === 'description_changed' && '사건 원문이 수정되었습니다. AI 재분석을 권장합니다.'}
+                  {needsReanalysis.reason === 'new_evidence' && `새로운 증거 ${needsReanalysis.count}건이 추가되었습니다. AI 재분석을 권장합니다.`}
+                  {needsReanalysis.reason === 'no_analysis' && '아직 AI 분석이 진행되지 않았습니다.'}
+                </p>
+                {needsReanalysis.last_analyzed && (
+                  <p className="text-xs text-amber-700">
+                    마지막 분석: {new Date(needsReanalysis.last_analyzed).toLocaleString('ko-KR')}
+                  </p>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                <Button
+                  onClick={handleFullReanalysis}
+                  className="bg-amber-600 hover:bg-amber-700 text-white"
+                >
+                  <RefreshCw className="h-4 w-4 mr-2" />
+                  AI 재분석 시작
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setNeedsReanalysis({ needs: false, reason: null })}
+                  className="text-amber-700 hover:text-amber-900"
+                >
+                  무시
+                </Button>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {/* Tabs - New Structure */}
-      <Tabs defaultValue="overview" className="w-full">
+      <Tabs value={activeTab} onValueChange={(value) => {
+        setActiveTab(value);
+        // 타임라인 탭 클릭 시 데이터 로드
+        if (value === "timeline" && timelineEvents.length === 0) {
+          fetchTimeline();
+        }
+        // 관계도 탭 클릭 시 데이터 로드
+        if (value === "relations" && relationshipData.persons.length === 0) {
+          fetchRelationships();
+        }
+      }} className="w-full">
         <TabsList className="grid w-full grid-cols-4 h-10 p-1 bg-secondary/50">
           <TabsTrigger value="overview" className="text-sm">
             사건 개요
@@ -1226,9 +1517,11 @@ export function CaseDetailPage({
                           className="text-sm"
                         />
                       ) : (
-                        <p className="text-sm text-muted-foreground leading-[1.8]">
-                          {overviewData.summary}
-                        </p>
+                        <div className="text-sm text-muted-foreground leading-[1.8] prose prose-sm max-w-none">
+                          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                            {overviewData.summary}
+                          </ReactMarkdown>
+                        </div>
                       )}
                     </div>
 
@@ -1247,9 +1540,14 @@ export function CaseDetailPage({
                           className="text-sm"
                         />
                       ) : (
-                        <p className="text-sm text-muted-foreground leading-[1.8] whitespace-pre-line">
-                          {formatFacts(overviewData.facts)}
-                        </p>
+                        <div className="text-sm text-muted-foreground leading-relaxed prose prose-sm max-w-none [&>ul]:list-disc [&>ul]:pl-5 [&>ul]:space-y-1.5 [&>ol]:list-decimal [&>ol]:pl-5 [&>ol]:space-y-1.5">
+                          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                            {overviewData.facts?.split('\n')
+                              .filter(line => line.trim())
+                              .map(line => line.startsWith('-') ? line : `- ${line}`)
+                              .join('\n')}
+                          </ReactMarkdown>
+                        </div>
                       )}
                     </div>
 
@@ -1284,8 +1582,31 @@ export function CaseDetailPage({
                           className="text-sm"
                         />
                       ) : (
-                        <div className="text-sm text-muted-foreground leading-[1.8] whitespace-pre-wrap">
-                          {formatClaims(overviewData.claims)}
+                        <div className="text-sm text-muted-foreground leading-relaxed prose prose-sm max-w-none [&>ul]:list-disc [&>ul]:pl-5 [&>ul]:space-y-1.5 [&>ol]:list-decimal [&>ol]:pl-5 [&>ol]:space-y-1.5 [&>p]:mb-2">
+                          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                            {(() => {
+                              // JSON 형식인지 확인
+                              if (overviewData.claims?.startsWith('{') || overviewData.claims?.startsWith('{"')) {
+                                try {
+                                  const claimsObj = JSON.parse(overviewData.claims);
+                                  let markdown = '';
+                                  for (const [category, items] of Object.entries(claimsObj)) {
+                                    markdown += `**${category}**\n\n`;
+                                    if (Array.isArray(items)) {
+                                      items.forEach((item: string) => {
+                                        markdown += `- ${item}\n`;
+                                      });
+                                    }
+                                    markdown += '\n';
+                                  }
+                                  return markdown;
+                                } catch {
+                                  return overviewData.claims;
+                                }
+                              }
+                              return overviewData.claims;
+                            })()}
+                          </ReactMarkdown>
                         </div>
                       )}
                     </div>
@@ -1397,7 +1718,7 @@ export function CaseDetailPage({
                     {allEvidence.map((evidence, idx) => (
                       <tr
                         key={evidence.id}
-                        onClick={() => navigate(`/evidence/${evidence.id}`)}
+                        onClick={() => navigate(`/evidence/${evidence.id}?caseId=${id}`)}
                         className={`cursor-pointer hover:bg-secondary/30 transition-colors ${idx !== allEvidence.length - 1 ? 'border-b border-border/40' : ''}`}
                       >
                         <td className="px-3 py-2.5">
@@ -1535,6 +1856,15 @@ export function CaseDetailPage({
                 <Button
                   size="sm"
                   variant="outline"
+                  onClick={regenerateTimeline}
+                  disabled={timelineLoading}
+                >
+                  <RefreshCw className={`h-4 w-4 mr-2 ${timelineLoading ? 'animate-spin' : ''}`} />
+                  새로고침
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
                   onClick={() => setIsAddingEvent(true)}
                 >
                   <Plus className="h-4 w-4 mr-2" />
@@ -1552,7 +1882,7 @@ export function CaseDetailPage({
                 <div className="text-center py-12">
                   <p className="text-muted-foreground text-sm mb-4">타임라인 이벤트가 없습니다.</p>
                   <Button onClick={generateTimeline} variant="outline">
-                    샘플 타임라인 생성
+                    타임라인 생성
                   </Button>
                 </div>
               ) : timelineLayout === "linear" ? (
@@ -1815,6 +2145,9 @@ export function CaseDetailPage({
               {caseData?.id ? (
                 <RelationshipEditor
                   caseId={String(caseData.id)}
+                  data={relationshipData}
+                  loading={relationshipLoading}
+                  onRefresh={regenerateRelationships}
                 />
               ) : (
                 <div className="flex flex-col items-center justify-center h-[600px] text-muted-foreground">

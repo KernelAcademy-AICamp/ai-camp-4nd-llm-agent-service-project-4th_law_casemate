@@ -34,6 +34,7 @@ class Case(Base):
     opponent_role = Column(String(50), nullable=True)  # 상대방 역할 (피고/피고소인 등)
     case_type = Column(String(50), nullable=True)
     status = Column(String(50), server_default="접수", nullable=True)
+    availability = Column(String(1), server_default="o", nullable=True)  # o:open, c:close, h:hold
     incident_date = Column(Date, nullable=True)
     incident_date_end = Column(Date, nullable=True)
     notification_date = Column(Date, nullable=True)
@@ -76,6 +77,7 @@ class EvidenceAnalysis(Base):
 
     id = Column(BigInteger, primary_key=True, index=True, autoincrement=False, server_default=text('get_time_id()'))  # DB DEFAULT로 시간 기반 ID 생성
     evidence_id = Column(BigInteger, ForeignKey('evidences.id', ondelete='SET NULL'), nullable=True)  # 증거 ID
+    case_id = Column(BigInteger, ForeignKey('cases.id', ondelete='SET NULL'), nullable=True)  # 사건 ID (같은 증거도 사건마다 다른 분석)
     summary = Column(Text, nullable=True)  # STT 결과 또는 요약
     legal_relevance = Column(Text, nullable=True)  # 법적 관련성 분석
     risk_level = Column(String(20), nullable=True)  # 위험 수준 (high, medium, low)

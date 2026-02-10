@@ -78,16 +78,17 @@ async def get_relationships(
         print(f"[Relationship API] 응답 데이터: {relationship_data}")
         return relationship_data
     except HTTPException as e:
-        # 404 (관계도 없음)인 경우 자동 생성
+        # 404 (관계도 없음)인 경우 자동 생성 시도
         if e.status_code == 404:
-            print(f"[Relationship API] 관계도 없음 - 자동 생성 시작")
+            print(f"[Relationship API] 관계도 없음 - 자동 생성 시도")
             try:
                 relationship_data = await service.generate_relationship()
                 print(f"[Relationship API] 자동 생성 성공: {len(relationship_data['persons'])}명, {len(relationship_data['relationships'])}개 관계")
                 return relationship_data
             except Exception as gen_error:
-                print(f"[Relationship API] 자동 생성 실패: {str(gen_error)}")
-                raise HTTPException(status_code=500, detail=f"관계도 자동 생성 실패: {str(gen_error)}")
+                # 자동 생성 실패 시 빈 데이터 반환 (사용자는 수동으로 생성 버튼 클릭 가능)
+                print(f"[Relationship API] 자동 생성 실패 (빈 데이터 반환): {str(gen_error)}")
+                return {"persons": [], "relationships": []}
         else:
             # 다른 에러는 그대로 전달
             raise
