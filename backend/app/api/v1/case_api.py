@@ -9,17 +9,21 @@
 import os
 import json
 import hashlib
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional
 from datetime import date, datetime
 from openai import OpenAI
 
-from tool.database import get_db
+from tool.database import get_db, SessionLocal
 from tool.security import get_current_user
 from app.models.user import User
 from app.models.evidence import Case, CaseAnalysis
+from app.services.timeline_service import TimeLineService
+from app.services.relationship_service import RelationshipService
+from app.models.timeline import TimeLine
+from app.models.relationship import CasePerson, CaseRelationship
 
 # OpenAI 클라이언트
 openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -221,9 +225,63 @@ class CaseAnalyzeResponse(BaseModel):
     claims: str
 
 
+async def generate_timeline_and_relationships_background(case_id: int):
+    """
+    백그라운드에서 타임라인과 관계도를 자동 생성하는 함수
+    AI 분석이 완료된 후 자동으로 호출됨
+    """
+    db = SessionLocal()
+    try:
+        print(f"\n{'='*80}")
+        print(f"[Background Task] 타임라인 및 관계도 자동 생성 시작: case_id={case_id}")
+        print(f"{'='*80}\n")
+
+        # 1. 기존 타임라인 삭제
+        deleted_timeline_count = db.query(TimeLine).filter(
+            TimeLine.case_id == case_id
+        ).delete()
+        db.commit()
+        print(f"[Background Task] 기존 타임라인 삭제: {deleted_timeline_count}개")
+
+        # 2. 타임라인 생성
+        print(f"[Background Task] 타임라인 생성 시작...")
+        timeline_service = TimeLineService(db=db, case_id=case_id)
+        generated_timelines = await timeline_service.generate_timeline_auto()
+        print(f"[Background Task] 타임라인 생성 완료: {len(generated_timelines)}개")
+
+        # 3. 기존 관계도 삭제
+        deleted_rel_count = db.query(CaseRelationship).filter(
+            CaseRelationship.case_id == case_id
+        ).delete()
+        deleted_person_count = db.query(CasePerson).filter(
+            CasePerson.case_id == case_id
+        ).delete()
+        db.commit()
+        print(f"[Background Task] 기존 관계도 삭제: {deleted_person_count}명, {deleted_rel_count}개 관계")
+
+        # 4. 관계도 생성
+        print(f"[Background Task] 관계도 생성 시작...")
+        relationship_service = RelationshipService(db=db, case_id=case_id)
+        relationship_data = await relationship_service.generate_relationship()
+        print(f"[Background Task] 관계도 생성 완료: {len(relationship_data['persons'])}명, {len(relationship_data['relationships'])}개 관계")
+
+        print(f"\n{'='*80}")
+        print(f"[Background Task] 타임라인 및 관계도 자동 생성 완료")
+        print(f"{'='*80}\n")
+
+    except Exception as e:
+        print(f"[Background Task] 에러 발생: {type(e).__name__} - {str(e)}")
+        import traceback
+        print(f"[Background Task] 트레이스백:\n{traceback.format_exc()}")
+        db.rollback()
+    finally:
+        db.close()
+
+
 @router.post("/{case_id}/analyze", response_model=CaseAnalyzeResponse)
 async def analyze_case(
     case_id: int,
+    background_tasks: BackgroundTasks,
     force: bool = False,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
@@ -235,6 +293,7 @@ async def analyze_case(
     - summary(사건 요약), facts(사실관계), claims(청구 내용) 추출
     - JWT 인증 필요
     - force=true: 캐시 무시하고 재분석 후 덮어쓰기
+    - 분석 완료 후 백그라운드에서 타임라인과 관계도 자동 생성
     """
     print("=" * 50)
     print(f"🔍 사건 분석 요청: case_id={case_id}, force={force}")
@@ -477,6 +536,10 @@ async def analyze_case(
             db.add(new_summary)
             print(f"💾 캐시 신규 저장 완료: case_id={case_id}")
         db.commit()
+
+        # 백그라운드에서 타임라인과 관계도 자동 생성
+        print(f"🚀 타임라인 및 관계도 자동 생성 예약: case_id={case_id}")
+        background_tasks.add_task(generate_timeline_and_relationships_background, case_id)
 
         return CaseAnalyzeResponse(
             summary=summary,

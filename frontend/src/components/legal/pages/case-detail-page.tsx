@@ -157,6 +157,9 @@ export function CaseDetailPage({
     legalBasis: "",
   });
 
+  // 메인 탭 상태
+  const [activeTab, setActiveTab] = useState<string>("overview");
+
   // 서브 탭 상태: "analysis" (AI 분석) | "original" (원문 보기)
   const [detailSubTab, setDetailSubTab] = useState<"analysis" | "original">("analysis");
 
@@ -1023,7 +1026,13 @@ export function CaseDetailPage({
       </div>
 
       {/* Tabs - New Structure */}
-      <Tabs defaultValue="overview" className="w-full">
+      <Tabs value={activeTab} onValueChange={(value) => {
+        setActiveTab(value);
+        // 타임라인 탭 클릭 시 데이터 로드
+        if (value === "timeline" && timelineEvents.length === 0) {
+          fetchTimeline();
+        }
+      }} className="w-full">
         <TabsList className="grid w-full grid-cols-4 h-10 p-1 bg-secondary/50">
           <TabsTrigger value="overview" className="text-sm">
             사건 개요
@@ -1584,7 +1593,7 @@ export function CaseDetailPage({
                 <div className="text-center py-12">
                   <p className="text-muted-foreground text-sm mb-4">타임라인 이벤트가 없습니다.</p>
                   <Button onClick={generateTimeline} variant="outline">
-                    샘플 타임라인 생성
+                    타임라인 생성
                   </Button>
                 </div>
               ) : timelineLayout === "linear" ? (
