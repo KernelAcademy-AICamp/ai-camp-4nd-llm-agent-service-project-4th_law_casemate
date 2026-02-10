@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
   type CaseData,
@@ -16,12 +16,19 @@ interface CaseApiResponse {
   title: string;
   client_name: string | null;
   client_role: string | null;
+  opponent_name: string | null;
+  opponent_role: string | null;
   case_type: string | null;
   status: string | null;
   created_at: string | null;
   incident_date: string | null;
   incident_date_end: string | null;
+  notification_date: string | null;
+  notification_date_end: string | null;
+  deadline_at: string | null;
+  deadline_at_end: string | null;
   description: string | null;
+  analyzed_at: string | null;
 }
 
 // 유사 판례 API 응답 타입
@@ -92,6 +99,8 @@ import {
   UserX,
   Circle,
 } from "lucide-react";
+import { Separator } from "@/components/ui/separator";
+import { AgentLoadingOverlay, type AgentStep } from "@/components/ui/agent-loading-overlay";
 import { RelationshipEditor } from "@/components/legal/relationship-editor";
 import { DocumentEditor } from "@/components/legal/document-editor";
 
@@ -163,6 +172,25 @@ export function CaseDetailPage({
   const [originalDescription, setOriginalDescription] = useState("");
   const [isSaving, setIsSaving] = useState(false);
 
+  // 원문 편집 폼 데이터 (등록 폼과 동일한 필드)
+  const [editFormData, setEditFormData] = useState({
+    title: "",
+    clientName: "",
+    clientRole: "",
+    opponentName: "",
+    opponentRole: "",
+    caseType: "",
+    incidentDate: "",
+    incidentDateEnd: "",
+    notificationDate: "",
+    notificationDateEnd: "",
+    deadline: "",
+    deadlineEnd: "",
+    description: "",
+  });
+  // 원본 API 응답 저장 (편집 진입 시 초기화용)
+  const [rawApiData, setRawApiData] = useState<CaseApiResponse | null>(null);
+
   // 증거 파일 상태 (API에서 가져옴)
   const [allEvidence, setAllEvidence] = useState<EvidenceData[]>([]);
   const [evidenceLoading, setEvidenceLoading] = useState(false);
@@ -210,6 +238,9 @@ export function CaseDetailPage({
 
         const data: CaseApiResponse = await response.json();
 
+        // 원본 API 응답 저장 (편집용)
+        setRawApiData(data);
+
         // API 응답을 CaseData 타입으로 변환
         const mappedCase: CaseData = {
           id: String(data.id),
@@ -220,7 +251,7 @@ export function CaseDetailPage({
           evidenceCount: 0,
           riskLevel: "medium" as const,
           client: data.client_name || "미지정",
-          opponent: "상대방",
+          opponent: data.opponent_name || "상대방",
           caseType: data.case_type || "미분류",
           claimAmount: 0,
           description: data.description || "",
@@ -230,48 +261,80 @@ export function CaseDetailPage({
         };
 
         setCaseData(mappedCase);
-
-        // 원문 상태 저장
         setOriginalDescription(data.description || "");
+        setIsLoadingCase(false); // 사건 데이터 로딩 완료 → 페이지 즉시 표시
 
-        // 사건 분석 API 호출 (description → summary, facts, claims 추출)
+        // AI 분석: analyzed_at 유무로 분기
+        // - 캐시 있음(analyzed_at 존재) → 오버레이 없이 조용히 로드
+        // - 캐시 없음(첫 분석) → 오버레이 표시 + GPT 호출
         if (data.description) {
-          try {
-            const analyzeResponse = await fetch(`http://localhost:8000/api/v1/cases/${id}/analyze`, {
-              method: "POST",
-              headers: {
-                Authorization: `Bearer ${token}`,
-              },
-            });
+          const hasCache = !!data.analyzed_at;
 
-            if (analyzeResponse.ok) {
-              const analyzed = await analyzeResponse.json();
-              setOverviewData({
-                summary: analyzed.summary || "",
-                facts: analyzed.facts || "",
-                claims: analyzed.claims || "",
-                legalBasis: "",
+          if (hasCache) {
+            try {
+              const analyzeResponse = await fetch(`http://localhost:8000/api/v1/cases/${id}/analyze`, {
+                method: "POST",
+                headers: { Authorization: `Bearer ${token}` },
               });
-              // 분석된 summary + facts로 관련 법령 검색
-              const searchQuery = `${analyzed.summary} ${analyzed.facts}`;
-              if (searchQuery.trim()) {
-                fetchRelatedLaws(searchQuery);
+              if (analyzeResponse.ok) {
+                const analyzed = await analyzeResponse.json();
+                setOverviewData({
+                  summary: analyzed.summary || "",
+                  facts: analyzed.facts || "",
+                  claims: analyzed.claims || "",
+                  legalBasis: "",
+                });
+                const searchQuery = `${analyzed.summary} ${analyzed.facts}`;
+                if (searchQuery.trim()) fetchRelatedLaws(searchQuery);
               }
+            } catch (err) {
+              console.error("캐시 분석 로드 실패:", err);
+              setOverviewData(prev => ({ ...prev, summary: data.description || "" }));
+              fetchRelatedLaws(data.description);
             }
-          } catch (analyzeErr) {
-            console.error("사건 분석 실패:", analyzeErr);
-            // 분석 실패 시 description 원본 사용
-            setOverviewData(prev => ({
-              ...prev,
-              summary: data.description || "",
-            }));
-            fetchRelatedLaws(data.description);
+          } else {
+            setIsRefreshing(true);
+            const steps = [...ANALYSIS_STEPS];
+            setAgentSteps(advanceStep(steps, 0));
+            try {
+              const t1 = setTimeout(() => setAgentSteps(prev => advanceStep(prev, 1)), 1200);
+              const t2 = setTimeout(() => setAgentSteps(prev => advanceStep(prev, 2)), 3000);
+              const analyzeResponse = await fetch(`http://localhost:8000/api/v1/cases/${id}/analyze`, {
+                method: "POST",
+                headers: { Authorization: `Bearer ${token}` },
+              });
+              clearTimeout(t1);
+              clearTimeout(t2);
+              if (analyzeResponse.ok) {
+                setAgentSteps(prev => advanceStep(prev, 3));
+                const analyzed = await analyzeResponse.json();
+                setOverviewData({
+                  summary: analyzed.summary || "",
+                  facts: analyzed.facts || "",
+                  claims: analyzed.claims || "",
+                  legalBasis: "",
+                });
+                setAgentSteps(prev => advanceStep(prev, 4));
+                const searchQuery = `${analyzed.summary} ${analyzed.facts}`;
+                if (searchQuery.trim()) fetchRelatedLaws(searchQuery);
+                await new Promise(r => setTimeout(r, 600));
+                setAgentSteps(prev => prev.map(s => ({ ...s, status: "done" as const })));
+              }
+            } catch (err) {
+              console.error("첫 분석 실패:", err);
+              setOverviewData(prev => ({ ...prev, summary: data.description || "" }));
+              fetchRelatedLaws(data.description);
+            } finally {
+              setTimeout(() => {
+                setIsRefreshing(false);
+                setAgentSteps([]);
+              }, 400);
+            }
           }
         }
       } catch (err) {
         console.error("사건 상세 조회 실패:", err);
         setCaseError(err instanceof Error ? err.message : "오류가 발생했습니다.");
-      } finally {
         setIsLoadingCase(false);
       }
     };
@@ -279,60 +342,84 @@ export function CaseDetailPage({
     fetchCase();
   }, [id, propCaseData]);
 
+  // 증거 파일 업로드 상태
+  const [isUploading, setIsUploading] = useState(false);
+  const [isDragOver, setIsDragOver] = useState(false);
+  const evidenceFileInputRef = useRef<HTMLInputElement>(null);
+
   // 증거 파일 목록 가져오기
-  useEffect(() => {
+  const fetchEvidences = useCallback(async () => {
     if (!caseData?.id) return;
+    setEvidenceLoading(true);
+    try {
+      const token = localStorage.getItem('access_token');
+      if (!token) return;
 
-    const fetchEvidences = async () => {
-      setEvidenceLoading(true);
-      try {
-        const token = localStorage.getItem('access_token');
-        if (!token) return;
-
-        const response = await fetch(
-          `http://localhost:8000/api/v1/evidence/list?case_id=${caseData.id}`,
-          {
-            headers: {
-              'Authorization': `Bearer ${token}`
-            }
-          }
-        );
-
-        if (response.ok) {
-          const data = await response.json();
-
-          // API 응답을 EvidenceData 형식으로 변환
-          const evidenceList: EvidenceData[] = data.files.map((file: any) => ({
-            id: String(file.evidence_id),
-            name: file.file_name,
-            type: file.file_type || '문서',
-            status: '제출완료',
-            date: file.created_at ? new Date(file.created_at).toISOString().split('T')[0] : '',
-            time: file.created_at ? new Date(file.created_at).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }) : '',
-            category: '증거',
-            aiSummary: '',
-            images: [],
-          }));
-
-          setAllEvidence(evidenceList);
-
-          // 사건 데이터에 증거 개수 업데이트
-          if (caseData) {
-            setCaseData({
-              ...caseData,
-              evidenceCount: evidenceList.length
-            });
+      const response = await fetch(
+        `http://localhost:8000/api/v1/evidence/list?case_id=${caseData.id}`,
+        {
+          headers: {
+            'Authorization': `Bearer ${token}`
           }
         }
-      } catch (error) {
-        console.error('증거 파일 조회 실패:', error);
-      } finally {
-        setEvidenceLoading(false);
-      }
-    };
+      );
 
-    fetchEvidences();
+      if (response.ok) {
+        const data = await response.json();
+
+        const evidenceList: EvidenceData[] = data.files.map((file: any) => ({
+          id: String(file.evidence_id),
+          name: file.file_name,
+          type: file.file_type || '문서',
+          status: '제출완료',
+          date: file.created_at ? new Date(file.created_at).toISOString().split('T')[0] : '',
+          time: file.created_at ? new Date(file.created_at).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }) : '',
+          category: '증거',
+          aiSummary: '',
+          images: [],
+        }));
+
+        setAllEvidence(evidenceList);
+
+        setCaseData(prev => prev ? { ...prev, evidenceCount: evidenceList.length } : null);
+      }
+    } catch (error) {
+      console.error('증거 파일 조회 실패:', error);
+    } finally {
+      setEvidenceLoading(false);
+    }
   }, [caseData?.id]);
+
+  useEffect(() => {
+    fetchEvidences();
+  }, [fetchEvidences]);
+
+  // 증거 파일 업로드 (직접 선택 또는 드래그&드롭)
+  const uploadEvidenceFiles = async (files: FileList | File[]) => {
+    const token = localStorage.getItem('access_token');
+    if (!token || !caseData?.id) return;
+
+    setIsUploading(true);
+    try {
+      for (const file of Array.from(files)) {
+        const formData = new FormData();
+        formData.append('file', file);
+
+        await fetch(`http://localhost:8000/api/v1/evidence/upload?case_id=${caseData.id}`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}` },
+          body: formData,
+        });
+      }
+      // 업로드 완료 후 목록 새로고침
+      await fetchEvidences();
+    } catch (error) {
+      console.error('증거 업로드 실패:', error);
+      alert('파일 업로드에 실패했습니다.');
+    } finally {
+      setIsUploading(false);
+    }
+  };
 
   // AI 분석 결과 저장 (summary, facts, claims)
   const saveSummary = async () => {
@@ -372,13 +459,37 @@ export function CaseDetailPage({
 
   // AI 분석 새로고침 (강제 재분석)
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [agentSteps, setAgentSteps] = useState<AgentStep[]>([]);
+
+  // 에이전트 step 진행 헬퍼
+  const advanceStep = (steps: AgentStep[], index: number): AgentStep[] =>
+    steps.map((s, i) =>
+      i < index ? { ...s, status: "done" }
+        : i === index ? { ...s, status: "in_progress" }
+          : s
+    );
+
+  const ANALYSIS_STEPS: AgentStep[] = [
+    { label: "사건 원문 확인 중…", status: "pending" },
+    { label: "사실관계 추출 중…", status: "pending" },
+    { label: "법적 쟁점 도출 중…", status: "pending" },
+    { label: "청구 내용 정리 중…", status: "pending" },
+    { label: "관련 법령 검색 중…", status: "pending" },
+  ];
 
   const refreshAnalysis = async () => {
     const token = localStorage.getItem("access_token");
     if (!token || !id) return;
 
     setIsRefreshing(true);
+    const steps = [...ANALYSIS_STEPS];
+    setAgentSteps(advanceStep(steps, 0));
+
     try {
+      // step 1→2: 분석 API 호출
+      const timer1 = setTimeout(() => setAgentSteps(prev => advanceStep(prev, 1)), 1500);
+      const timer2 = setTimeout(() => setAgentSteps(prev => advanceStep(prev, 2)), 4000);
+
       const response = await fetch(`http://localhost:8000/api/v1/cases/${id}/analyze?force=true`, {
         method: "POST",
         headers: {
@@ -386,10 +497,15 @@ export function CaseDetailPage({
         },
       });
 
+      clearTimeout(timer1);
+      clearTimeout(timer2);
+
       if (!response.ok) {
         throw new Error("AI 분석 새로고침 실패");
       }
 
+      // step 3: 결과 수신
+      setAgentSteps(prev => advanceStep(prev, 3));
       const analyzed = await response.json();
       setOverviewData({
         summary: analyzed.summary || "",
@@ -398,44 +514,80 @@ export function CaseDetailPage({
         legalBasis: "",
       });
 
+      // step 4: 법령 검색
+      setAgentSteps(prev => advanceStep(prev, 4));
       console.log("✅ AI 분석 새로고침 완료");
-      // 새로고침 후 관련 법령 재검색
       fetchRelatedLaws(`${analyzed.summary} ${analyzed.facts}`);
+
+      // 모두 완료
+      await new Promise(r => setTimeout(r, 800));
+      setAgentSteps(prev => prev.map(s => ({ ...s, status: "done" as const })));
     } catch (err) {
       console.error("AI 분석 새로고침 실패:", err);
       alert("AI 분석 새로고침에 실패했습니다.");
     } finally {
-      setIsRefreshing(false);
+      setTimeout(() => {
+        setIsRefreshing(false);
+        setAgentSteps([]);
+      }, 500);
     }
   };
 
-  // 원문(description) 저장
+  // 사건 정보 저장 (전체 필드)
   const saveDescription = async () => {
     const token = localStorage.getItem("access_token");
     if (!token || !id) return;
 
     setIsSaving(true);
     try {
+      const body: Record<string, string | null> = {
+        title: editFormData.title || null,
+        client_name: editFormData.clientName || null,
+        client_role: editFormData.clientRole || null,
+        opponent_name: editFormData.opponentName || null,
+        opponent_role: editFormData.opponentRole || null,
+        case_type: editFormData.caseType || null,
+        incident_date: editFormData.incidentDate || null,
+        incident_date_end: editFormData.incidentDateEnd || null,
+        notification_date: editFormData.notificationDate || null,
+        notification_date_end: editFormData.notificationDateEnd || null,
+        deadline_at: editFormData.deadline || null,
+        deadline_at_end: editFormData.deadlineEnd || null,
+        description: editFormData.description || null,
+      };
+
       const response = await fetch(`http://localhost:8000/api/v1/cases/${id}`, {
         method: "PUT",
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({
-          description: originalDescription,
-        }),
+        body: JSON.stringify(body),
       });
 
       if (!response.ok) {
-        throw new Error("원문 저장 실패");
+        throw new Error("사건 정보 저장 실패");
       }
 
-      console.log("✅ 원문 저장 완료");
+      const updatedData: CaseApiResponse = await response.json();
+      setRawApiData(updatedData);
+
+      console.log("✅ 사건 정보 저장 완료");
       // caseData도 업데이트
-      setCaseData(prev => prev ? { ...prev, description: originalDescription } : null);
+      setCaseData(prev => prev ? {
+        ...prev,
+        name: updatedData.title,
+        client: updatedData.client_name || "미지정",
+        opponent: updatedData.opponent_name || "상대방",
+        caseType: updatedData.case_type || "미분류",
+        description: updatedData.description || "",
+        period: updatedData.incident_date && updatedData.incident_date_end
+          ? `${updatedData.incident_date} ~ ${updatedData.incident_date_end}`
+          : updatedData.incident_date || "",
+      } : null);
+      setOriginalDescription(updatedData.description || "");
     } catch (err) {
-      console.error("원문 저장 실패:", err);
+      console.error("사건 정보 저장 실패:", err);
       alert("저장에 실패했습니다.");
     } finally {
       setIsSaving(false);
@@ -1115,6 +1267,24 @@ export function CaseDetailPage({
                       if (isEditingOriginal) {
                         saveDescription();
                       } else {
+                        // 편집 모드 진입 시 rawApiData로 폼 초기화
+                        if (rawApiData) {
+                          setEditFormData({
+                            title: rawApiData.title || "",
+                            clientName: rawApiData.client_name || "",
+                            clientRole: rawApiData.client_role || "",
+                            opponentName: rawApiData.opponent_name || "",
+                            opponentRole: rawApiData.opponent_role || "",
+                            caseType: rawApiData.case_type || "",
+                            incidentDate: rawApiData.incident_date || "",
+                            incidentDateEnd: rawApiData.incident_date_end || "",
+                            notificationDate: rawApiData.notification_date || "",
+                            notificationDateEnd: rawApiData.notification_date_end || "",
+                            deadline: rawApiData.deadline_at || "",
+                            deadlineEnd: rawApiData.deadline_at_end || "",
+                            description: rawApiData.description || "",
+                          });
+                        }
                         setIsEditingOriginal(true);
                       }
                     }}
@@ -1169,20 +1339,197 @@ export function CaseDetailPage({
 
               {/* 원문 보기 탭 콘텐츠 */}
               {detailSubTab === "original" && (
-                <div className="space-y-4">
+                <div className="space-y-6">
                   {isEditingOriginal ? (
-                    <Textarea
-                      value={originalDescription}
-                      onChange={(e) => setOriginalDescription(e.target.value)}
-                      rows={12}
-                      className="text-sm font-mono"
-                      placeholder="사건 내용 원문을 입력하세요..."
-                    />
+                    <>
+                      {/* 사건명 + 사건 종류 */}
+                      <div className="grid grid-cols-3 gap-4">
+                        <div className="col-span-2 space-y-2">
+                          <Label className="text-sm font-medium">사건명</Label>
+                          <Input
+                            value={editFormData.title}
+                            onChange={(e) => setEditFormData(prev => ({ ...prev, title: e.target.value }))}
+                            className="h-10"
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <Label className="text-sm font-medium">사건 종류</Label>
+                          <Select value={editFormData.caseType} onValueChange={(v) => setEditFormData(prev => ({ ...prev, caseType: v }))}>
+                            <SelectTrigger className="h-10">
+                              <SelectValue placeholder="종류 선택" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="형사">형사</SelectItem>
+                              <SelectItem value="민사">민사</SelectItem>
+                              <SelectItem value="가사">가사</SelectItem>
+                              <SelectItem value="행정">행정</SelectItem>
+                              <SelectItem value="기타">기타</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      </div>
+
+                      <Separator />
+
+                      {/* 의뢰인 */}
+                      <div className="space-y-2">
+                        <Label className="text-sm font-medium">의뢰인</Label>
+                        <div className="grid grid-cols-2 gap-4">
+                          <Input
+                            placeholder="이름 입력"
+                            value={editFormData.clientName}
+                            onChange={(e) => setEditFormData(prev => ({ ...prev, clientName: e.target.value }))}
+                            className="h-10"
+                          />
+                          <Select value={editFormData.clientRole} onValueChange={(v) => setEditFormData(prev => ({ ...prev, clientRole: v }))}>
+                            <SelectTrigger className="h-10">
+                              <SelectValue placeholder="역할 선택" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="고소인">고소인</SelectItem>
+                              <SelectItem value="피고소인">피고소인</SelectItem>
+                              <SelectItem value="피해자">피해자</SelectItem>
+                              <SelectItem value="참고인">참고인</SelectItem>
+                              <SelectItem value="원고">원고</SelectItem>
+                              <SelectItem value="피고">피고</SelectItem>
+                              <SelectItem value="기타">기타</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      </div>
+
+                      {/* 상대방 */}
+                      <div className="space-y-2">
+                        <Label className="text-sm font-medium">상대방</Label>
+                        <div className="grid grid-cols-2 gap-4">
+                          <Input
+                            placeholder="이름 입력"
+                            value={editFormData.opponentName}
+                            onChange={(e) => setEditFormData(prev => ({ ...prev, opponentName: e.target.value }))}
+                            className="h-10"
+                          />
+                          <Select value={editFormData.opponentRole} onValueChange={(v) => setEditFormData(prev => ({ ...prev, opponentRole: v }))}>
+                            <SelectTrigger className="h-10">
+                              <SelectValue placeholder="역할 선택" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="피고소인">피고소인</SelectItem>
+                              <SelectItem value="피고">피고</SelectItem>
+                              <SelectItem value="피해자">피해자</SelectItem>
+                              <SelectItem value="참고인">참고인</SelectItem>
+                              <SelectItem value="기타">기타</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      </div>
+
+                      <Separator />
+
+                      {/* 주요 일정 */}
+                      <div className="grid grid-cols-2 gap-x-4 gap-y-3">
+                        <div className="space-y-2">
+                          <Label className="text-sm font-medium">사건 발생일</Label>
+                          <div className="flex items-center gap-2">
+                            <Input type="date" value={editFormData.incidentDate} onChange={(e) => setEditFormData(prev => ({ ...prev, incidentDate: e.target.value }))} className="h-10" />
+                            <span className="text-muted-foreground text-xs">~</span>
+                            <Input type="date" value={editFormData.incidentDateEnd} onChange={(e) => setEditFormData(prev => ({ ...prev, incidentDateEnd: e.target.value }))} className="h-10" />
+                          </div>
+                        </div>
+                        <div className="space-y-2">
+                          <Label className="text-sm font-medium">인지일/통지일</Label>
+                          <div className="flex items-center gap-2">
+                            <Input type="date" value={editFormData.notificationDate} onChange={(e) => setEditFormData(prev => ({ ...prev, notificationDate: e.target.value }))} className="h-10" />
+                            <span className="text-muted-foreground text-xs">~</span>
+                            <Input type="date" value={editFormData.notificationDateEnd} onChange={(e) => setEditFormData(prev => ({ ...prev, notificationDateEnd: e.target.value }))} className="h-10" />
+                          </div>
+                        </div>
+                        <div className="space-y-2">
+                          <Label className="text-sm font-medium">마감/기한</Label>
+                          <div className="flex items-center gap-2">
+                            <Input type="date" value={editFormData.deadline} onChange={(e) => setEditFormData(prev => ({ ...prev, deadline: e.target.value }))} className="h-10" />
+                            <span className="text-muted-foreground text-xs">~</span>
+                            <Input type="date" value={editFormData.deadlineEnd} onChange={(e) => setEditFormData(prev => ({ ...prev, deadlineEnd: e.target.value }))} className="h-10" />
+                          </div>
+                        </div>
+                      </div>
+
+                      <Separator />
+
+                      {/* 상담 내용 */}
+                      <div className="space-y-2">
+                        <Label className="text-sm font-medium">상담 내용</Label>
+                        <Textarea
+                          value={editFormData.description}
+                          onChange={(e) => setEditFormData(prev => ({ ...prev, description: e.target.value }))}
+                          rows={8}
+                          className="text-sm"
+                          placeholder="사건 내용을 입력하세요..."
+                        />
+                      </div>
+                    </>
                   ) : (
-                    <div className="p-4 bg-secondary/30 rounded-lg border border-border/60">
-                      <p className="text-sm text-muted-foreground whitespace-pre-wrap leading-[1.8]">
-                        {originalDescription || "원문이 입력되지 않았습니다."}
-                      </p>
+                    <div className="space-y-4">
+                      {/* 기본 정보 읽기 모드 */}
+                      <div className="grid grid-cols-3 gap-4">
+                        <div className="col-span-2 space-y-1">
+                          <p className="text-xs text-muted-foreground">사건명</p>
+                          <p className="text-sm font-medium">{rawApiData?.title || "-"}</p>
+                        </div>
+                        <div className="space-y-1">
+                          <p className="text-xs text-muted-foreground">사건 종류</p>
+                          <p className="text-sm font-medium">{rawApiData?.case_type || "-"}</p>
+                        </div>
+                      </div>
+                      <Separator />
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className="space-y-1">
+                          <p className="text-xs text-muted-foreground">의뢰인</p>
+                          <p className="text-sm font-medium">
+                            {rawApiData?.client_name || "-"}
+                            {rawApiData?.client_role && <span className="text-muted-foreground ml-2">({rawApiData.client_role})</span>}
+                          </p>
+                        </div>
+                        <div className="space-y-1">
+                          <p className="text-xs text-muted-foreground">상대방</p>
+                          <p className="text-sm font-medium">
+                            {rawApiData?.opponent_name || "-"}
+                            {rawApiData?.opponent_role && <span className="text-muted-foreground ml-2">({rawApiData.opponent_role})</span>}
+                          </p>
+                        </div>
+                      </div>
+                      <Separator />
+                      <div className="grid grid-cols-3 gap-4">
+                        <div className="space-y-1">
+                          <p className="text-xs text-muted-foreground">사건 발생일</p>
+                          <p className="text-sm font-medium">
+                            {rawApiData?.incident_date || "-"}
+                            {rawApiData?.incident_date_end && ` ~ ${rawApiData.incident_date_end}`}
+                          </p>
+                        </div>
+                        <div className="space-y-1">
+                          <p className="text-xs text-muted-foreground">인지일/통지일</p>
+                          <p className="text-sm font-medium">
+                            {rawApiData?.notification_date || "-"}
+                            {rawApiData?.notification_date_end && ` ~ ${rawApiData.notification_date_end}`}
+                          </p>
+                        </div>
+                        <div className="space-y-1">
+                          <p className="text-xs text-muted-foreground">마감/기한</p>
+                          <p className="text-sm font-medium">
+                            {rawApiData?.deadline_at || "-"}
+                            {rawApiData?.deadline_at_end && ` ~ ${rawApiData.deadline_at_end}`}
+                          </p>
+                        </div>
+                      </div>
+                      <Separator />
+                      <div className="space-y-1">
+                        <p className="text-xs text-muted-foreground">상담 내용</p>
+                        <div className="p-4 bg-secondary/30 rounded-lg border border-border/60">
+                          <p className="text-sm text-muted-foreground whitespace-pre-wrap leading-[1.8]">
+                            {originalDescription || "원문이 입력되지 않았습니다."}
+                          </p>
+                        </div>
+                      </div>
                     </div>
                   )}
                 </div>
@@ -1190,7 +1537,14 @@ export function CaseDetailPage({
 
               {/* AI 분석 탭 콘텐츠 */}
               {detailSubTab === "analysis" && (
-                <>
+                <div
+                  className="relative"
+                  style={isRefreshing && agentSteps.length > 0 ? { maxHeight: "70vh", overflow: "hidden" } : undefined}
+                >
+                  {/* AI 분석 에이전트 로딩 오버레이 */}
+                  {isRefreshing && agentSteps.length > 0 && (
+                    <AgentLoadingOverlay steps={agentSteps} />
+                  )}
                   {/* Basic Info */}
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pb-6 border-b border-border/60">
                     <div className="space-y-1">
@@ -1363,13 +1717,25 @@ export function CaseDetailPage({
                       )}
                     </div>
                   </div>
-                </>
+                </div>
               )}
             </CardContent>
           </Card>
 
-          {/* Evidence Management - Compact List */}
-          <Card className="border-border/60">
+          {/* Evidence Management - Compact List + Upload */}
+          <Card
+            className={`border-border/60 transition-colors ${isDragOver ? 'border-primary border-2 bg-primary/5' : ''}`}
+            onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); setIsDragOver(true); }}
+            onDragLeave={(e) => { e.preventDefault(); e.stopPropagation(); setIsDragOver(false); }}
+            onDrop={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              setIsDragOver(false);
+              if (e.dataTransfer.files.length > 0) {
+                uploadEvidenceFiles(e.dataTransfer.files);
+              }
+            }}
+          >
             <CardHeader className="flex flex-row items-center justify-between pb-3">
               <div className="flex items-center gap-2">
                 <CardTitle className="text-base font-medium">증거 목록</CardTitle>
@@ -1377,12 +1743,21 @@ export function CaseDetailPage({
                   {allEvidence.length}건
                 </Badge>
               </div>
-              <Button size="sm" variant="outline" onClick={() => navigate("/evidence/upload")}>
-                <Upload className="h-4 w-4 mr-2" />
-                업로드
-              </Button>
+              <input
+                ref={evidenceFileInputRef}
+                type="file"
+                multiple
+                className="hidden"
+                onChange={(e) => {
+                  if (e.target.files && e.target.files.length > 0) {
+                    uploadEvidenceFiles(e.target.files);
+                    e.target.value = '';
+                  }
+                }}
+              />
             </CardHeader>
-            <CardContent className="pt-0">
+            <CardContent className="pt-0 space-y-3">
+              {/* 증거 목록 테이블 (항상 표시) */}
               <div className="border border-border/60 rounded-lg overflow-hidden">
                 <table className="w-full text-sm">
                   <thead>
@@ -1394,29 +1769,57 @@ export function CaseDetailPage({
                     </tr>
                   </thead>
                   <tbody>
-                    {allEvidence.map((evidence, idx) => (
-                      <tr
-                        key={evidence.id}
-                        onClick={() => navigate(`/evidence/${evidence.id}`)}
-                        className={`cursor-pointer hover:bg-secondary/30 transition-colors ${idx !== allEvidence.length - 1 ? 'border-b border-border/40' : ''}`}
-                      >
-                        <td className="px-3 py-2.5">
-                          <div className="flex items-center gap-2">
-                            <FileCheck className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-                            <span className="font-medium truncate max-w-[180px]">{evidence.name}</span>
-                          </div>
-                        </td>
-                        <td className="px-3 py-2.5 text-muted-foreground hidden sm:table-cell">{evidence.type}</td>
-                        <td className="px-3 py-2.5 text-muted-foreground hidden md:table-cell">{evidence.date} {evidence.time}</td>
-                        <td className="px-3 py-2.5">
-                          <Badge variant="outline" className="text-xs font-normal py-0 h-5">
-                            {evidence.status}
-                          </Badge>
+                    {allEvidence.length === 0 ? (
+                      <tr>
+                        <td colSpan={4} className="px-3 py-6 text-center text-sm text-muted-foreground">
+                          등록된 증거가 없습니다.
                         </td>
                       </tr>
-                    ))}
+                    ) : (
+                      allEvidence.map((evidence, idx) => (
+                        <tr
+                          key={evidence.id}
+                          onClick={() => navigate(`/evidence/${evidence.id}`)}
+                          className={`cursor-pointer hover:bg-secondary/30 transition-colors ${idx !== allEvidence.length - 1 ? 'border-b border-border/40' : ''}`}
+                        >
+                          <td className="px-3 py-2.5">
+                            <div className="flex items-center gap-2">
+                              <FileCheck className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                              <span className="font-medium truncate max-w-[180px]">{evidence.name}</span>
+                            </div>
+                          </td>
+                          <td className="px-3 py-2.5 text-muted-foreground hidden sm:table-cell">{evidence.type}</td>
+                          <td className="px-3 py-2.5 text-muted-foreground hidden md:table-cell">{evidence.date} {evidence.time}</td>
+                          <td className="px-3 py-2.5">
+                            <Badge variant="outline" className="text-xs font-normal py-0 h-5">
+                              {evidence.status}
+                            </Badge>
+                          </td>
+                        </tr>
+                      ))
+                    )}
                   </tbody>
                 </table>
+              </div>
+
+              {/* 드래그&드롭 / 클릭 업로드 영역 */}
+              <div
+                className={`flex items-center justify-center gap-2 rounded-lg border-2 border-dashed py-4 text-sm transition-colors ${
+                  isUploading
+                    ? 'border-primary/30 bg-primary/5 text-primary cursor-wait'
+                    : isDragOver
+                      ? 'border-primary bg-primary/5 text-primary cursor-copy'
+                      : 'border-border/60 text-muted-foreground hover:border-primary/40 hover:bg-primary/5 cursor-pointer'
+                }`}
+                onClick={() => !isUploading && evidenceFileInputRef.current?.click()}
+              >
+                {isUploading ? (
+                  <><Loader2 className="h-4 w-4 animate-spin" /> 업로드 중...</>
+                ) : isDragOver ? (
+                  <><Upload className="h-4 w-4" /> 여기에 파일을 놓으세요</>
+                ) : (
+                  <><Upload className="h-4 w-4" /> 클릭하거나 파일을 드래그하여 증거 추가</>
+                )}
               </div>
             </CardContent>
           </Card>

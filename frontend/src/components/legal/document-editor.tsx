@@ -43,6 +43,7 @@ import {
 import { cn } from "@/lib/utils";
 import { TiptapEditor } from "./tiptap-editor";
 import type { Editor } from "@tiptap/react";
+import { AgentLoadingOverlay, type AgentStep } from "@/components/ui/agent-loading-overlay";
 
 interface DocumentEditorProps {
   caseData: CaseData;
@@ -399,6 +400,22 @@ interface DocumentItem {
   updated_at: string;
 }
 
+const DRAFT_STEPS: AgentStep[] = [
+  { label: "사건 기록 분석 중…", status: "pending" },
+  { label: "당사자 정보 대조 중…", status: "pending" },
+  { label: "고소장 양식 기본 정보 기입 중…", status: "pending" },
+  { label: "관련 판례 및 법조문 참조 중…", status: "pending" },
+  { label: "범죄사실 및 고소 취지 작성 중…", status: "pending" },
+  { label: "법적 논리 구성 및 초안 검토 중…", status: "pending" },
+];
+
+function advanceDraftStep(steps: AgentStep[], idx: number): AgentStep[] {
+  return steps.map((s, i) => ({
+    ...s,
+    status: i < idx ? "done" : i === idx ? "in_progress" : s.status,
+  }));
+}
+
 export function DocumentEditor({ caseData }: DocumentEditorProps) {
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
   const [activeDocId, setActiveDocId] = useState<string | null>(null);
@@ -412,6 +429,7 @@ export function DocumentEditor({ caseData }: DocumentEditorProps) {
   const [rightCollapsed, setRightCollapsed] = useState(false);
   const [editor, setEditor] = useState<Editor | null>(null);
   const [contentSource, setContentSource] = useState<"template" | "ai" | "user">("template");
+  const [draftAgentSteps, setDraftAgentSteps] = useState<AgentStep[]>([]);
 
   // 양쪽 패널 리사이즈
   const [leftPanelWidth, setLeftPanelWidth] = useState(224);
@@ -532,38 +550,63 @@ export function DocumentEditor({ caseData }: DocumentEditorProps) {
     if (selectedTemplate !== "complaint") return;
 
     setIsGenerating(true);
+    setDraftAgentSteps(advanceDraftStep([...DRAFT_STEPS], 0));
 
     try {
-      // ── 1단계: DB 컨텍스트로 구조화 필드 채움 (API 호출 없음) ──
+      // ── Step 0: 사건 기록 분석 중 → DB 컨텍스트 조회 ──
       const ctxRes = await fetch(`${API_BASE}/context/${caseData.id}`, {
         headers: getAuthHeaders(),
       });
       if (!ctxRes.ok) throw new Error("사건 데이터를 불러올 수 없습니다.");
 
+      // ── Step 1: 당사자 정보 대조 중 ──
+      setDraftAgentSteps(prev => advanceDraftStep(prev, 1));
+      await new Promise(r => setTimeout(r, 1200));
+
+      // ── Step 2: 고소장 양식 기본 정보 기입 중 ──
+      setDraftAgentSteps(prev => advanceDraftStep(prev, 2));
       const context: CaseContext = await ctxRes.json();
       let filledHtml = buildFilledComplaint(context);
       setDocumentTitle(`고소장 - ${context.case.title}`);
       setDocumentContent(filledHtml);
       setContentSource("ai");
+      await new Promise(r => setTimeout(r, 800));
 
-      // ── 2단계: GPT로 서술형 섹션 생성 (1회 호출) ──
+      // ── Step 3~4: GPT 서술형 섹션 생성 (긴 대기) ──
+      // 타이머로 중간 스텝 자동 진행하여 인상적으로 연출
+      setDraftAgentSteps(prev => advanceDraftStep(prev, 3));
+      const timer4 = setTimeout(() => setDraftAgentSteps(prev => advanceDraftStep(prev, 4)), 4000);
+
       const sectionsRes = await fetch(`${API_BASE}/generate-sections`, {
         method: "POST",
         headers: getAuthHeaders(),
         body: JSON.stringify({ case_id: Number(caseData.id) }),
       });
 
+      clearTimeout(timer4);
+
       if (sectionsRes.ok) {
         const sections: GeneratedSections = await sectionsRes.json();
         filledHtml = insertNarrativeSections(filledHtml, sections);
         setDocumentContent(filledHtml);
       }
+
+      // ── Step 5: 법적 논리 구성 및 초안 검토 중 ──
+      setDraftAgentSteps(prev => advanceDraftStep(prev, 5));
+      await new Promise(r => setTimeout(r, 1000));
+
+      // ── 모두 완료 ──
+      setDraftAgentSteps(prev => prev.map(s => ({ ...s, status: "done" as const })));
+      await new Promise(r => setTimeout(r, 500));
     } catch (err) {
       console.error("문서 생성 오류:", err);
       alert(err instanceof Error ? err.message : "문서 생성 중 오류가 발생했습니다.");
     } finally {
-      setIsGenerating(false);
-      setIsSaved(false);
+      setTimeout(() => {
+        setIsGenerating(false);
+        setDraftAgentSteps([]);
+        setIsSaved(false);
+      }, 300);
     }
   };
 
@@ -979,7 +1022,10 @@ hr{border:none;border-top:1px solid #000;margin:10pt 0}
         </div>
 
         {/* Editor Area */}
-        <div className="flex-1 overflow-hidden pt-3">
+        <div className="relative flex-1 overflow-hidden pt-3" style={isGenerating && draftAgentSteps.length > 0 ? { maxHeight: "70vh", overflow: "hidden" } : undefined}>
+          {isGenerating && draftAgentSteps.length > 0 && (
+            <AgentLoadingOverlay steps={draftAgentSteps} />
+          )}
           <TiptapEditor
             initialContent={documentContent}
             onChange={(md) => {

@@ -41,6 +41,8 @@ class CaseCreateRequest(BaseModel):
     deadline_at: Optional[date] = None
     deadline_at_end: Optional[date] = None
     description: Optional[str] = None
+    opponent_name: Optional[str] = None
+    opponent_role: Optional[str] = None
 
 
 class CaseResponse(BaseModel):
@@ -57,8 +59,11 @@ class CaseResponse(BaseModel):
     deadline_at: Optional[date] = None
     deadline_at_end: Optional[date] = None
     description: Optional[str] = None
+    opponent_name: Optional[str] = None
+    opponent_role: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+    analyzed_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True
@@ -114,6 +119,8 @@ async def create_case(
             deadline_at=request.deadline_at,
             deadline_at_end=request.deadline_at_end,
             description=request.description,
+            opponent_name=request.opponent_name,
+            opponent_role=request.opponent_role,
         )
 
         db.add(new_case)
@@ -174,7 +181,7 @@ async def get_cases(
         raise HTTPException(status_code=500, detail=f"사건 목록 조회 실패: {str(e)}")
 
 
-@router.get("/{case_id}", response_model=CaseResponse)
+@router.get("/{case_id}")
 async def get_case_detail(
     case_id: int,
     db: Session = Depends(get_db),
@@ -198,10 +205,15 @@ async def get_case_detail(
         if case.law_firm_id != current_user.firm_id:
             raise HTTPException(status_code=403, detail="해당 사건에 접근할 권한이 없습니다")
 
-        print(f"✅ 사건 상세 조회 완료: {case.title}")
-        print(f"   description: {case.description[:100] if case.description else '(비어있음)'}...")
+        # 분석 캐시 존재 여부 확인
+        cached = db.query(CaseAnalysis).filter(CaseAnalysis.case_id == case_id).first()
+        analyzed_at = cached.analyzed_at if cached else None
 
-        return case
+        print(f"✅ 사건 상세 조회 완료: {case.title}, analyzed_at={analyzed_at}")
+
+        # ORM → CaseResponse dict에 analyzed_at 주입
+        response = CaseResponse.model_validate(case)
+        return response.model_dump() | {"analyzed_at": analyzed_at.isoformat() if analyzed_at else None}
 
     except HTTPException:
         raise
@@ -481,8 +493,20 @@ async def analyze_case(
 # ==================== 사건 수정 API ====================
 
 class CaseUpdateRequest(BaseModel):
-    """사건 원문(description) 수정 요청"""
-    description: str
+    """사건 정보 수정 요청 (전달된 필드만 업데이트)"""
+    title: Optional[str] = None
+    client_name: Optional[str] = None
+    client_role: Optional[str] = None
+    opponent_name: Optional[str] = None
+    opponent_role: Optional[str] = None
+    case_type: Optional[str] = None
+    incident_date: Optional[date] = None
+    incident_date_end: Optional[date] = None
+    notification_date: Optional[date] = None
+    notification_date_end: Optional[date] = None
+    deadline_at: Optional[date] = None
+    deadline_at_end: Optional[date] = None
+    description: Optional[str] = None
 
 
 @router.put("/{case_id}", response_model=CaseResponse)
@@ -493,13 +517,14 @@ async def update_case(
     current_user: User = Depends(get_current_user)
 ):
     """
-    사건 원문(description) 수정
+    사건 정보 수정
 
     - JWT 인증 필요
     - 같은 law_firm_id 소속만 수정 가능
+    - 전달된 필드만 업데이트 (None이 아닌 필드)
     """
     print("=" * 50)
-    print(f"📝 사건 원문 수정 요청: case_id={case_id}")
+    print(f"📝 사건 정보 수정 요청: case_id={case_id}")
     print("=" * 50)
 
     try:
@@ -511,26 +536,31 @@ async def update_case(
         if case.law_firm_id != current_user.firm_id:
             raise HTTPException(status_code=403, detail="해당 사건에 접근할 권한이 없습니다")
 
-        # 원문 업데이트
-        case.description = request.description
+        # 전달된 필드만 업데이트
+        update_data = request.model_dump(exclude_none=True)
+        description_changed = "description" in update_data and update_data["description"] != case.description
 
-        # 원문 변경 시 분석 캐시 전체 무효화
-        case_analysis = db.query(CaseAnalysis).filter(CaseAnalysis.case_id == case_id).first()
-        if case_analysis:
-            case_analysis.summary = None
-            case_analysis.facts = None
-            case_analysis.claims = None
-            case_analysis.legal_keywords = None
-            case_analysis.legal_laws = None
-            case_analysis.legal_search_results = None
-            case_analysis.description_hash = None
-            case_analysis.analyzed_at = None
-            print(f"🗑️ 분석 캐시 무효화 완료: case_id={case_id}")
+        for field, value in update_data.items():
+            setattr(case, field, value)
+
+        # 원문(description) 변경 시에만 분석 캐시 무효화
+        if description_changed:
+            case_analysis = db.query(CaseAnalysis).filter(CaseAnalysis.case_id == case_id).first()
+            if case_analysis:
+                case_analysis.summary = None
+                case_analysis.facts = None
+                case_analysis.claims = None
+                case_analysis.legal_keywords = None
+                case_analysis.legal_laws = None
+                case_analysis.legal_search_results = None
+                case_analysis.description_hash = None
+                case_analysis.analyzed_at = None
+                print(f"🗑️ 분석 캐시 무효화 완료: case_id={case_id}")
 
         db.commit()
         db.refresh(case)
 
-        print(f"✅ 사건 원문 수정 완료: case_id={case_id}")
+        print(f"✅ 사건 정보 수정 완료: case_id={case_id}, 수정 필드: {list(update_data.keys())}")
 
         return case
 

@@ -30,7 +30,6 @@ import {
   Upload,
   X,
   Plus,
-  Calendar,
   File,
   Trash2,
   FolderOpen,
@@ -151,6 +150,8 @@ export function NewCasePage({ }: NewCasePageProps) {
   const [caseType, setCaseType] = useState("");
   const [clientName, setClientName] = useState("");
   const [clientRole, setClientRole] = useState("");
+  const [opponentName, setOpponentName] = useState("");
+  const [opponentRole, setOpponentRole] = useState("");
   const [incidentDate, setIncidentDate] = useState("");
   const [incidentDateEnd, setIncidentDateEnd] = useState("");
   const [isIncidentPeriod, setIsIncidentPeriod] = useState(false);
@@ -499,6 +500,8 @@ export function NewCasePage({ }: NewCasePageProps) {
           case_type: caseType || null,
           client_name: clientName || null,
           client_role: clientRole || null,
+          opponent_name: opponentName || null,
+          opponent_role: opponentRole || null,
           incident_date: incidentDate || null,
           incident_date_end: isIncidentPeriod ? incidentDateEnd || null : null,
           notification_date: notificationDate || null,
@@ -600,7 +603,7 @@ export function NewCasePage({ }: NewCasePageProps) {
   const { folders: currentFolders, files: currentFiles } = getCurrentFolderContent();
 
   return (
-    <div className="max-w-3xl mx-auto space-y-6">
+    <div className="w-full max-w-[960px] mx-auto space-y-6">
       {/* Header */}
       <div className="space-y-4">
         <Button
@@ -664,46 +667,44 @@ export function NewCasePage({ }: NewCasePageProps) {
               사건 및 의뢰인 정보를 입력해주세요. 모든 항목은 선택사항입니다.
             </CardDescription>
           </CardHeader>
-          <CardContent className="space-y-5">
-            {/* 사건명 + 사건 종류 (같은 줄) */}
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label htmlFor="caseName" className="text-sm font-medium">
-                  사건명
-                </Label>
-                <Input
-                  id="caseName"
-                  placeholder="예: 온라인 명예훼손 손해배상"
-                  value={caseName}
-                  onChange={(e) => setCaseName(e.target.value)}
-                  className="h-10"
-                />
+          <CardContent className="space-y-6">
+            {/* 사건명 + 사건 종류 */}
+            <div className="grid grid-cols-3 gap-4">
+                <div className="col-span-2 space-y-2">
+                  <Label htmlFor="caseName" className="text-sm font-medium">
+                    사건명
+                  </Label>
+                  <Input
+                    id="caseName"
+                    placeholder="예: 온라인 명예훼손 손해배상"
+                    value={caseName}
+                    onChange={(e) => setCaseName(e.target.value)}
+                    className="h-10"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label className="text-sm font-medium">사건 종류</Label>
+                  <Select value={caseType} onValueChange={setCaseType}>
+                    <SelectTrigger className="h-10">
+                      <SelectValue placeholder="종류 선택" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="형사">형사</SelectItem>
+                      <SelectItem value="민사">민사</SelectItem>
+                      <SelectItem value="가사">가사</SelectItem>
+                      <SelectItem value="행정">행정</SelectItem>
+                      <SelectItem value="기타">기타</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
               </div>
-              <div className="space-y-2">
-                <Label className="text-sm font-medium">사건 종류</Label>
-                <Select value={caseType} onValueChange={setCaseType}>
-                  <SelectTrigger className="h-10">
-                    <SelectValue placeholder="종류 선택" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="형사">형사</SelectItem>
-                    <SelectItem value="민사">민사</SelectItem>
-                    <SelectItem value="가사">가사</SelectItem>
-                    <SelectItem value="행정">행정</SelectItem>
-                    <SelectItem value="기타">기타</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
 
             <Separator />
 
-            {/* 의뢰인 이름 + 의뢰인 역할 (같은 줄) */}
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label htmlFor="clientName" className="text-sm font-medium">
-                  의뢰인 이름
-                </Label>
+            {/* 의뢰인 */}
+            <div className="space-y-2">
+              <Label className="text-sm font-medium">의뢰인</Label>
+              <div className="grid grid-cols-2 gap-4">
                 <Input
                   id="clientName"
                   placeholder="이름 입력"
@@ -711,9 +712,6 @@ export function NewCasePage({ }: NewCasePageProps) {
                   onChange={(e) => setClientName(e.target.value)}
                   className="h-10"
                 />
-              </div>
-              <div className="space-y-2">
-                <Label className="text-sm font-medium">의뢰인 역할</Label>
                 <Select value={clientRole} onValueChange={setClientRole}>
                   <SelectTrigger className="h-10">
                     <SelectValue placeholder="역할 선택" />
@@ -731,138 +729,114 @@ export function NewCasePage({ }: NewCasePageProps) {
               </div>
             </div>
 
+            {/* 상대방 */}
+            <div className="space-y-2">
+              <Label className="text-sm font-medium">상대방</Label>
+              <div className="grid grid-cols-2 gap-4">
+                <Input
+                  id="opponentName"
+                  placeholder="이름 입력"
+                  value={opponentName}
+                  onChange={(e) => setOpponentName(e.target.value)}
+                  className="h-10"
+                />
+                <Select value={opponentRole} onValueChange={setOpponentRole}>
+                  <SelectTrigger className="h-10">
+                    <SelectValue placeholder="역할 선택" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="피고소인">피고소인</SelectItem>
+                    <SelectItem value="피고">피고</SelectItem>
+                    <SelectItem value="피해자">피해자</SelectItem>
+                    <SelectItem value="참고인">참고인</SelectItem>
+                    <SelectItem value="기타">기타</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
             <Separator />
 
-            {/* 사건 발생일 */}
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <Label className="text-sm font-medium flex items-center gap-2">
-                  <Calendar className="h-3.5 w-3.5 text-muted-foreground" />
-                  사건 발생일
-                </Label>
-                <div className="flex items-center gap-2">
-                  <Checkbox
-                    id="incidentPeriod"
-                    checked={isIncidentPeriod}
-                    onCheckedChange={(checked) =>
-                      setIsIncidentPeriod(checked === true)
-                    }
-                  />
-                  <Label
-                    htmlFor="incidentPeriod"
-                    className="text-xs text-muted-foreground cursor-pointer"
-                  >
-                    기간으로 입력
-                  </Label>
+            {/* 주요 일정 */}
+            <div className="grid grid-cols-2 gap-x-4 gap-y-3">
+                {/* 사건 발생일 */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <Label className="text-sm font-medium">사건 발생일</Label>
+                    <div className="flex items-center gap-1.5">
+                      <Checkbox
+                        id="incidentPeriod"
+                        checked={isIncidentPeriod}
+                        onCheckedChange={(checked) => setIsIncidentPeriod(checked === true)}
+                        className="h-3.5 w-3.5"
+                      />
+                      <Label htmlFor="incidentPeriod" className="text-[11px] text-muted-foreground cursor-pointer">
+                        기간
+                      </Label>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Input type="date" value={incidentDate} onChange={(e) => setIncidentDate(e.target.value)} className="h-10" />
+                    {isIncidentPeriod && (
+                      <>
+                        <span className="text-muted-foreground text-xs">~</span>
+                        <Input type="date" value={incidentDateEnd} onChange={(e) => setIncidentDateEnd(e.target.value)} className="h-10" />
+                      </>
+                    )}
+                  </div>
                 </div>
-              </div>
-              <div className="flex items-center gap-2">
-                <Input
-                  type="date"
-                  value={incidentDate}
-                  onChange={(e) => setIncidentDate(e.target.value)}
-                  className="h-10"
-                />
-                {isIncidentPeriod && (
-                  <>
-                    <span className="text-muted-foreground">~</span>
-                    <Input
-                      type="date"
-                      value={incidentDateEnd}
-                      onChange={(e) => setIncidentDateEnd(e.target.value)}
-                      className="h-10"
-                    />
-                  </>
-                )}
-              </div>
-            </div>
-
-            {/* 인지일/통지일 */}
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <Label className="text-sm font-medium flex items-center gap-2">
-                  <Calendar className="h-3.5 w-3.5 text-muted-foreground" />
-                  인지일/통지일
-                </Label>
-                <div className="flex items-center gap-2">
-                  <Checkbox
-                    id="notificationPeriod"
-                    checked={isNotificationPeriod}
-                    onCheckedChange={(checked) =>
-                      setIsNotificationPeriod(checked === true)
-                    }
-                  />
-                  <Label
-                    htmlFor="notificationPeriod"
-                    className="text-xs text-muted-foreground cursor-pointer"
-                  >
-                    기간으로 입력
-                  </Label>
+                {/* 인지일/통지일 */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <Label className="text-sm font-medium">인지일/통지일</Label>
+                    <div className="flex items-center gap-1.5">
+                      <Checkbox
+                        id="notificationPeriod"
+                        checked={isNotificationPeriod}
+                        onCheckedChange={(checked) => setIsNotificationPeriod(checked === true)}
+                        className="h-3.5 w-3.5"
+                      />
+                      <Label htmlFor="notificationPeriod" className="text-[11px] text-muted-foreground cursor-pointer">
+                        기간
+                      </Label>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Input type="date" value={notificationDate} onChange={(e) => setNotificationDate(e.target.value)} className="h-10" />
+                    {isNotificationPeriod && (
+                      <>
+                        <span className="text-muted-foreground text-xs">~</span>
+                        <Input type="date" value={notificationDateEnd} onChange={(e) => setNotificationDateEnd(e.target.value)} className="h-10" />
+                      </>
+                    )}
+                  </div>
                 </div>
-              </div>
-              <div className="flex items-center gap-2">
-                <Input
-                  type="date"
-                  value={notificationDate}
-                  onChange={(e) => setNotificationDate(e.target.value)}
-                  className="h-10"
-                />
-                {isNotificationPeriod && (
-                  <>
-                    <span className="text-muted-foreground">~</span>
-                    <Input
-                      type="date"
-                      value={notificationDateEnd}
-                      onChange={(e) => setNotificationDateEnd(e.target.value)}
-                      className="h-10"
-                    />
-                  </>
-                )}
-              </div>
-            </div>
-
-            {/* 마감/기한 */}
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <Label className="text-sm font-medium flex items-center gap-2">
-                  <Calendar className="h-3.5 w-3.5 text-muted-foreground" />
-                  마감/기한
-                </Label>
-                <div className="flex items-center gap-2">
-                  <Checkbox
-                    id="deadlinePeriod"
-                    checked={isDeadlinePeriod}
-                    onCheckedChange={(checked) =>
-                      setIsDeadlinePeriod(checked === true)
-                    }
-                  />
-                  <Label
-                    htmlFor="deadlinePeriod"
-                    className="text-xs text-muted-foreground cursor-pointer"
-                  >
-                    기간으로 입력
-                  </Label>
+                {/* 마감/기한 */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <Label className="text-sm font-medium">마감/기한</Label>
+                    <div className="flex items-center gap-1.5">
+                      <Checkbox
+                        id="deadlinePeriod"
+                        checked={isDeadlinePeriod}
+                        onCheckedChange={(checked) => setIsDeadlinePeriod(checked === true)}
+                        className="h-3.5 w-3.5"
+                      />
+                      <Label htmlFor="deadlinePeriod" className="text-[11px] text-muted-foreground cursor-pointer">
+                        기간
+                      </Label>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Input type="date" value={deadline} onChange={(e) => setDeadline(e.target.value)} className="h-10" />
+                    {isDeadlinePeriod && (
+                      <>
+                        <span className="text-muted-foreground text-xs">~</span>
+                        <Input type="date" value={deadlineEnd} onChange={(e) => setDeadlineEnd(e.target.value)} className="h-10" />
+                      </>
+                    )}
+                  </div>
                 </div>
-              </div>
-              <div className="flex items-center gap-2">
-                <Input
-                  type="date"
-                  value={deadline}
-                  onChange={(e) => setDeadline(e.target.value)}
-                  className="h-10"
-                />
-                {isDeadlinePeriod && (
-                  <>
-                    <span className="text-muted-foreground">~</span>
-                    <Input
-                      type="date"
-                      value={deadlineEnd}
-                      onChange={(e) => setDeadlineEnd(e.target.value)}
-                      className="h-10"
-                    />
-                  </>
-                )}
-              </div>
             </div>
 
             <Separator />
