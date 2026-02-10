@@ -5,7 +5,6 @@ API에서 키워드로 검색하여 판례를 수집합니다.
 
 import sys
 import asyncio
-import argparse
 import traceback
 from pathlib import Path
 from typing import List, Dict, Any, Optional
@@ -85,11 +84,9 @@ class CaseCollector(BaseCaseCollector):
 
     # ==================== 메인 수집 로직 ====================
 
-    async def collect_all(self, skip_summary: bool = False):
+    async def collect_all(self):
         """모든 키워드로 판례 수집"""
         print(f"\n판례 수집 시작 (키워드: {', '.join(self.KEYWORDS)})")
-        if skip_summary:
-            print("  → 요약 생성 건너뜀 (--skip-summary)")
 
         if not self.qdrant_service.check_connection():
             print("에러: Qdrant 서버에 연결할 수 없습니다.")
@@ -97,15 +94,12 @@ class CaseCollector(BaseCaseCollector):
 
         # 컬렉션 생성
         self.qdrant_service.create_hybrid_collection(QdrantService.CASES_COLLECTION)
-        if not skip_summary:
-            self.qdrant_service.create_summaries_collection()
 
         # 기존 사건번호 로드 (중복 방지)
         self.load_existing_case_numbers()
 
         total_saved = 0
         total_cases = 0
-        total_summaries = 0
 
         # API 클라이언트 세션 유지 (전체 수집 동안 재사용)
         async with LawAPIClient() as client:
@@ -158,14 +152,11 @@ class CaseCollector(BaseCaseCollector):
                             "court_type_code": detail.get("법원종류코드", ""),
                         }
 
-                        # 공통 처리 (청킹 → 임베딩 → 저장 → 요약)
-                        result = self.process_case(detail, case_info, keyword, skip_summary)
+                        # 공통 처리 (청킹 → 임베딩 → 저장)
+                        result = self.process_case(detail, case_info, keyword)
 
                         keyword_saved += result["chunks_saved"]
                         total_saved += result["chunks_saved"]
-                        if result["summary_saved"]:
-                            total_summaries += 1
-
                         keyword_cases += 1
                         total_cases += 1
                         print(f"  [{keyword}] {case_number} 저장 완료 ({keyword_cases}건째)")
@@ -183,18 +174,14 @@ class CaseCollector(BaseCaseCollector):
         # 실패 케이스 저장
         self.save_failed_cases()
 
-        print(f"\n수집 완료! 총 {total_cases}건 → {total_saved}개 청크, {total_summaries}개 요약 저장")
+        print(f"\n수집 완료! 총 {total_cases}건 → {total_saved}개 청크 저장")
         if self.get_failed_cases_count() > 0:
             print(f"  - 실패: {self.get_failed_cases_count()}건 (failed_cases.json 참고)")
 
 
 async def main():
-    parser = argparse.ArgumentParser(description="판례 데이터 수집")
-    parser.add_argument("--skip-summary", action="store_true", help="요약 생성 건너뜀")
-    args = parser.parse_args()
-
     collector = CaseCollector()
-    await collector.collect_all(skip_summary=args.skip_summary)
+    await collector.collect_all()
 
 
 if __name__ == "__main__":

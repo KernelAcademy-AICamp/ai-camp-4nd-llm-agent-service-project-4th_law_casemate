@@ -16,6 +16,7 @@ import {
   FileText,
   Search,
   Lightbulb,
+  Star,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -93,6 +94,10 @@ export function PrecedentDetailPage({ }: PrecedentDetailPageProps) {
   const [summary, setSummary] = useState<string | null>(null);
   const [summaryLoading, setSummaryLoading] = useState(false);
   const [summaryError, setSummaryError] = useState(false);
+
+  // 즐겨찾기 상태
+  const [isFavorite, setIsFavorite] = useState(false);
+  const [favoriteLoading, setFavoriteLoading] = useState(false);
 
   // 판례 상세 조회 (캐시 우선)
   useEffect(() => {
@@ -202,6 +207,46 @@ export function PrecedentDetailPage({ }: PrecedentDetailPageProps) {
     };
   }, [caseDetail?.case_number, isFromSimilarCase]);
 
+  // 즐겨찾기 상태 확인
+  useEffect(() => {
+    const checkFavoriteStatus = async () => {
+      if (!id) return;
+
+      try {
+        const response = await fetch(`/api/v1/favorites/precedents/${encodeURIComponent(id)}/status`);
+        if (response.ok) {
+          const data = await response.json();
+          setIsFavorite(data.is_favorite);
+        }
+      } catch (err) {
+        console.error("즐겨찾기 상태 확인 실패:", err);
+      }
+    };
+
+    checkFavoriteStatus();
+  }, [id]);
+
+  // 즐겨찾기 토글
+  const toggleFavorite = async () => {
+    if (!id || favoriteLoading) return;
+
+    setFavoriteLoading(true);
+    try {
+      const response = await fetch(`/api/v1/favorites/precedents/${encodeURIComponent(id)}/toggle`, {
+        method: "POST",
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        setIsFavorite(data.is_favorite);
+      }
+    } catch (err) {
+      console.error("즐겨찾기 토글 실패:", err);
+    } finally {
+      setFavoriteLoading(false);
+    }
+  };
+
   // 날짜 포맷 (20200515 → 2020.05.15)
   const formatDate = (dateStr: string) => {
     if (!dateStr || dateStr.length !== 8) return dateStr || "";
@@ -306,6 +351,16 @@ export function PrecedentDetailPage({ }: PrecedentDetailPageProps) {
           <Badge variant="secondary" className="text-xs font-normal">
             판례 정보
           </Badge>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={toggleFavorite}
+            disabled={favoriteLoading}
+            className={`h-8 px-2 ${isFavorite ? "text-yellow-500 hover:text-yellow-600" : "text-muted-foreground hover:text-yellow-500"}`}
+          >
+            <Star className={`h-4 w-4 ${isFavorite ? "fill-current" : ""}`} />
+            <span className="ml-1 text-xs">{isFavorite ? "즐겨찾기됨" : "즐겨찾기"}</span>
+          </Button>
         </div>
       </div>
 

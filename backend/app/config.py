@@ -25,6 +25,6 @@ class CollectionConfig:
     SUMMARIES = "precedent_summaries"
 
     # 청크 설정
-    MAX_CHUNK_SIZE = 1000
-    MIN_CHUNK_SIZE = 300
-    OVERLAP_SIZE = 100
+    MAX_CHUNK_SIZE = 1500
+    MIN_LAST_CHUNK = 150
+    OVERLAP_SIZE = 150

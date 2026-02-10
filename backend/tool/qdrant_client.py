@@ -38,6 +38,7 @@ class QdrantService:
     LAWS_COLLECTION = "laws"
     CASES_COLLECTION = "precedents"
     SUMMARIES_COLLECTION = "precedent_summaries"
+    FACTS_COLLECTION = "precedent_facts"
 
     def __init__(self):
         """Qdrant 클라이언트 초기화 (싱글톤 사용)"""
@@ -199,6 +200,124 @@ class QdrantService:
 
         except Exception as e:
             print(f"요약 컬렉션 생성 실패: {e}")
+            return False
+
+    def create_facts_collection(self) -> bool:
+        """
+        판례 사실관계 저장용 하이브리드 컬렉션 생성 (Dense 1536 + Sparse)
+        키워드 밀도 기반으로 추출된 핵심 사실관계를 저장
+        """
+        try:
+            collections = self.client.get_collections().collections
+            exists = any(c.name == self.FACTS_COLLECTION for c in collections)
+
+            if exists:
+                print(f"컬렉션 '{self.FACTS_COLLECTION}'이 이미 존재합니다.")
+                return True
+
+            self.client.create_collection(
+                collection_name=self.FACTS_COLLECTION,
+                vectors_config={
+                    "dense": VectorParams(size=1536, distance=Distance.COSINE),
+                },
+                sparse_vectors_config={
+                    "sparse": SparseVectorParams(),
+                },
+            )
+
+            # case_number 필드에 인덱스 생성 (빠른 조회를 위해)
+            self.client.create_payload_index(
+                collection_name=self.FACTS_COLLECTION,
+                field_name="case_number",
+                field_schema=models.PayloadSchemaType.KEYWORD,
+            )
+
+            print(f"사실관계 컬렉션 '{self.FACTS_COLLECTION}' 생성 완료 (Dense 1536 + Sparse)")
+            return True
+
+        except Exception as e:
+            print(f"사실관계 컬렉션 생성 실패: {e}")
+            return False
+
+    def save_fact(
+        self,
+        case_number: str,
+        fact_text: str,
+        dense_vector: List[float] = None,
+        sparse_vector: Dict[str, Any] = None,
+        case_name: str = "",
+        court_name: str = "",
+        judgment_date: str = "",
+        source_sections: List[str] = None,
+    ) -> bool:
+        """
+        판례 사실관계 저장 (Dense + Sparse 벡터 포함)
+
+        Args:
+            case_number: 사건번호
+            fact_text: 추출된 사실관계 텍스트
+            dense_vector: Dense 임베딩 벡터 (text-embedding-3-small, 1536차원)
+            sparse_vector: Sparse 임베딩 벡터 (BM25) {"indices": [...], "values": [...]}
+            case_name: 사건명
+            court_name: 법원명
+            judgment_date: 선고일자
+            source_sections: 사실관계 추출에 사용된 섹션명 목록
+
+        Returns:
+            성공 여부
+        """
+        import uuid
+        import time
+
+        try:
+            # 기존 사실관계가 있으면 삭제
+            self.client.delete(
+                collection_name=self.FACTS_COLLECTION,
+                points_selector=models.FilterSelector(
+                    filter=models.Filter(
+                        must=[
+                            models.FieldCondition(
+                                key="case_number",
+                                match=models.MatchValue(value=case_number),
+                            )
+                        ]
+                    )
+                ),
+            )
+
+            # 벡터 구성
+            vector = {}
+            if dense_vector:
+                vector["dense"] = dense_vector
+            if sparse_vector:
+                vector["sparse"] = models.SparseVector(
+                    indices=sparse_vector["indices"],
+                    values=sparse_vector["values"],
+                )
+
+            # 새 사실관계 저장
+            point = PointStruct(
+                id=str(uuid.uuid4()),
+                vector=vector,
+                payload={
+                    "case_number": case_number,
+                    "case_name": case_name,
+                    "court_name": court_name,
+                    "judgment_date": judgment_date,
+                    "fact_text": fact_text,
+                    "source_sections": source_sections or [],
+                    "created_at": int(time.time()),
+                },
+            )
+
+            self.client.upsert(
+                collection_name=self.FACTS_COLLECTION,
+                points=[point],
+            )
+            return True
+
+        except Exception as e:
+            print(f"사실관계 저장 실패: {e}")
             return False
 
     def save_summary(

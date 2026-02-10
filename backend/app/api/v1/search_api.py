@@ -6,7 +6,7 @@
 import logging
 from fastapi import APIRouter, Query, HTTPException
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
 from app.services.precedent_search_service import PrecedentSearchService
 from app.services.similar_search_service import SimilarSearchService
 from app.services.precedent_summary_service import SummaryService
@@ -47,21 +47,43 @@ comparison_service = ComparisonService()
 @router.get("/cases")
 async def search_cases(
     query: str = Query(..., description="검색 키워드", min_length=1),
-    limit: int = Query(30, description="결과 개수", ge=1, le=100),
+    limit: int = Query(50, description="결과 개수", ge=1, le=500),
+    offset: int = Query(0, description="건너뛸 결과 수 (페이지네이션용)", ge=0),
+    sort: str = Query("relevance", description="정렬 순서 (relevance=관련순, latest=최신순)"),
     merge_chunks: bool = Query(True, description="같은 판례 청크 병합"),
+    court_type: Optional[str] = Query(None, description="법원 유형 (대법원, 고등법원, 지방법원)"),
+    case_type: Optional[str] = Query(None, description="사건 종류 (민사, 형사, 일반행정, 가사)"),
+    period: Optional[str] = Query(None, description="기간 (1y, 3y, 5y, 10y)"),
 ):
     """
     판례 검색 (하이브리드: 의미 + 키워드)
 
     - **query**: 검색할 키워드 (필수)
-    - **limit**: 반환할 최대 결과 수 (기본 30, 최대 100)
+    - **limit**: 반환할 최대 결과 수 (기본 50, 최대 500)
+    - **offset**: 건너뛸 결과 수 (기본 0, 페이지네이션용)
+    - **sort**: 정렬 순서 (relevance=관련순, latest=최신순)
     - **merge_chunks**: 같은 판례의 청크를 하나로 병합 (기본 True)
+    - **court_type**: 법원 유형 필터 (대법원, 고등법원, 지방법원)
+    - **case_type**: 사건 종류 필터 (민사, 형사, 일반행정, 가사)
+    - **period**: 기간 필터 (1y=최근1년, 3y=최근3년, 5y=최근5년, 10y=최근10년)
     """
     try:
+        # 필터 구성
+        filters = {}
+        if court_type:
+            filters["court_type"] = court_type
+        if case_type:
+            filters["case_type"] = case_type
+        if period:
+            filters["period"] = period
+
         results = search_service.search_cases(
             query=query,
             limit=limit,
+            offset=offset,
+            sort=sort,
             merge_chunks=merge_chunks,
+            filters=filters if filters else None,
         )
         return results
     except Exception as e:

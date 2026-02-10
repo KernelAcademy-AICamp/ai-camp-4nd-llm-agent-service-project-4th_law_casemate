@@ -54,7 +54,7 @@ class SimilarCaseResult:
 class SimilarSearchService:
     """유사 판례 검색 서비스 (쿼리 변환 + 하이브리드: Dense + Sparse, RRF + 리랭킹)"""
 
-    SUMMARIES_COLLECTION = "precedent_summaries"
+    FACTS_COLLECTION = "precedent_facts"
 
     # RRF 파라미터 (값이 클수록 순위 간 점수 차이가 완만해짐)
     # A/B 테스트 결과 80이 최적 (Dense+Sparse 균형 반영)
@@ -64,9 +64,9 @@ class SimilarSearchService:
     RERANK_CANDIDATES = 20  # 리랭킹할 후보 수
 
     def __init__(self, use_reranking: bool = True):
-        # case_summaries 컬렉션은 text-embedding-3-large로 인덱싱됨
+        # precedent_facts 컬렉션은 text-embedding-3-small로 인덱싱됨
         self.embedding_service = PrecedentEmbeddingService(
-            model=PrecedentEmbeddingService.MODEL_LARGE
+            model=PrecedentEmbeddingService.MODEL_SMALL
         )
         self.qdrant_client = get_qdrant_client()  # 싱글톤 사용
         self.openai_client = get_openai_client()  # 싱글톤 사용
@@ -165,7 +165,7 @@ class SimilarSearchService:
 
         # 해당 포인트들의 dense 벡터 가져오기
         points = self.qdrant_client.retrieve(
-            collection_name=self.SUMMARIES_COLLECTION,
+            collection_name=self.FACTS_COLLECTION,
             ids=missing_ids,
             with_vectors=["dense"]
         )
@@ -196,7 +196,7 @@ class SimilarSearchService:
 
         # Dense 검색
         dense_results = self.qdrant_client.query_points(
-            collection_name=self.SUMMARIES_COLLECTION,
+            collection_name=self.FACTS_COLLECTION,
             query=dense_vector,
             using="dense",
             limit=search_limit,
@@ -204,7 +204,7 @@ class SimilarSearchService:
 
         # Sparse 검색
         sparse_results = self.qdrant_client.query_points(
-            collection_name=self.SUMMARIES_COLLECTION,
+            collection_name=self.FACTS_COLLECTION,
             query=sparse_vector,
             using="sparse",
             limit=search_limit,
@@ -242,11 +242,11 @@ class SimilarSearchService:
 
         reranker = get_reranker_model()
 
-        # (쿼리, 문서) 쌍 생성 - 요약 텍스트를 문서로 사용
+        # (쿼리, 문서) 쌍 생성 - fact_text를 문서로 사용
         pairs = []
         for c in candidates:
-            summary = c.get("summary", "")[:500]  # 최대 500자
-            pairs.append((query[:500], summary))
+            fact_text = c.get("fact_text", "")[:500]  # 최대 500자
+            pairs.append((query[:500], fact_text))
 
         # Cross-encoder로 점수 계산
         scores = reranker.predict(pairs)
@@ -310,7 +310,7 @@ class SimilarSearchService:
                 "case_name": payload.get("case_name", ""),
                 "court_name": payload.get("court_name", ""),
                 "judgment_date": payload.get("judgment_date", ""),
-                "summary": payload.get("summary", ""),  # 리랭킹용
+                "fact_text": payload.get("fact_text", ""),  # 리랭킹용
                 "rrf_score": rrf_score,
                 "dense_similarity": dense_similarity,
             })

@@ -23,10 +23,8 @@ from dotenv import load_dotenv
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from tool.qdrant_client import QdrantService
-from app.services.precedent_summary_service import SummaryService
 from app.services.precedent_embedding_service import get_openai_client, get_sparse_model
-from app.prompts.summary_prompt import PROMPT_VERSION
-from app.config import EmbeddingConfig
+from app.config import EmbeddingConfig, CollectionConfig
 
 load_dotenv()
 
@@ -61,10 +59,10 @@ class BaseCaseCollector:
     SECTION_NO_CHUNK = {"판시사항", "판결요지"}  # 기본 단독 유지 (2000자 이하)
     SECTION_MAX_NO_CHUNK = 2000                  # 초과 시 청킹
 
-    # 청킹 파라미터
-    MAX_CHUNK_SIZE = 1500      # 전문 최대 크기
-    MIN_LAST_CHUNK = 150       # 마지막 청크 최소 (이하 이전에 병합)
-    OVERLAP_SIZE = 150         # 오버랩 크기 (글자수 기준)
+    # 청킹 파라미터 (config.py에서 가져옴)
+    MAX_CHUNK_SIZE = CollectionConfig.MAX_CHUNK_SIZE
+    MIN_LAST_CHUNK = CollectionConfig.MIN_LAST_CHUNK
+    OVERLAP_SIZE = CollectionConfig.OVERLAP_SIZE
 
     # 메타데이터 추출 패턴
     CASE_NUMBER_PATTERN = re.compile(r'(\d{2,4}[가-힣]{1,2}\d+)')
@@ -79,7 +77,6 @@ class BaseCaseCollector:
         """공통 초기화"""
         self.openai_client = get_openai_client()  # 싱글톤 사용
         self.qdrant_service = QdrantService()
-        self.summary_service = SummaryService()
         self.data_dir = Path(__file__).parent.parent / "data" / "cases"
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.collected_case_numbers: Set[str] = set()
@@ -504,47 +501,6 @@ class BaseCaseCollector:
 
         return saved
 
-    # ==================== 요약 저장 ====================
-
-    def save_summary(
-        self,
-        case_number: str,
-        full_text: str,
-        case_info: Dict[str, Any],
-    ) -> bool:
-        """요약 생성 및 저장"""
-        try:
-            summary = self.summary_service.summarize(full_text)
-
-            # 요약 텍스트의 Dense 임베딩 (유사 검색용)
-            summary_dense_resp = self.openai_client.embeddings.create(
-                model=EmbeddingConfig.SUMMARY_MODEL,
-                input=summary,
-            )
-            summary_dense_vector = summary_dense_resp.data[0].embedding
-
-            # 요약 텍스트의 Sparse 임베딩 (BM25)
-            summary_sparse_emb = list(self.sparse_model.embed([summary]))[0]
-            summary_sparse_vector = {
-                "indices": summary_sparse_emb.indices.tolist(),
-                "values": summary_sparse_emb.values.tolist(),
-            }
-
-            return self.qdrant_service.save_summary(
-                case_number=case_number,
-                summary=summary,
-                prompt_version=PROMPT_VERSION,
-                dense_vector=summary_dense_vector,
-                sparse_vector=summary_sparse_vector,
-                case_name=case_info.get("case_name", ""),
-                court_name=case_info.get("court_name", ""),
-                judgment_date=case_info.get("judgment_date", ""),
-            )
-
-        except Exception as e:
-            print(f"    - 요약 생성/저장 실패 ({case_number}): {e}")
-            return False
-
     # ==================== 로컬 백업 ====================
 
     def save_local_backup(self, case_number: str, detail: Dict[str, Any], keyword: str) -> None:
@@ -567,19 +523,17 @@ class BaseCaseCollector:
         detail: Dict[str, Any],
         case_info: Dict[str, Any],
         keyword: str,
-        skip_summary: bool = False,
     ) -> Dict[str, Any]:
         """
-        판례 상세정보 → 청킹 → 임베딩 → 저장 → 요약
+        판례 상세정보 → 청킹 → 임베딩 → 저장
 
         Args:
             detail: API에서 받은 판례 상세 정보
             case_info: 메타데이터 (case_number, case_name 등)
             keyword: 검색 키워드
-            skip_summary: 요약 생성 건너뛰기
 
         Returns:
-            {"chunks_saved": int, "summary_saved": bool}
+            {"chunks_saved": int}
         """
         case_number = case_info.get("case_number", "")
 
@@ -593,7 +547,7 @@ class BaseCaseCollector:
         # 3. 청킹
         chunks = self.chunk_full_text(full_text, case_info)
         if not chunks:
-            return {"chunks_saved": 0, "summary_saved": False}
+            return {"chunks_saved": 0}
 
         # 4. 임베딩 생성
         chunks_with_vectors = self.create_embeddings(chunks)
@@ -603,15 +557,10 @@ class BaseCaseCollector:
         if chunks_with_vectors:
             chunks_saved = self.save_to_qdrant(chunks_with_vectors, keyword)
 
-        # 6. 요약 생성 및 저장
-        summary_saved = False
-        if not skip_summary:
-            summary_saved = self.save_summary(case_number, full_text, case_info)
-
-        # 7. 로컬 백업
+        # 6. 로컬 백업
         self.save_local_backup(case_number, detail, keyword)
 
-        return {"chunks_saved": chunks_saved, "summary_saved": summary_saved}
+        return {"chunks_saved": chunks_saved}
 
     # ==================== 중복 체크 ====================
 
