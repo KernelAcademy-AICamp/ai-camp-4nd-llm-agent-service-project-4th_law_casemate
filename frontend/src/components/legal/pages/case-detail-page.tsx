@@ -94,6 +94,7 @@ import {
   UserX,
   Circle,
   RefreshCw,
+  AlertCircle,
 } from "lucide-react";
 import { RelationshipEditor } from "@/components/legal/relationship-editor";
 import { DocumentEditor } from "@/components/legal/document-editor";
@@ -144,6 +145,15 @@ export function CaseDetailPage({
     relationships: any[];
   }>({ persons: [], relationships: [] });
   const [relationshipLoading, setRelationshipLoading] = useState(false);
+
+  // 재분석 필요 여부 상태
+  const [needsReanalysis, setNeedsReanalysis] = useState<{
+    needs: boolean;
+    reason: string | null;
+    count?: number;
+    last_analyzed?: string;
+  }>({ needs: false, reason: null });
+
   const [timelineLayout, setTimelineLayout] = useState<"linear" | "zigzag">("linear");
   const [editingEvent, setEditingEvent] = useState<TimelineEvent | null>(null);
   const [isAddingEvent, setIsAddingEvent] = useState(false);
@@ -602,6 +612,60 @@ export function CaseDetailPage({
       alert('사건 삭제에 실패했습니다.');
     }
   }, [caseData, id, navigate]);
+
+  // 재분석 필요 여부 확인
+  const checkReanalysisStatus = useCallback(async () => {
+    if (!id) return;
+
+    try {
+      const response = await fetch(`http://localhost:8000/api/v1/cases/${id}/reanalysis-status`);
+      if (response.ok) {
+        const status = await response.json();
+        setNeedsReanalysis(status);
+      }
+    } catch (err) {
+      console.error('[Reanalysis Status] 확인 실패:', err);
+    }
+  }, [id]);
+
+  // 전체 재분석 실행
+  const handleFullReanalysis = useCallback(async () => {
+    if (!id) return;
+
+    const confirmed = confirm(
+      '사건을 전체 재분석합니다.\n\n개요, 타임라인, 관계도가 모두 새로 생성됩니다.\n계속하시겠습니까?'
+    );
+
+    if (!confirmed) return;
+
+    try {
+      // 1. AI 분석 실행 (force=true)
+      const analyzeResponse = await fetch(
+        `http://localhost:8000/api/v1/cases/${id}/analyze?force=true`,
+        { method: 'POST' }
+      );
+
+      if (!analyzeResponse.ok) {
+        throw new Error('AI 분석에 실패했습니다.');
+      }
+
+      // 2. 상태 업데이트
+      setNeedsReanalysis({ needs: false, reason: null });
+
+      // 3. 페이지 새로고침하여 최신 데이터 반영
+      window.location.reload();
+    } catch (err) {
+      console.error('[Full Reanalysis] 실패:', err);
+      alert('재분석에 실패했습니다.');
+    }
+  }, [id]);
+
+  // 재분석 상태 확인 (사건 로드 시)
+  useEffect(() => {
+    if (caseData?.id) {
+      checkReanalysisStatus();
+    }
+  }, [caseData?.id, checkReanalysisStatus]);
 
   // 타임라인 재생성 (기존 데이터 삭제 후 LLM으로 생성)
   const regenerateTimeline = async () => {
@@ -1193,6 +1257,49 @@ export function CaseDetailPage({
           </span>
         </div>
       </div>
+
+      {/* 재분석 필요 배너 */}
+      {needsReanalysis.needs && (
+        <Card className="border-amber-200 bg-amber-50/50">
+          <CardContent className="p-4">
+            <div className="flex items-start justify-between gap-4">
+              <div className="flex-1">
+                <div className="flex items-center gap-2 mb-2">
+                  <AlertCircle className="h-5 w-5 text-amber-600" />
+                  <h3 className="font-semibold text-amber-900">사건 내용이 변경되었습니다</h3>
+                </div>
+                <p className="text-sm text-amber-800 mb-2">
+                  {needsReanalysis.reason === 'description_changed' && '사건 원문이 수정되었습니다. AI 재분석을 권장합니다.'}
+                  {needsReanalysis.reason === 'new_evidence' && `새로운 증거 ${needsReanalysis.count}건이 추가되었습니다. AI 재분석을 권장합니다.`}
+                  {needsReanalysis.reason === 'no_analysis' && '아직 AI 분석이 진행되지 않았습니다.'}
+                </p>
+                {needsReanalysis.last_analyzed && (
+                  <p className="text-xs text-amber-700">
+                    마지막 분석: {new Date(needsReanalysis.last_analyzed).toLocaleString('ko-KR')}
+                  </p>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                <Button
+                  onClick={handleFullReanalysis}
+                  className="bg-amber-600 hover:bg-amber-700 text-white"
+                >
+                  <RefreshCw className="h-4 w-4 mr-2" />
+                  AI 재분석 시작
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setNeedsReanalysis({ needs: false, reason: null })}
+                  className="text-amber-700 hover:text-amber-900"
+                >
+                  무시
+                </Button>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Tabs - New Structure */}
       <Tabs value={activeTab} onValueChange={(value) => {

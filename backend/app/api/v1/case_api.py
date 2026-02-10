@@ -180,6 +180,84 @@ async def get_cases(
         raise HTTPException(status_code=500, detail=f"사건 목록 조회 실패: {str(e)}")
 
 
+def check_needs_reanalysis(case_id: int, db: Session) -> dict:
+    """
+    재분석 필요 여부 확인
+
+    - description_hash 비교로 원문 변경 감지
+    - 마지막 분석 이후 새 증거 추가 감지
+    """
+    import hashlib
+    from app.models.evidence import Evidence
+
+    case = db.query(Case).filter(Case.id == case_id).first()
+    analysis = db.query(CaseAnalysis).filter(CaseAnalysis.case_id == case_id).first()
+
+    if not case:
+        return {"needs": False, "reason": None}
+
+    # 분석 기록이 없으면 재분석 필요
+    if not analysis or not analysis.analyzed_at:
+        return {"needs": True, "reason": "no_analysis"}
+
+    # 원문 변경 체크
+    if case.description:
+        current_hash = hashlib.md5(case.description.encode()).hexdigest()
+        if analysis.description_hash and current_hash != analysis.description_hash:
+            return {
+                "needs": True,
+                "reason": "description_changed",
+                "last_analyzed": analysis.analyzed_at.isoformat() if analysis.analyzed_at else None
+            }
+
+    # 새 증거 체크 (마지막 분석 이후 추가된 증거)
+    new_evidence_count = db.query(Evidence).filter(
+        Evidence.case_id == case_id,
+        Evidence.created_at > analysis.analyzed_at
+    ).count()
+
+    if new_evidence_count > 0:
+        return {
+            "needs": True,
+            "reason": "new_evidence",
+            "count": new_evidence_count,
+            "last_analyzed": analysis.analyzed_at.isoformat() if analysis.analyzed_at else None
+        }
+
+    return {"needs": False, "reason": None}
+
+
+@router.get("/{case_id}/reanalysis-status")
+async def get_reanalysis_status(
+    case_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    재분석 필요 여부 확인 API
+
+    - JWT 인증 필요
+    - 같은 law_firm_id 소속만 확인 가능
+    """
+    try:
+        case = db.query(Case).filter(Case.id == case_id).first()
+
+        if not case:
+            raise HTTPException(status_code=404, detail="사건을 찾을 수 없습니다")
+
+        if case.law_firm_id != current_user.firm_id:
+            raise HTTPException(status_code=403, detail="해당 사건에 접근할 권한이 없습니다")
+
+        status = check_needs_reanalysis(case_id, db)
+        return status
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ 재분석 상태 확인 실패: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"재분석 상태 확인 실패: {str(e)}")
+
+
 @router.get("/{case_id}", response_model=CaseResponse)
 async def get_case_detail(
     case_id: int,
