@@ -268,93 +268,80 @@ class EvidenceProcessor:
 
     async def process_image(
         self,
-        file: UploadFile,
-        detail: DetailLevel = "high"
+        file: UploadFile
     ) -> Dict[str, Any]:
         """
-        이미지 파일 처리 (로컬 OCR → Vision API)
+        이미지 파일 처리 (Vision API - low → high 자동 업그레이드)
 
         Args:
             file: 이미지 파일
-            detail: low (85토큰) / high (512px 타일 분석)
 
         Returns:
             처리 결과 딕셔너리
         """
         try:
-            logger.info(f"🖼️ 이미지 파일 처리 시작: {file.filename} (detail={detail})")
+            logger.info(f"🖼️ 이미지 파일 처리 시작: {file.filename}")
 
             # 파일 내용 읽기
             await file.seek(0)
             file_content = await file.read()
 
-            # 1단계: 로컬 OCR 시도 (EasyOCR)
-            try:
-                import easyocr
-                from io import BytesIO
-                from PIL import Image
+            # 1단계: low quality로 시도
+            result = await self._extract_with_vision(file_content, "low")
 
-                logger.info("🔍 로컬 OCR 시도 (EasyOCR)")
+            if result["success"] and not result.get("quality_high", False):
+                # 품질이 낮다고 판단되면 high quality로 재시도
+                quality_score = result.get("quality_score", 0)
+                logger.warning(f"⚠️ Low quality 인식 부족 (점수: {quality_score}/100)")
+                logger.warning(f"   이유: {result.get('quality_reason', 'N/A')}")
+                logger.info("🔄 High quality로 재시도...")
+                result = await self._extract_with_vision(file_content, "high")
 
-                # EasyOCR Reader 초기화 (한글, 영어)
-                reader = easyocr.Reader(['ko', 'en'], gpu=False, verbose=False)
+            return result
 
-                # 이미지 바이트를 numpy array로 변환
-                img = Image.open(BytesIO(file_content))
-                import numpy as np
-                img_array = np.array(img)
+        except Exception as e:
+            logger.error(f"❌ 이미지 처리 실패: {str(e)}")
+            return {
+                "success": False,
+                "type": "IMAGE",
+                "error": str(e)
+            }
 
-                # OCR 실행
-                result = reader.readtext(img_array)
+    async def _extract_with_vision(
+        self,
+        file_content: bytes,
+        detail: DetailLevel
+    ) -> Dict[str, Any]:
+        """
+        Vision API로 텍스트 추출 + 품질 평가
 
-                if result and len(result) > 0:
-                    # 결과를 위치별로 정렬 (위→아래, 왼쪽→오른쪽)
-                    sorted_result = sorted(result, key=lambda x: (x[0][0][1], x[0][0][0]))
-                    text = '\n'.join([item[1] for item in sorted_result])
+        Args:
+            file_content: 이미지 파일 내용
+            detail: low/high
 
-                    # 최소 20자 이상 추출되면 성공으로 간주
-                    if len(text.strip()) >= 20:
-                        logger.info(f"✅ 로컬 OCR 성공: {len(text)}자 추출 (비용 0원)")
-                        logger.debug(f"📝 추출된 텍스트 (처음 200자): {text[:200]}")
+        Returns:
+            처리 결과 딕셔너리 (quality_high 포함)
+        """
+        import base64
+        import json
+        import re
 
-                        return {
-                            "success": True,
-                            "type": "IMAGE",
-                            "method": "easyocr-local",
-                            "text": text,
-                            "char_count": len(text),
-                            "cost_estimate": "무료 (로컬 OCR)"
-                        }
-                    else:
-                        logger.warning(f"⚠️ 로컬 OCR 텍스트 부족: {len(text)}자 → Vision API로 전환")
+        logger.info(f"🌐 Vision API 호출 (detail={detail})")
 
-                else:
-                    logger.warning("⚠️ 로컬 OCR 결과 없음 → Vision API로 전환")
+        # Base64 인코딩
+        img_base64 = base64.b64encode(file_content).decode("utf-8")
 
-            except ImportError:
-                logger.warning("⚠️ EasyOCR 미설치 → Vision API로 전환")
-            except Exception as ocr_error:
-                logger.warning(f"⚠️ 로컬 OCR 실패: {str(ocr_error)} → Vision API로 전환")
-
-            # 2단계: Vision API 호출 (프롬프트 개선)
-            import base64
-
-            logger.info("🌐 OpenAI Vision API 호출")
-
-            # Base64 인코딩
-            img_base64 = base64.b64encode(file_content).decode("utf-8")
-
-            # Vision API 호출 (텍스트 추출 + 문서 유형 분류 동시 수행)
-            response = await self.client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": """당신은 법원 제출용 증거 자료 분석 전문가입니다.
-이 이미지는 법적 소송 증거로 사용될 문서입니다.
+        # Vision API 호출 (텍스트 추출 + 문서 유형 분류 + 품질 평가)
+        response = await self.client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": """당신은 법원 제출용 증거 자료 분석 전문가입니다.
+이 이미지는 법적 소송 증거로 사용될 문서로, **매우 높은 정확도**가 요구됩니다.
 
 **작업 1: 텍스트 추출**
 이미지 내 모든 텍스트, 대화 내용, 시간, 발신자 정보를 빠짐없이 정확하게 추출하세요.
@@ -373,87 +360,109 @@ class EvidenceProcessor:
 - 일반문서: 위 카테고리에 해당하지 않는 일반 문서
 - 기타: 분류하기 어려운 문서
 
+**작업 3: 인식 품질 평가 (매우 중요)**
+법원 증거 제출용이므로, 다음 기준으로 **냉철하게** 판단하세요:
+
+**quality_score (0-100 점수):**
+- 90-100점: 완벽한 인식, 모든 글자가 100% 명확하게 읽힘
+- 80-89점: 대부분 명확하지만 일부 글자가 약간 불확실
+- 70-79점: 중간 수준, 여러 글자가 불명확하거나 추측 필요
+- 60-69점: 낮은 품질, 많은 부분이 불명확하거나 흐림
+- 0-59점: 매우 낮은 품질, 대부분의 텍스트가 불명확
+
+**quality_high (true/false):**
+- true: quality_score >= 90 (완벽한 인식만 true)
+- false: quality_score < 90 또는 다음 중 하나라도 해당
+  * 흐릿하거나 작은 글씨가 있음
+  * 일부 글자를 추측으로 읽음
+  * 배경이 복잡하거나 글자가 겹침
+  * 해상도가 낮아 정확도에 의심이 있음
+  * 중요한 부분(시간, 이름, 금액 등)이 불명확함
+
 **응답 형식 (JSON):**
 ```json
 {
   "text": "추출된 전체 텍스트 내용",
-  "doc_type": "문서 유형"
+  "doc_type": "문서 유형",
+  "quality_score": 85,
+  "quality_high": true 또는 false,
+  "quality_reason": "품질 판단 이유 (구체적으로)"
 }
 ```"""
-                            },
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:image/png;base64,{img_base64}",
-                                    "detail": detail
-                                }
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/png;base64,{img_base64}",
+                                "detail": detail
                             }
-                        ]
-                    }
-                ],
-                max_tokens=2000
-            )
-
-            content = response.choices[0].message.content or ""
-
-            # JSON 응답 파싱 시도
-            import json
-            import re
-
-            try:
-                # JSON 코드블록 제거 (```json ... ```)
-                json_match = re.search(r'```json\s*(.*?)\s*```', content, re.DOTALL)
-                if json_match:
-                    json_str = json_match.group(1)
-                else:
-                    # 코드블록 없이 바로 JSON인 경우
-                    json_str = content
-
-                parsed = json.loads(json_str)
-                text = parsed.get("text", "")
-                doc_type = parsed.get("doc_type", "기타")
-
-                logger.info(f"✅ JSON 파싱 성공: text={len(text)}자, doc_type={doc_type}")
-
-            except (json.JSONDecodeError, AttributeError) as e:
-                # JSON 파싱 실패 시 전체 응답을 텍스트로 사용
-                logger.warning(f"⚠️ JSON 파싱 실패, 전체 응답을 텍스트로 사용: {str(e)}")
-                text = content
-                doc_type = "기타"
-
-            # OpenAI가 거절했는지 확인
-            if "죄송하지만" in text or "분석할 수 없습니다" in text or len(text.strip()) < 20:
-                logger.warning(f"⚠️ OpenAI Vision 거절 또는 결과 부족: {text[:100]}")
-                return {
-                    "success": False,
-                    "type": "IMAGE",
-                    "method": "openai-vision-rejected",
-                    "text": text,
-                    "char_count": len(text),
-                    "error": "Vision API가 텍스트 추출을 거절했습니다. 로컬 OCR을 사용하거나 다른 이미지를 시도하세요."
+                        }
+                    ]
                 }
+            ],
+            max_tokens=2000
+        )
 
-            logger.info(f"✅ Vision API OCR 완료: {len(text)}자 추출 (detail={detail})")
-            logger.info(f"📋 문서 유형: {doc_type}")
-            logger.debug(f"📝 추출된 텍스트 (처음 200자): {text[:200]}")
+        content = response.choices[0].message.content or ""
 
-            return {
-                "success": True,
-                "type": "IMAGE",
-                "method": f"openai-vision-{detail}",
-                "text": text,
-                "doc_type": doc_type,  # 문서 유형 추가
-                "char_count": len(text),
-                "cost_estimate": "저비용 (Vision API)" if detail == "low" else "중비용 (Vision API High)"
-            }
+        # JSON 응답 파싱
+        try:
+            # JSON 코드블록 제거 (```json ... ```)
+            json_match = re.search(r'```json\s*(.*?)\s*```', content, re.DOTALL)
+            if json_match:
+                json_str = json_match.group(1)
+            else:
+                # 코드블록 없이 바로 JSON인 경우
+                json_str = content
 
-        except Exception as e:
-            logger.error(f"❌ 이미지 처리 실패: {str(e)}")
+            parsed = json.loads(json_str)
+            text = parsed.get("text", "")
+            doc_type = parsed.get("doc_type", "기타")
+            quality_score = parsed.get("quality_score", 0)
+            quality_high = parsed.get("quality_high", False)
+            quality_reason = parsed.get("quality_reason", "")
+
+            logger.info(f"✅ JSON 파싱 성공: text={len(text)}자, doc_type={doc_type}")
+            logger.info(f"📊 품질 평가: score={quality_score}/100, quality_high={quality_high}")
+            logger.info(f"💬 평가 이유: {quality_reason}")
+
+        except (json.JSONDecodeError, AttributeError) as e:
+            # JSON 파싱 실패 시 전체 응답을 텍스트로 사용
+            logger.warning(f"⚠️ JSON 파싱 실패, 전체 응답을 텍스트로 사용: {str(e)}")
+            text = content
+            doc_type = "기타"
+            quality_score = 0
+            quality_high = False
+            quality_reason = "JSON 파싱 실패"
+
+        # OpenAI가 거절했는지 확인
+        if "죄송하지만" in text or "분석할 수 없습니다" in text or len(text.strip()) < 20:
+            logger.warning(f"⚠️ OpenAI Vision 거절 또는 결과 부족: {text[:100]}")
             return {
                 "success": False,
                 "type": "IMAGE",
-                "error": str(e)
+                "method": "openai-vision-rejected",
+                "text": text,
+                "char_count": len(text),
+                "error": "Vision API가 텍스트 추출을 거절했습니다."
             }
+
+        logger.info(f"✅ Vision API OCR 완료: {len(text)}자 추출 (detail={detail})")
+        logger.info(f"📋 문서 유형: {doc_type}")
+        logger.info(f"📝 [Vision API {detail.upper()}] 추출된 전체 텍스트:\n{text}")
+
+        return {
+            "success": True,
+            "type": "IMAGE",
+            "method": f"openai-vision-{detail}",
+            "text": text,
+            "doc_type": doc_type,
+            "quality_score": quality_score,
+            "quality_high": quality_high,
+            "quality_reason": quality_reason,
+            "char_count": len(text),
+            "cost_estimate": "저비용 (Vision API Low)" if detail == "low" else "중비용 (Vision API High)"
+        }
 
     async def process(
         self,
@@ -484,7 +493,7 @@ class EvidenceProcessor:
             return await self.process_pdf(file, detail)
 
         elif file_type == "IMAGE":
-            return await self.process_image(file, detail)
+            return await self.process_image(file)
 
         else:
             logger.error(f"❌ 지원하지 않는 파일 타입: {file_type}")

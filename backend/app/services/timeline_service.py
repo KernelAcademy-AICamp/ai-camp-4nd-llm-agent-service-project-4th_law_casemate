@@ -71,18 +71,18 @@ class TimeLineService:
         case, evidences, case_summary, evidence_mappings = self._fetch_case_and_evidences()
         logger.info(f"[Timeline Generation] 데이터 조회 완료: evidences={len(evidences)}개, mappings={len(evidence_mappings)}개")
 
-        # 2. Case Summary에서 데이터 추출 (또는 fallback)
+        # 2. Case Summary에서 데이터 추출 (또는 증거 기반 자동 생성)
         if case_summary:
             summary = case_summary.summary or case.title or "사건 요약 없음"
             facts = case_summary.facts or case.description or "사실관계 없음"
             claims = case_summary.claims or "청구내용 없음"
             logger.info(f"[Timeline Generation] Case Summary 캐시 히트")
         else:
-            # Fallback
-            summary = case.title or "사건 요약 없음"
-            facts = case.description or "사실관계 없음"
-            claims = "청구내용 없음"
-            logger.warning(f"[Timeline Generation] Case Summary 캐시 미스 - fallback 사용")
+            # Fallback: 증거 데이터로부터 LLM이 자동 생성
+            logger.warning(f"[Timeline Generation] Case Summary 캐시 미스 - 증거 데이터로부터 자동 생성")
+            summary, facts, claims = await self._generate_summary_from_evidences(
+                case, evidences, evidence_mappings
+            )
 
         # 3. LLM으로 타임라인 생성 (의뢰인 정보 포함)
         timeline_data = await self._generate_with_llm(
@@ -403,4 +403,110 @@ class TimeLineService:
             logger.error(f"[Parse] JSON 파싱 실패: {e}")
             logger.debug(f"[Parse] 응답 내용 (처음 500자): {llm_response[:500]}")
             return []
+
+    async def _generate_summary_from_evidences(
+        self,
+        case: Case,
+        evidences: List[Evidence],
+        evidence_mappings: dict
+    ) -> tuple:
+        """
+        증거 데이터로부터 사건 요약, 사실관계, 청구내용을 LLM으로 생성
+
+        Args:
+            case: Case 객체
+            evidences: 증거 목록
+            evidence_mappings: 증거 ID별 매핑 정보
+
+        Returns:
+            tuple: (summary, facts, claims)
+        """
+        logger.info(f"[Summary Generation] 증거 기반 요약 생성 시작")
+
+        # 증거 텍스트 포맷팅
+        evidence_text = self._format_evidences(evidences, evidence_mappings)
+
+        # 증거가 없으면 기본값 반환
+        if not evidences or "증거 텍스트가 아직 추출되지 않았습니다" in evidence_text:
+            logger.warning(f"[Summary Generation] 증거 없음 - 기본값 반환")
+            return (
+                case.title or "사건 요약 없음",
+                case.description or "사실관계 없음",
+                "청구내용 없음"
+            )
+
+        # LLM 프롬프트
+        prompt = f"""당신은 법률 사건 분석 전문가입니다.
+아래 사건 정보와 증거 자료를 바탕으로 사건의 요약, 사실관계, 청구내용을 분석해주세요.
+
+**사건 정보:**
+- 제목: {case.title or "제목 없음"}
+- 설명: {case.description or "설명 없음"}
+- 의뢰인: {case.client_name or "미상"} ({case.client_role or "역할 미상"})
+
+**증거 자료:**
+{evidence_text[:3000]}  # 너무 길면 잘라냄
+
+위 정보를 바탕으로 다음을 작성해주세요:
+
+1. **사건 요약 (summary)**: 이 사건이 무엇에 관한 것인지 2-3 문장으로 간결하게 요약
+2. **사실관계 (facts)**: 증거를 통해 확인되는 주요 사실들을 시간순으로 정리 (5-10 문장)
+3. **청구내용 (claims)**: 의뢰인({case.client_role or "원고"})이 주장하거나 요구하는 내용 (3-5 문장)
+
+**응답 형식 (JSON):**
+```json
+{{
+  "summary": "사건 요약 (2-3 문장)",
+  "facts": "주요 사실관계 (증거 기반, 시간순 정리)",
+  "claims": "청구내용 또는 주장사항"
+}}
+```"""
+
+        try:
+            response = await self.openai_client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "당신은 법률 사건 분석 전문가입니다. 증거 자료를 바탕으로 사건을 객관적으로 분석하고 요약합니다."
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ],
+                temperature=0.3,
+                max_tokens=1500
+            )
+
+            llm_response = response.choices[0].message.content
+            logger.info(f"[Summary Generation] LLM 응답 수신: {len(llm_response)} characters")
+
+            # JSON 파싱
+            json_match = re.search(r'```json\s*(.*?)\s*```', llm_response, re.DOTALL)
+            if json_match:
+                json_str = json_match.group(1)
+            else:
+                json_str = llm_response.strip()
+
+            parsed = json.loads(json_str)
+            summary = parsed.get("summary", case.title or "사건 요약 생성 실패")
+            facts = parsed.get("facts", case.description or "사실관계 생성 실패")
+            claims = parsed.get("claims", "청구내용 생성 실패")
+
+            logger.info(f"[Summary Generation] 자동 생성 완료")
+            logger.info(f"  - Summary: {summary[:100]}...")
+            logger.info(f"  - Facts: {facts[:100]}...")
+            logger.info(f"  - Claims: {claims[:100]}...")
+
+            return summary, facts, claims
+
+        except Exception as e:
+            logger.error(f"[Summary Generation] LLM 생성 실패: {str(e)}")
+            # Fallback to basic values
+            return (
+                case.title or "사건 요약 없음",
+                case.description or "사실관계 없음",
+                "청구내용 없음"
+            )
 

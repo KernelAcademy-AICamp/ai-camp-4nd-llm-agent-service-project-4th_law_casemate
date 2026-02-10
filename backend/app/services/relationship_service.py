@@ -55,16 +55,16 @@ class RelationshipService:
         case, timelines, case_summary = self._fetch_case_data()
         logger.info(f"[Relationship Generation] 데이터 조회 완료: timelines={len(timelines)}개")
 
-        # 2. Case Summary에서 데이터 추출 (또는 fallback)
+        # 2. Case Summary에서 데이터 추출 (또는 타임라인 기반 자동 생성)
         if case_summary:
             summary = case_summary.summary or case.title or "사건 요약 없음"
             facts = case_summary.facts or case.description or "사실관계 없음"
             logger.info(f"[Relationship Generation] Case Summary 캐시 히트")
         else:
-            # Fallback
-            summary = case.title or "사건 요약 없음"
-            facts = case.description or "사실관계 없음"
-            logger.warning(f"[Relationship Generation] Case Summary 캐시 미스 - fallback 사용")
+            logger.warning(f"[Relationship Generation] Case Summary 캐시 미스 - 타임라인 데이터로부터 자동 생성")
+            summary, facts = await self._generate_summary_from_timeline(
+                case, timelines
+            )
 
         # 3. 타임라인 요약 생성
         timeline_summary = self._create_timeline_summary(timelines)
@@ -426,3 +426,102 @@ class RelationshipService:
             "persons": [person.to_dict() for person in saved_persons],
             "relationships": [rel.to_dict() for rel in saved_relationships]
         }
+
+    async def _generate_summary_from_timeline(
+        self,
+        case: Case,
+        timelines: List[TimeLine]
+    ) -> tuple:
+        """
+        타임라인 데이터로부터 사건 요약과 사실관계를 LLM으로 생성
+
+        Args:
+            case: Case 객체
+            timelines: 타임라인 목록
+
+        Returns:
+            tuple: (summary, facts)
+        """
+        logger.info(f"[Summary Generation] 타임라인 기반 요약 생성 시작")
+
+        # 타임라인 요약 생성
+        timeline_summary = self._create_timeline_summary(timelines)
+
+        # 타임라인이 없으면 기본값 반환
+        if not timelines or "타임라인 정보가 없습니다" in timeline_summary:
+            logger.warning(f"[Summary Generation] 타임라인 없음 - 기본값 반환")
+            return (
+                case.title or "사건 요약 없음",
+                case.description or "사실관계 없음"
+            )
+
+        # LLM 프롬프트
+        prompt = f"""당신은 법률 사건 분석 전문가입니다.
+아래 사건 정보와 타임라인을 바탕으로 사건의 요약과 사실관계를 분석해주세요.
+
+**사건 정보:**
+- 제목: {case.title or "제목 없음"}
+- 설명: {case.description or "설명 없음"}
+- 의뢰인: {case.client_name or "미상"} ({case.client_role or "역할 미상"})
+
+**타임라인:**
+{timeline_summary[:2000]}  # 너무 길면 잘라냄
+
+위 정보를 바탕으로 다음을 작성해주세요:
+
+1. **사건 요약 (summary)**: 이 사건이 무엇에 관한 것인지 2-3 문장으로 간결하게 요약
+2. **사실관계 (facts)**: 타임라인을 통해 확인되는 주요 사실들을 시간순으로 정리 (5-10 문장)
+
+**응답 형식 (JSON):**
+```json
+{{
+  "summary": "사건 요약 (2-3 문장)",
+  "facts": "주요 사실관계 (타임라인 기반, 시간순 정리)"
+}}
+```"""
+
+        try:
+            response = await self.openai_client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "당신은 법률 사건 분석 전문가입니다. 타임라인 정보를 바탕으로 사건을 객관적으로 분석하고 요약합니다."
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ],
+                temperature=0.3,
+                max_tokens=1500
+            )
+
+            llm_response = response.choices[0].message.content
+            logger.info(f"[Summary Generation] LLM 응답 수신: {len(llm_response)} characters")
+
+            # JSON 파싱
+            import re
+            json_match = re.search(r'```json\s*(.*?)\s*```', llm_response, re.DOTALL)
+            if json_match:
+                json_str = json_match.group(1)
+            else:
+                json_str = llm_response.strip()
+
+            parsed = json.loads(json_str)
+            summary = parsed.get("summary", case.title or "사건 요약 생성 실패")
+            facts = parsed.get("facts", case.description or "사실관계 생성 실패")
+
+            logger.info(f"[Summary Generation] 자동 생성 완료")
+            logger.info(f"  - Summary: {summary[:100]}...")
+            logger.info(f"  - Facts: {facts[:100]}...")
+
+            return summary, facts
+
+        except Exception as e:
+            logger.error(f"[Summary Generation] LLM 생성 실패: {str(e)}")
+            # Fallback to basic values
+            return (
+                case.title or "사건 요약 없음",
+                case.description or "사실관계 없음"
+            )
