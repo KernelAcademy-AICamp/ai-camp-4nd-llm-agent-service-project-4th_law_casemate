@@ -563,6 +563,7 @@ async def get_category_list(
         print(f"❌ 카테고리 목록 조회 실패: {str(e)}")
         raise HTTPException(status_code=500, detail=f"카테고리 목록 조회 실패: {str(e)}")
 
+
 @router.get("/list")
 async def get_evidence_list(
     case_id: int | None = None,  # 선택적: 특정 사건의 파일만 조회
@@ -679,6 +680,62 @@ async def get_evidence_list(
         print(f"❌ 에러: {str(e)}")
         print(f"{'='*80}\n")
         raise HTTPException(status_code=500, detail=f"목록 조회 실패: {str(e)}")
+
+
+@router.get("/{evidence_id}")
+async def get_evidence_detail(
+    evidence_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    증거 단일 조회
+
+    - 증거 상세 정보 반환 (파일 정보, content, 연결된 사건 ID 등)
+    - 권한 확인: 같은 law_firm_id만 조회 가능
+    """
+    print(f"📄 증거 상세 조회: evidence_id={evidence_id}, user_id={current_user.id}, firm_id={current_user.firm_id}")
+
+    try:
+        # 증거 조회
+        evidence = db.query(models.Evidence).filter(
+            models.Evidence.id == evidence_id,
+            models.Evidence.law_firm_id == current_user.firm_id
+        ).first()
+
+        if not evidence:
+            raise HTTPException(status_code=404, detail="증거를 찾을 수 없거나 접근 권한이 없습니다")
+
+        # 연결된 사건 ID 조회
+        linked_cases = db.query(models.CaseEvidenceMapping.case_id).filter(
+            models.CaseEvidenceMapping.evidence_id == evidence_id
+        ).all()
+        linked_case_ids = [case[0] for case in linked_cases]
+
+        # 응답 데이터 구성
+        result = {
+            "evidence_id": evidence.id,
+            "file_name": evidence.file_name,
+            "file_type": evidence.file_type,
+            "file_size": evidence.size if evidence.size else 0,
+            "file_path": evidence.file_path,
+            "content": evidence.content,  # OCR/VLM/STT 결과
+            "starred": evidence.starred if evidence.starred is not None else False,
+            "linked_case_ids": linked_case_ids,
+            "category_id": evidence.category_id,
+            "created_at": evidence.created_at.isoformat() if evidence.created_at else None,
+            "uploader_id": evidence.uploader_id
+        }
+
+        print(f"✅ 증거 상세 조회 성공: {evidence.file_name}")
+        return result
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ 증거 상세 조회 실패: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"증거 조회 실패: {str(e)}")
+
 
 @router.post("/{evidence_id}/link-case/{case_id}")
 async def link_evidence_to_case(

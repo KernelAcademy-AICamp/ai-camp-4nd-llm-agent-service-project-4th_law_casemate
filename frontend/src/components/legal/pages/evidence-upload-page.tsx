@@ -176,10 +176,18 @@ export function EvidenceUploadPage({
 
   // 증거 파일 목록 가져오기 함수
   const fetchEvidences = useCallback(async () => {
+    console.log('🔍 fetchEvidences 호출됨');
     const token = localStorage.getItem('access_token');
-    if (!token) return;
+    console.log('🔑 토큰 존재 여부:', !!token);
+
+    if (!token) {
+      console.log('❌ 토큰이 없어서 파일 목록을 가져올 수 없습니다.');
+      return;
+    }
 
     setIsLoadingFiles(true);
+    console.log('📡 API 호출 시작: /api/v1/evidence/list');
+
     try {
       const response = await fetch('http://localhost:8000/api/v1/evidence/list', {
         headers: {
@@ -187,9 +195,11 @@ export function EvidenceUploadPage({
         }
       });
 
+      console.log('📡 API 응답 상태:', response.status, response.ok);
+
       if (response.ok) {
         const data = await response.json();
-        console.log('증거 목록:', data);
+        console.log('✅ 증거 목록:', data);
 
         // API 응답을 ManagedFile 형식으로 변환
         const evidenceFiles: ManagedFile[] = data.files.map((evidence: any) => ({
@@ -1083,11 +1093,14 @@ export function EvidenceUploadPage({
                             />
                           </td>
                           <td className="px-3 py-2">
-                            <div className="flex items-center gap-2.5">
+                            <div
+                              className="flex items-center gap-2.5 cursor-pointer"
+                              onClick={() => navigate(`/evidence/${file.id}`)}
+                            >
                               <div className="w-8 h-8 rounded bg-secondary/50 flex items-center justify-center shrink-0">
                                 <FileIcon className="h-4 w-4 text-muted-foreground" />
                               </div>
-                              <span className="font-medium truncate">{file.name}</span>
+                              <span className="font-medium truncate hover:text-primary transition-colors">{file.name}</span>
                               {file.starred && (
                                 <Star className="h-3.5 w-3.5 text-amber-500 fill-amber-500 shrink-0" />
                               )}
@@ -1153,7 +1166,7 @@ export function EvidenceUploadPage({
                   return (
                     <div
                       key={file.id}
-                      onClick={() => toggleFileSelection(file.id)}
+                      onClick={() => navigate(`/evidence/${file.id}`)}
                       className={`group relative p-3 rounded-lg border transition-all cursor-pointer ${isSelected
                         ? "border-foreground/30 bg-secondary/40"
                         : "border-border/60 hover:border-border hover:bg-secondary/20"
