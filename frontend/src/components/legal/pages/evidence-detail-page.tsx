@@ -71,6 +71,10 @@ export function EvidenceDetailPage() {
   const [isLoadingAnalysis, setIsLoadingAnalysis] = useState(false);
   const [analysisMessage, setAnalysisMessage] = useState<{ type: 'success' | 'error', text: string } | null>(null);
 
+  // 파일 미리보기 상태
+  const [filePreviewUrl, setFilePreviewUrl] = useState<string | null>(null);
+  const [isLoadingPreview, setIsLoadingPreview] = useState(false);
+
   // 증거 정보 가져오기
   const fetchEvidence = async () => {
     const token = localStorage.getItem('access_token');
@@ -248,6 +252,32 @@ export function EvidenceDetailPage() {
     }
   };
 
+  // 파일 미리보기 URL 가져오기
+  const fetchFilePreviewUrl = async () => {
+    const token = localStorage.getItem('access_token');
+    if (!token || !evidence) return;
+
+    setIsLoadingPreview(true);
+    try {
+      const response = await fetch(`http://localhost:8000/api/v1/evidence/${evidence.evidence_id}/url`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+
+      if (!response.ok) {
+        throw new Error('파일 URL 생성 실패');
+      }
+
+      const data = await response.json();
+      setFilePreviewUrl(data.signed_url);
+    } catch (error) {
+      console.error('파일 미리보기 URL 가져오기 실패:', error);
+    } finally {
+      setIsLoadingPreview(false);
+    }
+  };
+
   // 파일 다운로드
   const handleDownload = async () => {
     const token = localStorage.getItem('access_token');
@@ -303,10 +333,11 @@ export function EvidenceDetailPage() {
     fetchCase();
   }, [id, caseId]);
 
-  // 증거 정보가 로드되면 분석 정보 조회
+  // 증거 정보가 로드되면 분석 정보 조회 및 파일 미리보기 URL 가져오기
   useEffect(() => {
     if (evidence) {
       fetchAnalysis();
+      fetchFilePreviewUrl();
     }
   }, [evidence?.evidence_id]);
 
@@ -345,7 +376,12 @@ export function EvidenceDetailPage() {
     );
   }
 
+  // 파일 타입 확인 함수들
   const isImageFile = evidence.file_type.startsWith('image/');
+  const isPdfFile = evidence.file_type === 'application/pdf';
+  const isAudioFile = evidence.file_type.startsWith('audio/');
+  const isVideoFile = evidence.file_type.startsWith('video/');
+
   const formatFileSize = (bytes: number) => {
     if (bytes < 1024) return bytes + " B";
     if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
@@ -432,22 +468,93 @@ export function EvidenceDetailPage() {
         <div className={`flex-1 ${showInfo ? "w-2/3" : "w-full"}`}>
           <Card className="h-full border-border/60">
             <CardContent className="p-0">
-              {isImageFile ? (
-                <div className="aspect-[4/3] bg-secondary/30 rounded-t-lg flex items-center justify-center relative">
-                  <div className="absolute inset-0 flex items-center justify-center text-muted-foreground">
-                    <div className="text-center">
-                      <FileText className="h-12 w-12 mx-auto mb-2 opacity-50" />
-                      <span className="text-sm font-medium">{evidence.file_name}</span>
-                      <p className="text-xs mt-2">이미지 미리보기는 준비 중입니다</p>
-                    </div>
+              {isLoadingPreview ? (
+                <div className="aspect-[4/3] bg-secondary/30 rounded-t-lg flex items-center justify-center">
+                  <div className="text-center">
+                    <Loader2 className="h-8 w-8 animate-spin text-muted-foreground mx-auto mb-2" />
+                    <p className="text-sm text-muted-foreground">파일 로딩 중...</p>
                   </div>
                 </div>
+              ) : filePreviewUrl ? (
+                <>
+                  {/* 이미지 미리보기 */}
+                  {isImageFile && (
+                    <div className="bg-secondary/30 rounded-t-lg flex items-center justify-center p-4">
+                      <img
+                        src={filePreviewUrl}
+                        alt={evidence.file_name}
+                        className="max-h-[600px] w-auto object-contain rounded"
+                        onError={(e) => {
+                          console.error('이미지 로드 실패');
+                          e.currentTarget.style.display = 'none';
+                        }}
+                      />
+                    </div>
+                  )}
+
+                  {/* PDF 미리보기 */}
+                  {isPdfFile && (
+                    <div className="bg-secondary/30 rounded-t-lg">
+                      <iframe
+                        src={filePreviewUrl}
+                        className="w-full h-[600px] rounded-t-lg"
+                        title={evidence.file_name}
+                      />
+                    </div>
+                  )}
+
+                  {/* 음성 파일 재생 */}
+                  {isAudioFile && (
+                    <div className="bg-secondary/30 rounded-t-lg p-8 flex flex-col items-center justify-center min-h-[400px]">
+                      <div className="text-center mb-6">
+                        <FileText className="h-16 w-16 mx-auto mb-4 opacity-50 text-muted-foreground" />
+                        <p className="text-sm font-medium">{evidence.file_name}</p>
+                        <p className="text-xs text-muted-foreground mt-1">{evidence.file_type}</p>
+                      </div>
+                      <audio
+                        controls
+                        className="w-full max-w-md"
+                        preload="metadata"
+                      >
+                        <source src={filePreviewUrl} type={evidence.file_type} />
+                        브라우저가 오디오 재생을 지원하지 않습니다.
+                      </audio>
+                    </div>
+                  )}
+
+                  {/* 비디오 파일 재생 */}
+                  {isVideoFile && (
+                    <div className="bg-secondary/30 rounded-t-lg p-4">
+                      <video
+                        controls
+                        className="w-full max-h-[600px] rounded"
+                        preload="metadata"
+                      >
+                        <source src={filePreviewUrl} type={evidence.file_type} />
+                        브라우저가 비디오 재생을 지원하지 않습니다.
+                      </video>
+                    </div>
+                  )}
+
+                  {/* 기타 파일 */}
+                  {!isImageFile && !isPdfFile && !isAudioFile && !isVideoFile && (
+                    <div className="aspect-[4/3] bg-secondary/30 rounded-t-lg flex items-center justify-center">
+                      <div className="text-center text-muted-foreground">
+                        <FileText className="h-12 w-12 mx-auto mb-2 opacity-50" />
+                        <p className="text-sm font-medium">{evidence.file_name}</p>
+                        <p className="text-xs mt-1">{evidence.file_type}</p>
+                        <p className="text-xs mt-2">미리보기를 지원하지 않는 파일 형식입니다</p>
+                      </div>
+                    </div>
+                  )}
+                </>
               ) : (
                 <div className="aspect-[4/3] bg-secondary/30 rounded-lg flex items-center justify-center">
                   <div className="text-center text-muted-foreground">
                     <FileText className="h-12 w-12 mx-auto mb-2 opacity-50" />
                     <p className="text-sm font-medium">{evidence.file_name}</p>
                     <p className="text-xs mt-1">{evidence.file_type}</p>
+                    <p className="text-xs mt-2">파일을 불러올 수 없습니다</p>
                   </div>
                 </div>
               )}
