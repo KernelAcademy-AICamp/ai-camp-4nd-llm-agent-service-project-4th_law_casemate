@@ -13,6 +13,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from typing import Optional, List
 from sqlalchemy.orm import Session
+from sqlalchemy import or_
 from openai import OpenAI
 
 from tool.database import get_db
@@ -48,7 +49,6 @@ class GenerateSectionsRequest(BaseModel):
 class GenerateSectionsResponse(BaseModel):
     crime_facts: str       # 범죄사실
     complaint_reason: str  # 고소이유
-    charge_detail: str     # 고소취지 상세
 
 
 class CreateDocumentRequest(BaseModel):
@@ -56,11 +56,13 @@ class CreateDocumentRequest(BaseModel):
     title: str
     document_type: str = "complaint"
     content: str = ""
+    access_level: str = "firm_readonly"  # private, firm_readonly, firm_editable
 
 
 class UpdateDocumentRequest(BaseModel):
     title: Optional[str] = None
     content: Optional[str] = None
+    access_level: Optional[str] = None
 
 
 class DocumentResponse(BaseModel):
@@ -69,6 +71,8 @@ class DocumentResponse(BaseModel):
     title: str
     document_type: str
     content: Optional[str] = None
+    access_level: str = "firm_readonly"
+    created_by: Optional[int] = None
     version: int
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
@@ -78,6 +82,18 @@ class DocumentListItem(BaseModel):
     id: int
     title: str
     document_type: str
+    access_level: str = "firm_readonly"
+    created_by: Optional[int] = None
+    updated_at: Optional[str] = None
+
+
+class DocumentListItemWithCase(BaseModel):
+    id: int
+    case_id: int
+    title: str
+    document_type: str
+    access_level: str = "firm_readonly"
+    created_by: Optional[int] = None
     updated_at: Optional[str] = None
 
 
@@ -98,12 +114,12 @@ COMPLAINT_SYSTEM_PROMPT = """너는 법률 문서 작성 보조 AI다.
 - 빈 <td> 셀에 사건 데이터의 해당 정보를 기입
 - 고소인 정보: 의뢰인(client) 데이터로 채움
 - 피고소인 정보: 상대방(opponent) 데이터로 채움
-- 고소취지의 ○○죄를 실제 죄명(예: 명예훼손죄)으로 대체
+- 고소취지의 ○○죄를 [적용 죄명]에 명시된 실제 죄명으로 대체
 - 범죄사실은 일시, 장소, 범행방법, 결과를 시간순으로 구체적으로 서술
 - 고소이유는 범행 경위, 정황, 고소 동기를 간략 명료하게 서술
 - 증거자료: 증거가 있으면 해당 ☐를 ☑로 변경
-- 별지 증거서류/증거물 목록에 증거를 갑 제N호증으로 기입
-- 확인되지 않은 정보는 [확인필요]로 표시
+- 별지 증거서류/증거물 목록에 증거를 증 제N호증으로 기입
+- 확인되지 않은 정보 처리: 피고소인의 주소를 모르면 "주소 불상", 주민등록번호를 모르면 "주민등록번호 불상", 직업을 모르면 "직업 불상", 연락처를 모르면 "연락처 불상"으로 기재
 - 법률 전문 용어를 사용하되 문장은 명확하게 작성
 
 출력 규칙:
@@ -165,7 +181,7 @@ COMPLAINT_HTML_TEMPLATE = """<h1>고 \u00a0 소 \u00a0 장</h1>
 <hr>
 <h2>3. 고소취지*</h2>
 <p><em>(죄명 및 피고소인에 대한 처벌의사 기재)</em></p>
-<p>고소인은 피고소인을 <strong>\u25cb\u25cb죄</strong>로 고소하오니 처벌하여 주시기 바랍니다.*</p>
+<p>고소인은 피고소인을 <strong>\u25cb\u25cb죄</strong>로 고소하오니 철저히 수사하여 엄벌에 처하여 주시기 바랍니다.</p>
 <hr>
 <h2>4. 범죄사실*</h2>
 <blockquote><p>\u203b 범죄사실은 일시, 장소, 범행방법, 결과 등을 구체적으로 특정하여 기재하여야 합니다.</p></blockquote>
@@ -197,7 +213,7 @@ COMPLAINT_HTML_TEMPLATE = """<h1>고 \u00a0 소 \u00a0 장</h1>
 <tr><th>고소인</th><td>\u00a0\u00a0\u00a0\u00a0\u00a0\u00a0\u00a0\u00a0\u00a0\u00a0\u00a0\u00a0\u00a0\u00a0\u00a0(인)*</td></tr>
 <tr><th>제출인</th><td>\u00a0\u00a0\u00a0\u00a0\u00a0\u00a0\u00a0\u00a0\u00a0\u00a0\u00a0\u00a0\u00a0\u00a0\u00a0(인)</td></tr>
 </tbody></table>
-<p style="text-align: center"><strong>\u25cb\u25cb경찰서 귀중</strong></p>
+<p style="text-align: center"><strong>관할 경찰서장 귀하</strong></p>
 <hr>
 <h1>별지 : 증거자료 세부 목록</h1>
 <h2>1. 인적증거 (목격자, 기타 참고인 등)</h2>
@@ -303,6 +319,7 @@ def retrieve_case_context(case_id: int, db: Session) -> dict:
     # JSON 필드 파싱
     facts = None
     claims = None
+    crime_names = []
     legal_keywords = []
     legal_laws = []
 
@@ -317,6 +334,11 @@ def retrieve_case_context(case_id: int, db: Session) -> dict:
                 claims = json.loads(analysis.claims)
             except json.JSONDecodeError:
                 claims = analysis.claims
+        if analysis.crime_names:
+            try:
+                crime_names = json.loads(analysis.crime_names)
+            except json.JSONDecodeError:
+                pass
         if analysis.legal_keywords:
             try:
                 legal_keywords = json.loads(analysis.legal_keywords)
@@ -342,6 +364,7 @@ def retrieve_case_context(case_id: int, db: Session) -> dict:
             "summary": analysis.summary if analysis else None,
             "facts": facts,
             "claims": claims,
+            "crime_names": crime_names,
             "legal_keywords": legal_keywords,
             "legal_laws": legal_laws,
         },
@@ -397,6 +420,11 @@ def build_user_prompt(context: dict, document_type: str) -> str:
             claims_text = str(analysis["claims"])
         sections.append(f"[청구내용]\n{claims_text}")
 
+    # 적용 죄명
+    if analysis["crime_names"]:
+        crime_names_text = ", ".join(analysis["crime_names"])
+        sections.append(f"[적용 죄명]\n{crime_names_text}")
+
     # 적용 법조문
     if analysis["legal_laws"]:
         laws_text = "\n".join(f"- {law}" for law in analysis["legal_laws"])
@@ -418,8 +446,7 @@ def build_user_prompt(context: dict, document_type: str) -> str:
     # 증거 목록
     if evidences:
         evidence_text = "\n".join(
-            f"- 갑 제{i+1}호증: {e['file_name']} ({e['doc_type']})"
-            + (f" - {e['description']}" if e['description'] else "")
+            f"- 증 제{i+1}호증: {e['description'] or e['doc_type']}"
             for i, e in enumerate(evidences)
         )
         sections.append(f"[증거 목록]\n{evidence_text}")
@@ -457,19 +484,37 @@ def build_user_prompt(context: dict, document_type: str) -> str:
 
 # ==================== 섹션별 생성 (GPT 1회, JSON 응답) ====================
 
-SECTIONS_SYSTEM_PROMPT = """너는 법률 문서 작성 전문 AI다.
-사용자가 제공하는 사건 데이터를 기반으로 고소장의 3개 섹션을 작성한다.
+SECTIONS_SYSTEM_PROMPT = """너는 대한민국 형사 고소장 작성 전문 AI다.
+사용자가 제공하는 사건 데이터를 기반으로 고소장의 범죄사실과 고소이유를 작성한다.
 
-작성 원칙:
-- 변호사가 작성하는 것처럼 전문적이고 명확한 문체
-- 제공된 사실관계와 증거에만 근거하여 작성 (추측 금지)
-- 확인되지 않은 정보는 [확인필요]로 표시
+[기본 규칙]
+- 변호사가 작성하는 것처럼 전문적이고 명확한 문체를 사용한다.
+- 반드시 "~습니다" 경어체로 작성한다 (예: "시작했습니다", "피해를 입었습니다", "해당한다고 사료됩니다").
+- 단정적 표현을 금지한다 ("명백한", "확실한", "틀림없는" 등 사용 금지).
+- "~한 것으로 사료됩니다", "~에 해당한다고 사료됩니다" 등 추정형 문체를 사용한다.
+- 날짜는 "YYYY. M. D." 형식으로 표기한다 (예: 2025. 3. 15.).
+- 제공된 사실관계와 증거에만 근거하여 작성한다 (추측 금지).
+- 확인되지 않은 날짜/장소 등은 "일시 불상", "장소 불상"으로 기재한다.
+- 증거를 인용할 때 "증 제N호증" 형식을 사용한다.
+
+[범죄사실 작성 규칙]
+- 반드시 가/나/다/라 구조로 작성한다:
+  가. 고소인과 피고소인의 관계
+  나. 범행의 구체적 내용 (일시, 장소, 방법, 결과를 시간순으로 서술, 증거번호 인용)
+  다. 피해 결과 및 사후 경과
+  라. 범행 요약
+- 마지막 문장은 반드시 "위와 같은 사정에 비추어 피고소인의 행위는 ○○죄에 해당한다고 사료되므로 고소장을 제출합니다."로 끝낸다.
+  (○○죄는 [적용 죄명]에 제공된 실제 죄명으로 대체. 여러 개면 쉼표로 나열)
+
+[고소이유 작성 규칙]
+- 수사 필요성을 중심으로 서술한다.
+- 감정적 호소는 최소화하고 법적 논리에 집중한다.
+- 피고소인의 행위가 왜 범죄에 해당하는지, 수사가 왜 필요한지를 논리적으로 서술한다.
 
 출력 형식: 반드시 아래 JSON 형식만 출력 (코드블록 없이)
 {
-  "crime_facts": "범죄사실 서술문 (일시, 장소, 범행방법, 결과를 시간순으로 구체적 서술)",
-  "complaint_reason": "고소이유 서술문 (범행 경위, 정황, 고소 동기와 사유를 간략 명료하게 서술)",
-  "charge_detail": "고소취지 상세 서술문 (적용 법조항을 인용하며 처벌 요청의 근거를 1-2문장으로 서술)"
+  "crime_facts": "가. 고소인과 피고소인의 관계\n...\n\n나. 범행의 구체적 내용\n...\n\n다. 피해 결과 및 사후 경과\n...\n\n라. 범행 요약\n...\n\n위와 같은 사정에 비추어 피고소인의 행위는 ○○죄에 해당한다고 사료되므로 고소장을 제출합니다.",
+  "complaint_reason": "고소이유 서술문 (수사 필요성 중심, 법적 논리에 기반하여 간략 명료하게 서술)"
 }"""
 
 
@@ -506,6 +551,9 @@ def build_sections_prompt(context: dict) -> str:
         else:
             parts.append(f"[청구내용]\n{analysis['claims']}")
 
+    if analysis["crime_names"]:
+        parts.append("[적용 죄명]\n" + ", ".join(analysis["crime_names"]))
+
     if analysis["legal_laws"]:
         parts.append("[적용 법조문]\n" + "\n".join(f"- {law}" for law in analysis["legal_laws"]))
 
@@ -517,11 +565,11 @@ def build_sections_prompt(context: dict) -> str:
 
     if evidences:
         parts.append("[증거 목록]\n" + "\n".join(
-            f"- 갑 제{i+1}호증: {e['file_name']} ({e['doc_type']})"
+            f"- 증 제{i+1}호증: {e['description'] or e['doc_type']}"
             for i, e in enumerate(evidences)
         ))
 
-    parts.append("위 데이터를 기반으로 고소장의 범죄사실, 고소이유, 고소취지 상세를 JSON으로 작성하세요.")
+    parts.append("위 데이터를 기반으로 고소장의 범죄사실(crime_facts)과 고소이유(complaint_reason)를 JSON으로 작성하세요.")
 
     return "\n\n".join(parts)
 
@@ -532,20 +580,20 @@ async def generate_sections(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """고소장 서술형 3개 섹션 생성 (GPT 1회 호출, JSON 응답)"""
+    """고소장 서술형 2개 섹션 생성 (GPT 1회 호출, JSON 응답)"""
     context = retrieve_case_context(request.case_id, db)
 
     user_prompt = build_sections_prompt(context)
 
     try:
         response = openai_client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="gpt-4o",
             messages=[
                 {"role": "system", "content": SECTIONS_SYSTEM_PROMPT},
                 {"role": "user", "content": user_prompt},
             ],
             temperature=0.3,
-            max_tokens=3000,
+            max_tokens=4000,
             response_format={"type": "json_object"},
         )
 
@@ -555,7 +603,6 @@ async def generate_sections(
         return GenerateSectionsResponse(
             crime_facts=sections.get("crime_facts", ""),
             complaint_reason=sections.get("complaint_reason", ""),
-            charge_detail=sections.get("charge_detail", ""),
         )
 
     except json.JSONDecodeError:
@@ -577,6 +624,64 @@ async def get_case_context(
     return context
 
 
+# ==================== 권한 헬퍼 ====================
+
+VALID_ACCESS_LEVELS = {"private", "firm_readonly", "firm_editable"}
+
+
+def _to_doc_response(doc: CaseDocument) -> DocumentResponse:
+    """CaseDocument → DocumentResponse 변환"""
+    return DocumentResponse(
+        id=doc.id,
+        case_id=doc.case_id,
+        title=doc.title,
+        document_type=doc.document_type,
+        content=doc.content,
+        access_level=doc.access_level or "firm_readonly",
+        created_by=doc.created_by,
+        version=doc.version,
+        created_at=doc.created_at.isoformat() if doc.created_at else None,
+        updated_at=doc.updated_at.isoformat() if doc.updated_at else None,
+    )
+
+
+def _check_firm_access(doc: CaseDocument, user: User):
+    """법무법인 접근 검사 (law_firm_id가 NULL인 레거시 문서는 허용)"""
+    if doc.law_firm_id is not None and doc.law_firm_id != user.firm_id:
+        raise HTTPException(status_code=403, detail="접근 권한이 없습니다")
+
+
+def _check_read_permission(doc: CaseDocument, user: User):
+    """읽기 권한 검사: private → 작성자만, 나머지 → 같은 법무법인"""
+    _check_firm_access(doc, user)
+    if doc.access_level == "private" and doc.created_by != user.id:
+        raise HTTPException(status_code=403, detail="비공개 문서입니다")
+
+
+def _check_edit_permission(doc: CaseDocument, user: User):
+    """편집 권한 검사: firm_editable → 같은 법무법인, 나머지 → 작성자만"""
+    _check_firm_access(doc, user)
+    if doc.access_level == "firm_editable":
+        return  # 같은 법무법인이면 편집 가능
+    if doc.created_by != user.id:
+        raise HTTPException(status_code=403, detail="문서 작성자만 편집할 수 있습니다")
+
+
+def _check_delete_permission(doc: CaseDocument, user: User):
+    """삭제 권한: 항상 작성자만"""
+    _check_firm_access(doc, user)
+    if doc.created_by != user.id:
+        raise HTTPException(status_code=403, detail="문서 작성자만 삭제할 수 있습니다")
+
+
+def _filter_visible_docs(docs, user: User):
+    """비공개 문서를 작성자가 아닌 사용자에게 숨김"""
+    return [
+        doc for doc in docs
+        if doc.access_level != "private" or doc.created_by == user.id
+    ]
+
+
 # ==================== CRUD 엔드포인트 ====================
 
 @router.post("/", response_model=DocumentResponse)
@@ -586,6 +691,7 @@ async def create_document(
     current_user: User = Depends(get_current_user),
 ):
     """새 문서 저장"""
+    access_level = request.access_level if request.access_level in VALID_ACCESS_LEVELS else "firm_readonly"
     doc = CaseDocument(
         case_id=request.case_id,
         law_firm_id=current_user.firm_id,
@@ -593,21 +699,42 @@ async def create_document(
         title=request.title,
         document_type=request.document_type,
         content=request.content,
+        access_level=access_level,
     )
     db.add(doc)
     db.commit()
     db.refresh(doc)
+    return _to_doc_response(doc)
 
-    return DocumentResponse(
-        id=doc.id,
-        case_id=doc.case_id,
-        title=doc.title,
-        document_type=doc.document_type,
-        content=doc.content,
-        version=doc.version,
-        created_at=doc.created_at.isoformat() if doc.created_at else None,
-        updated_at=doc.updated_at.isoformat() if doc.updated_at else None,
+
+@router.get("/", response_model=List[DocumentListItemWithCase])
+async def list_all_documents(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """법무법인 전체 문서 목록 (비공개 문서는 작성자만 볼 수 있음)"""
+    docs = (
+        db.query(CaseDocument)
+        .filter(or_(
+            CaseDocument.law_firm_id == current_user.firm_id,
+            CaseDocument.law_firm_id.is_(None),
+        ))
+        .order_by(CaseDocument.updated_at.desc())
+        .all()
     )
+    visible = _filter_visible_docs(docs, current_user)
+    return [
+        DocumentListItemWithCase(
+            id=doc.id,
+            case_id=doc.case_id,
+            title=doc.title,
+            document_type=doc.document_type,
+            access_level=doc.access_level or "firm_readonly",
+            created_by=doc.created_by,
+            updated_at=doc.updated_at.isoformat() if doc.updated_at else None,
+        )
+        for doc in visible
+    ]
 
 
 @router.get("/case/{case_id}", response_model=List[DocumentListItem])
@@ -616,22 +743,28 @@ async def list_documents(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """해당 사건의 문서 목록"""
+    """해당 사건의 문서 목록 (비공개 문서는 작성자만 볼 수 있음)"""
     docs = (
         db.query(CaseDocument)
         .filter(CaseDocument.case_id == case_id)
-        .filter(CaseDocument.law_firm_id == current_user.firm_id)
+        .filter(or_(
+            CaseDocument.law_firm_id == current_user.firm_id,
+            CaseDocument.law_firm_id.is_(None),
+        ))
         .order_by(CaseDocument.updated_at.desc())
         .all()
     )
+    visible = _filter_visible_docs(docs, current_user)
     return [
         DocumentListItem(
             id=doc.id,
             title=doc.title,
             document_type=doc.document_type,
+            access_level=doc.access_level or "firm_readonly",
+            created_by=doc.created_by,
             updated_at=doc.updated_at.isoformat() if doc.updated_at else None,
         )
-        for doc in docs
+        for doc in visible
     ]
 
 
@@ -641,21 +774,12 @@ async def get_document(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """문서 상세 (content 포함)"""
+    """문서 상세 (content 포함) - 읽기 권한 검사"""
     doc = db.query(CaseDocument).filter(CaseDocument.id == document_id).first()
     if not doc:
         raise HTTPException(status_code=404, detail="문서를 찾을 수 없습니다")
-
-    return DocumentResponse(
-        id=doc.id,
-        case_id=doc.case_id,
-        title=doc.title,
-        document_type=doc.document_type,
-        content=doc.content,
-        version=doc.version,
-        created_at=doc.created_at.isoformat() if doc.created_at else None,
-        updated_at=doc.updated_at.isoformat() if doc.updated_at else None,
-    )
+    _check_read_permission(doc, current_user)
+    return _to_doc_response(doc)
 
 
 @router.put("/{document_id}", response_model=DocumentResponse)
@@ -665,29 +789,26 @@ async def update_document(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """문서 수정 (title, content)"""
+    """문서 수정 - 편집 권한 검사 (access_level 변경은 작성자만)"""
     doc = db.query(CaseDocument).filter(CaseDocument.id == document_id).first()
     if not doc:
         raise HTTPException(status_code=404, detail="문서를 찾을 수 없습니다")
+    _check_edit_permission(doc, current_user)
 
     if request.title is not None:
         doc.title = request.title
     if request.content is not None:
         doc.content = request.content
+    # access_level 변경은 작성자만 가능
+    if request.access_level is not None:
+        if doc.created_by != current_user.id:
+            raise HTTPException(status_code=403, detail="공개 범위는 작성자만 변경할 수 있습니다")
+        if request.access_level in VALID_ACCESS_LEVELS:
+            doc.access_level = request.access_level
 
     db.commit()
     db.refresh(doc)
-
-    return DocumentResponse(
-        id=doc.id,
-        case_id=doc.case_id,
-        title=doc.title,
-        document_type=doc.document_type,
-        content=doc.content,
-        version=doc.version,
-        created_at=doc.created_at.isoformat() if doc.created_at else None,
-        updated_at=doc.updated_at.isoformat() if doc.updated_at else None,
-    )
+    return _to_doc_response(doc)
 
 
 @router.delete("/{document_id}")
@@ -696,10 +817,11 @@ async def delete_document(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """문서 삭제"""
+    """문서 삭제 - 작성자만 가능"""
     doc = db.query(CaseDocument).filter(CaseDocument.id == document_id).first()
     if not doc:
         raise HTTPException(status_code=404, detail="문서를 찾을 수 없습니다")
+    _check_delete_permission(doc, current_user)
 
     db.delete(doc)
     db.commit()
@@ -712,6 +834,7 @@ async def delete_document(
 async def generate_document(
     request: GenerateDocumentRequest,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """
     사건 데이터 기반 법률 문서 초안 생성 (RAG)

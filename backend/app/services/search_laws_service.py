@@ -118,15 +118,19 @@ class SearchLawsService:
         input_text = "\n\n".join(input_parts)
 
         if not input_text.strip():
-            return {"keywords": [], "laws": [], "search_query": ""}
+            return {"crime_names": [], "keywords": [], "laws": [], "search_query": ""}
 
-        system_prompt = """너는 법률 전문가다. 사건 내용을 분석하여 적용 가능한 법적 쟁점과 관련 법조문을 추출하라.
+        system_prompt = """너는 법률 전문가다. 사건 내용을 분석하여 적용 가능한 죄명, 법적 쟁점, 관련 법조문을 추출하라.
 
 [출력 규칙]
-1. keywords: 이 사건에 적용될 수 있는 법적 쟁점/죄명/청구원인 (3~7개)
-2. laws: 관련될 수 있는 구체적 법조문 (3~7개)
+1. crime_names: 적용 가능한 정확한 죄명 (1~5개)
+   - 반드시 "~죄" 형태로 출력 (예: "명예훼손죄", "모욕죄", "사기죄")
+   - 형법/특별법상 공식 죄명만 사용
+2. keywords: 법적 쟁점/개념/청구원인 (3~7개)
+   - 죄명을 제외한 법적 쟁점만 포함 (예: "인격권 침해", "불법행위", "위자료")
+3. laws: 관련될 수 있는 구체적 법조문 (3~7개)
    - 형식: "법령명 제N조" (예: "형법 제307조", "민법 제750조")
-3. 확실하지 않은 것은 제외하고, 명확히 관련된 것만 포함
+4. 확실하지 않은 것은 제외하고, 명확히 관련된 것만 포함
 
 [주요 법령 참고]
 - 형사: 형법, 정보통신망법, 성폭력처벌법, 특정범죄가중처벌법
@@ -134,7 +138,7 @@ class SearchLawsService:
 - 가사: 민법(가족법), 가사소송법
 
 JSON 형식으로만 출력하라:
-{"keywords": ["...", "..."], "laws": ["...", "..."]}"""
+{"crime_names": ["명예훼손죄", "..."], "keywords": ["...", "..."], "laws": ["...", "..."]}"""
 
         user_prompt = input_text
         if case_type:
@@ -161,15 +165,17 @@ JSON 형식으로만 출력하라:
             result_text = result_text.strip()
 
             result = json.loads(result_text)
+            crime_names = result.get("crime_names", [])
             keywords = result.get("keywords", [])
             laws = result.get("laws", [])
 
-            # 검색 쿼리 생성 (키워드 + 법조문 결합)
+            # 검색 쿼리 생성 (키워드 + 법조문 결합, crime_names는 검색 쿼리에 불포함)
             search_query = " ".join(keywords + laws)
 
-            logger.info(f"법적 쟁점 추출 완료: keywords={keywords}, laws={laws}")
+            logger.info(f"법적 쟁점 추출 완료: crime_names={crime_names}, keywords={keywords}, laws={laws}")
 
             return {
+                "crime_names": crime_names,
                 "keywords": keywords,
                 "laws": laws,
                 "search_query": search_query,
@@ -177,10 +183,10 @@ JSON 형식으로만 출력하라:
 
         except json.JSONDecodeError as e:
             logger.error(f"법적 쟁점 추출 JSON 파싱 실패: {e}")
-            return {"keywords": [], "laws": [], "search_query": ""}
+            return {"crime_names": [], "keywords": [], "laws": [], "search_query": ""}
         except Exception as e:
             logger.error(f"법적 쟁점 추출 실패: {e}")
-            return {"keywords": [], "laws": [], "search_query": ""}
+            return {"crime_names": [], "keywords": [], "laws": [], "search_query": ""}
 
     def search_laws_with_extraction(
         self,

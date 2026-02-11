@@ -1,7 +1,7 @@
 "use client";
 
 import React from "react";
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -14,13 +14,6 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import {
   ArrowLeft,
   Upload,
   Plus,
@@ -29,7 +22,6 @@ import {
   Trash2,
   FolderOpen,
   Folder,
-  FolderPlus,
   MoreVertical,
   Search,
   Grid,
@@ -44,8 +36,8 @@ import {
   Star,
   Clock,
   HardDrive,
-  Home,
   Loader2,
+  Briefcase,
 } from "lucide-react";
 import {
   DropdownMenu,
@@ -54,11 +46,8 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { useNavigate, useParams } from "react-router-dom";
-import { type CaseData, sampleCases } from "@/lib/sample-data";
-
+import { useNavigate } from "react-router-dom";
 interface EvidenceUploadPageProps {
-  cases?: CaseData[];
   preSelectedCaseId?: string;
 }
 
@@ -81,6 +70,19 @@ interface FileFolder {
   expanded?: boolean;
 }
 
+interface DocumentItem {
+  id: number;
+  case_id: number;
+  title: string;
+  document_type: string;
+  updated_at: string | null;
+}
+
+interface CaseFolder {
+  id: number;
+  title: string;
+}
+
 // // Sample folder tree structure
 // const sampleFolders: FileFolder[] = [
 //   { id: "root", name: "내 드라이브", parentId: null, expanded: true },
@@ -96,12 +98,12 @@ interface FileFolder {
 //   { id: "f5", name: "진술서", parentId: "root" },
 // ];
 
-export function EvidenceUploadPage({
-  cases: propCases,
-}: EvidenceUploadPageProps) {
+export function EvidenceUploadPage({}: EvidenceUploadPageProps) {
   const navigate = useNavigate();
-  const { id: caseIdFromUrl } = useParams<{ id: string }>();
-  const cases = propCases || sampleCases;
+  // 페이지 모드: 증거 파일 vs 문서
+  const [pageMode, setPageMode] = useState<"evidence" | "documents">("evidence");
+  const [filterMode, setFilterMode] = useState<"all" | "recent" | "starred">("all");
+
   const [selectedFolder, setSelectedFolder] = useState<string>("root");
   const [searchQuery, setSearchQuery] = useState("");
   const [viewMode, setViewMode] = useState<"grid" | "list">("list");
@@ -112,9 +114,17 @@ export function EvidenceUploadPage({
   const [dragOver, setDragOver] = useState(false);
   const [showLinkModal, setShowLinkModal] = useState(false);
   const [selectedFileForLink, setSelectedFileForLink] = useState<ManagedFile | null>(null);
+  const [filesToLink, setFilesToLink] = useState<string[]>([]);
   const [selectedCaseForLink, setSelectedCaseForLink] = useState("");
+  const [caseSearchQuery, setCaseSearchQuery] = useState("");
   const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set());
-  const [sidebarView, setSidebarView] = useState<"folders" | "recent" | "starred">("folders");
+
+  // 문서 state
+  const [caseFolders, setCaseFolders] = useState<CaseFolder[]>([]);
+  const [selectedCaseFolder, setSelectedCaseFolder] = useState<number | null>(null);
+  const [caseDocuments, setCaseDocuments] = useState<DocumentItem[]>([]);
+  const [allDocuments, setAllDocuments] = useState<DocumentItem[]>([]);
+  const [isLoadingDocuments, setIsLoadingDocuments] = useState(false);
 
   // 업로드 상태 관리
   const [isUploading, setIsUploading] = useState(false);
@@ -123,75 +133,138 @@ export function EvidenceUploadPage({
   // 파일 목록 로딩 상태 관리
   const [isLoadingFiles, setIsLoadingFiles] = useState(false);
 
-  // 카테고리 추가 Dialog 상태
-  const [showAddCategoryDialog, setShowAddCategoryDialog] = useState(false);
-  const [categoryName, setCategoryName] = useState("");
-  const [selectedParentFolder, setSelectedParentFolder] = useState<string>("root");
+  // 인라인 폴더 생성 상태
+  const [inlineNewFolderParentId, setInlineNewFolderParentId] = useState<string | null>(null);
+  const [inlineNewFolderName, setInlineNewFolderName] = useState("");
+  const creatingFolderRef = useRef(false);
+
+  // 폴더 이름 변경 상태
+  const [renamingFolderId, setRenamingFolderId] = useState<string | null>(null);
+  const [renamingFolderName, setRenamingFolderName] = useState("");
+  const renamingRef = useRef(false);
+
+  // 폴더 드래그 상태
+  const [draggedFolderId, setDraggedFolderId] = useState<string | null>(null);
+  const [dragOverFolderId, setDragOverFolderId] = useState<string | null>(null);
+
+  // 폴더 컨텍스트 메뉴
+  const [folderContextMenu, setFolderContextMenu] = useState<{ folderId: string; x: number; y: number } | null>(null);
 
   // 삭제 확인 Dialog 상태
   const [showDeleteConfirmDialog, setShowDeleteConfirmDialog] = useState(false);
   const [fileToDelete, setFileToDelete] = useState<ManagedFile | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
 
-  // 카테고리 목록 가져오기
-  useEffect(() => {
-    const fetchCategories = async () => {
-      const token = localStorage.getItem('access_token');
-      if (!token) return;
-
-      try {
-        const response = await fetch('http://localhost:8000/api/v1/evidence/categories', {
-          headers: {
-            'Authorization': `Bearer ${token}`
-          }
-        });
-
-        if (response.ok) {
-          const data = await response.json();
-          console.log('카테고리 목록:', data);
-
-          // API 응답을 FileFolder 형식으로 변환
-          const categoryFolders: FileFolder[] = data.categories.map((cat: any) => ({
-            id: `cat-${cat.category_id}`,
-            name: cat.name,
-            parentId: cat.parent_id ? `cat-${cat.parent_id}` : 'root',
-            expanded: false
-          }));
-
-          // root 폴더 추가
-          const allFolders: FileFolder[] = [
-            { id: "root", name: "전체", parentId: null, expanded: true },
-            ...categoryFolders
-          ];
-
-          setFolders(allFolders);
-        }
-      } catch (error) {
-        console.error('카테고리 목록 조회 실패:', error);
-      }
-    };
-
-    fetchCategories();
-  }, []);
-
-  // 증거 파일 목록 가져오기 함수
-  const fetchEvidences = useCallback(async () => {
+  // 통합 초기 데이터 로드 (4번 API → 1번)
+  const fetchInitData = useCallback(async () => {
     const token = localStorage.getItem('access_token');
     if (!token) return;
 
     setIsLoadingFiles(true);
     try {
-      const response = await fetch('http://localhost:8000/api/v1/evidence/list', {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
+      const response = await fetch('http://localhost:8000/api/v1/file-manager/init', {
+        headers: { 'Authorization': `Bearer ${token}` }
       });
 
       if (response.ok) {
         const data = await response.json();
-        console.log('증거 목록:', data);
 
-        // API 응답을 ManagedFile 형식으로 변환
+        // 카테고리 → 폴더
+        const categoryFolders: FileFolder[] = data.categories.map((cat: any) => ({
+          id: `cat-${cat.category_id}`,
+          name: cat.name,
+          parentId: cat.parent_id ? `cat-${cat.parent_id}` : 'root',
+          expanded: false
+        }));
+        setFolders([
+          { id: "root", name: "전체", parentId: null, expanded: true },
+          ...categoryFolders
+        ]);
+
+        // 증거 파일
+        const evidenceFiles: ManagedFile[] = data.files.map((ev: any) => ({
+          id: ev.evidence_id.toString(),
+          name: ev.file_name,
+          type: ev.file_type || 'application/octet-stream',
+          size: ev.file_size || 0,
+          folder: ev.category_id ? `cat-${ev.category_id}` : 'root',
+          uploadedAt: ev.created_at ? ev.created_at.split('T')[0] : '',
+          modifiedAt: ev.created_at ? ev.created_at.split('T')[0] : '',
+          linkedCases: ev.linked_case_ids ? ev.linked_case_ids.map((id: number) => id.toString()) : [],
+          starred: ev.starred || false,
+        }));
+        setFiles(evidenceFiles);
+
+        // 사건 폴더
+        setCaseFolders(data.case_folders);
+
+        // 전체 문서
+        setAllDocuments(data.documents);
+      }
+    } catch (error) {
+      console.error('통합 API 실패, 개별 API로 fallback:', error);
+      // fallback: 개별 API 호출
+      try {
+        const headers = { 'Authorization': `Bearer ${token}` };
+        const [catRes, fileRes, caseRes, docRes] = await Promise.all([
+          fetch('http://localhost:8000/api/v1/evidence/categories', { headers }),
+          fetch('http://localhost:8000/api/v1/evidence/list', { headers }),
+          fetch('http://localhost:8000/api/v1/cases', { headers }),
+          fetch('http://localhost:8000/api/v1/documents/', { headers }),
+        ]);
+
+        if (catRes.ok) {
+          const catData = await catRes.json();
+          const categoryFolders: FileFolder[] = catData.categories.map((cat: any) => ({
+            id: `cat-${cat.category_id}`,
+            name: cat.name,
+            parentId: cat.parent_id ? `cat-${cat.parent_id}` : 'root',
+            expanded: false
+          }));
+          setFolders([{ id: "root", name: "전체", parentId: null, expanded: true }, ...categoryFolders]);
+        }
+        if (fileRes.ok) {
+          const fileData = await fileRes.json();
+          setFiles(fileData.files.map((ev: any) => ({
+            id: ev.evidence_id.toString(),
+            name: ev.file_name,
+            type: ev.file_type || 'application/octet-stream',
+            size: ev.file_size || 0,
+            folder: ev.category_id ? `cat-${ev.category_id}` : 'root',
+            uploadedAt: ev.created_at ? ev.created_at.split('T')[0] : '',
+            modifiedAt: ev.created_at ? ev.created_at.split('T')[0] : '',
+            linkedCases: ev.linked_case_ids ? ev.linked_case_ids.map((id: number) => id.toString()) : [],
+            starred: ev.starred || false,
+          })));
+        }
+        if (caseRes.ok) {
+          const caseData = await caseRes.json();
+          setCaseFolders(caseData.cases.map((c: any) => ({ id: c.id, title: c.title })));
+        }
+        if (docRes.ok) {
+          const docData = await docRes.json();
+          setAllDocuments(docData);
+        }
+      } catch (fallbackError) {
+        console.error('개별 API도 실패:', fallbackError);
+      }
+    } finally {
+      setIsLoadingFiles(false);
+    }
+  }, []);
+
+  // 증거 파일만 새로고침 (업로드/삭제 후 사용)
+  const fetchEvidences = useCallback(async () => {
+    const token = localStorage.getItem('access_token');
+    if (!token) return;
+
+    try {
+      const response = await fetch('http://localhost:8000/api/v1/evidence/list', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+
+      if (response.ok) {
+        const data = await response.json();
         const evidenceFiles: ManagedFile[] = data.files.map((evidence: any) => ({
           id: evidence.evidence_id.toString(),
           name: evidence.file_name,
@@ -203,20 +276,71 @@ export function EvidenceUploadPage({
           linkedCases: evidence.linked_case_ids ? evidence.linked_case_ids.map((id: number) => id.toString()) : [],
           starred: evidence.starred || false,
         }));
-
         setFiles(evidenceFiles);
       }
     } catch (error) {
       console.error('증거 목록 조회 실패:', error);
-    } finally {
-      setIsLoadingFiles(false);
     }
   }, []);
 
-  // 초기 로드 시 증거 파일 목록 가져오기
+  // 초기 로드
   useEffect(() => {
-    fetchEvidences();
-  }, [fetchEvidences]);
+    fetchInitData();
+  }, [fetchInitData]);
+
+  // 선택된 사건 폴더의 문서 목록 가져오기
+  useEffect(() => {
+    if (selectedCaseFolder === null) {
+      setCaseDocuments([]);
+      return;
+    }
+
+    const fetchCaseDocuments = async () => {
+      const token = localStorage.getItem('access_token');
+      if (!token) return;
+
+      setIsLoadingDocuments(true);
+      try {
+        const response = await fetch(`http://localhost:8000/api/v1/documents/case/${selectedCaseFolder}`, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (response.ok) {
+          const data = await response.json();
+          setCaseDocuments(data.map((d: any) => ({ ...d, case_id: selectedCaseFolder })));
+        }
+      } catch (error) {
+        console.error('사건 문서 목록 조회 실패:', error);
+      } finally {
+        setIsLoadingDocuments(false);
+      }
+    };
+    fetchCaseDocuments();
+  }, [selectedCaseFolder]);
+
+  // F2: 이름 변경, Delete: 폴더 삭제
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (pageMode !== 'evidence' || selectedFolder === 'root') return;
+      if (renamingFolderId || inlineNewFolderParentId) return;
+      if (e.key === 'F2') {
+        e.preventDefault();
+        startRenameFolder(selectedFolder);
+      } else if (e.key === 'Delete') {
+        e.preventDefault();
+        deleteFolder(selectedFolder);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [selectedFolder, pageMode, renamingFolderId, inlineNewFolderParentId]);
+
+  // 컨텍스트 메뉴 외부 클릭 닫기
+  useEffect(() => {
+    if (!folderContextMenu) return;
+    const handleClick = () => setFolderContextMenu(null);
+    window.addEventListener('click', handleClick);
+    return () => window.removeEventListener('click', handleClick);
+  }, [folderContextMenu]);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -498,14 +622,14 @@ export function EvidenceUploadPage({
   };
 
   const filteredFiles = (() => {
-    let result = files;
+    let result = selectedFolder !== "root"
+      ? getFilesInFolder(selectedFolder)
+      : files;
 
-    if (sidebarView === "starred") {
-      result = files.filter((f) => f.starred);
-    } else if (sidebarView === "recent") {
-      result = [...files].sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt)).slice(0, 20);
-    } else if (selectedFolder !== "root") {
-      result = getFilesInFolder(selectedFolder);
+    if (filterMode === "starred") {
+      result = result.filter((f) => f.starred);
+    } else if (filterMode === "recent") {
+      result = [...result].sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt)).slice(0, 20);
     }
 
     if (searchQuery) {
@@ -517,13 +641,42 @@ export function EvidenceUploadPage({
     return result;
   })();
 
-  const openLinkModal = (file: ManagedFile) => {
-    setSelectedFileForLink(file);
+  // 문서 필터링
+  const filteredDocuments = (() => {
+    let docs = selectedCaseFolder !== null
+      ? caseDocuments
+      : allDocuments;
+
+    if (filterMode === "recent") {
+      docs = [...docs].sort((a, b) =>
+        (b.updated_at || "").localeCompare(a.updated_at || "")
+      ).slice(0, 20);
+    }
+
+    if (searchQuery) {
+      docs = docs.filter((d) =>
+        d.title.toLowerCase().includes(searchQuery.toLowerCase())
+      );
+    }
+
+    return docs;
+  })();
+
+  const openLinkModal = (file?: ManagedFile) => {
+    if (file) {
+      setSelectedFileForLink(file);
+      setFilesToLink([file.id]);
+    } else {
+      setSelectedFileForLink(null);
+      setFilesToLink(Array.from(selectedFiles));
+    }
+    setSelectedCaseForLink("");
+    setCaseSearchQuery("");
     setShowLinkModal(true);
   };
 
   const linkFileToCase = async () => {
-    if (!selectedFileForLink || !selectedCaseForLink) return;
+    if (filesToLink.length === 0 || !selectedCaseForLink) return;
 
     const token = localStorage.getItem('access_token');
     if (!token) {
@@ -532,39 +685,24 @@ export function EvidenceUploadPage({
     }
 
     try {
-      const evidenceId = selectedFileForLink.id;
-      const caseId = selectedCaseForLink;
-
-      // 백엔드 API 호출
-      const response = await fetch(`http://localhost:8000/api/v1/evidence/${evidenceId}/link-case/${caseId}`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
-      });
-
-      if (!response.ok) {
-        throw new Error(`연결 실패: ${response.statusText}`);
+      for (const evidenceId of filesToLink) {
+        const response = await fetch(`http://localhost:8000/api/v1/evidence/${evidenceId}/link-case/${selectedCaseForLink}`, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (!response.ok) throw new Error(`연결 실패: ${response.statusText}`);
       }
 
-      const data = await response.json();
-      console.log('사건 연결 성공:', data);
-
-      // 증거 목록 새로고침
       await fetchEvidences();
-
       setShowLinkModal(false);
       setSelectedFileForLink(null);
+      setFilesToLink([]);
       setSelectedCaseForLink("");
+      setSelectedFiles(new Set());
     } catch (error) {
       console.error('사건 연결 실패:', error);
       alert(`사건 연결 실패: ${error}`);
     }
-  };
-
-  const getCaseName = (caseId: string) => {
-    const foundCase = cases.find((c) => c.id === caseId);
-    return foundCase?.name || caseId;
   };
 
   // 단일 파일 다운로드
@@ -662,97 +800,280 @@ export function EvidenceUploadPage({
     setSelectedFiles(new Set());
   };
 
+  // 카테고리 목록 새로고침 (expanded 상태 보존)
+  const refreshCategories = async () => {
+    const token = localStorage.getItem('access_token');
+    if (!token) return;
+    const response = await fetch('http://localhost:8000/api/v1/evidence/categories', {
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
+    if (response.ok) {
+      const data = await response.json();
+      const categoryFolders: FileFolder[] = data.categories.map((cat: any) => ({
+        id: `cat-${cat.category_id}`,
+        name: cat.name,
+        parentId: cat.parent_id ? `cat-${cat.parent_id}` : 'root',
+        expanded: false
+      }));
+      setFolders(prev => {
+        const expandedIds = new Set(prev.filter(f => f.expanded).map(f => f.id));
+        return [
+          { id: "root", name: "전체", parentId: null, expanded: true },
+          ...categoryFolders.map(f => ({ ...f, expanded: expandedIds.has(f.id) }))
+        ];
+      });
+    }
+  };
+
+  // 중복 없는 폴더명 생성
+  const getNextFolderName = (parentId: string) => {
+    const baseName = "새 폴더";
+    const siblings = folders.filter(f => f.parentId === parentId);
+    const existingNames = new Set(siblings.map(f => f.name));
+    if (!existingNames.has(baseName)) return baseName;
+    let i = 1;
+    while (existingNames.has(`${baseName}(${i})`)) i++;
+    return `${baseName}(${i})`;
+  };
+
   const addCategory = () => {
-    setShowAddCategoryDialog(true);
+    const parentId = selectedFolder;
+    setInlineNewFolderParentId(parentId);
+    setInlineNewFolderName(getNextFolderName(parentId));
+    if (parentId !== "root") {
+      setFolders(prev => prev.map(f => f.id === parentId ? { ...f, expanded: true } : f));
+    }
+  };
+
+  const cancelInlineFolder = () => {
+    setInlineNewFolderParentId(null);
+    setInlineNewFolderName("");
   };
 
   const handleCreateCategory = async () => {
-    const token = localStorage.getItem('access_token');
+    if (creatingFolderRef.current || !inlineNewFolderName.trim() || inlineNewFolderParentId === null) return;
 
-    if (!token) {
-      alert('로그인이 필요합니다.');
-      return;
-    }
+    creatingFolderRef.current = true;
+    const name = inlineNewFolderName.trim();
+    const parentId = inlineNewFolderParentId;
+
+    setInlineNewFolderParentId(null);
+    setInlineNewFolderName("");
+
+    const token = localStorage.getItem('access_token');
+    if (!token) { creatingFolderRef.current = false; return; }
 
     try {
       const response = await fetch('http://localhost:8000/api/v1/evidence/categories', {
         method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        },
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          name: categoryName,
-          parent_id: selectedParentFolder === 'root' ? null : parseInt(selectedParentFolder.replace('cat-', '')),
+          name,
+          parent_id: parentId === 'root' ? null : parseInt(parentId.replace('cat-', '')),
           order_index: 0
         })
       });
-
-      if (!response.ok) {
-        throw new Error(`카테고리 생성 실패: ${response.statusText}`);
-      }
-
-      const data = await response.json();
-      console.log('카테고리 생성 성공:', data);
-
-      // 카테고리 목록 새로고침
-      const categoriesResponse = await fetch('http://localhost:8000/api/v1/evidence/categories', {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
-      });
-
-      if (categoriesResponse.ok) {
-        const categoriesData = await categoriesResponse.json();
-        const categoryFolders: FileFolder[] = categoriesData.categories.map((cat: any) => ({
-          id: `cat-${cat.category_id}`,
-          name: cat.name,
-          parentId: cat.parent_id ? `cat-${cat.parent_id}` : 'root',
-          expanded: false
-        }));
-
-        const allFolders: FileFolder[] = [
-          { id: "root", name: "전체", parentId: null, expanded: true },
-          ...categoryFolders
-        ];
-
-        setFolders(allFolders);
-      }
-
-      // Dialog 닫기 및 초기화
-      setShowAddCategoryDialog(false);
-      setCategoryName("");
-      setSelectedParentFolder("root");
+      if (!response.ok) throw new Error(`폴더 생성 실패: ${response.statusText}`);
+      await refreshCategories();
     } catch (error) {
-      console.error('카테고리 생성 실패:', error);
-      alert(`카테고리 생성 실패: ${error}`);
+      console.error('폴더 생성 실패:', error);
+      alert(`폴더 생성 실패: ${error}`);
+    } finally {
+      creatingFolderRef.current = false;
     }
   };
 
+  // 폴더 이름 변경
+  const startRenameFolder = (folderId: string) => {
+    const folder = folders.find(f => f.id === folderId);
+    if (!folder || folderId === 'root') return;
+    setRenamingFolderId(folderId);
+    setRenamingFolderName(folder.name);
+    setFolderContextMenu(null);
+  };
+
+  const cancelRenameFolder = () => {
+    setRenamingFolderId(null);
+    setRenamingFolderName("");
+  };
+
+  const handleRenameFolder = async () => {
+    if (renamingRef.current || !renamingFolderName.trim() || !renamingFolderId) return;
+
+    const newName = renamingFolderName.trim();
+    const folderId = renamingFolderId;
+    const oldFolder = folders.find(f => f.id === folderId);
+
+    if (oldFolder && oldFolder.name === newName) {
+      cancelRenameFolder();
+      return;
+    }
+
+    renamingRef.current = true;
+    setRenamingFolderId(null);
+    setRenamingFolderName("");
+
+    const token = localStorage.getItem('access_token');
+    if (!token) { renamingRef.current = false; return; }
+
+    const categoryId = parseInt(folderId.replace('cat-', ''));
+
+    try {
+      const response = await fetch(`http://localhost:8000/api/v1/evidence/categories/${categoryId}/rename`, {
+        method: 'PATCH',
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: newName })
+      });
+      if (!response.ok) throw new Error('이름 변경 실패');
+      setFolders(prev => prev.map(f => f.id === folderId ? { ...f, name: newName } : f));
+    } catch (error) {
+      console.error('폴더 이름 변경 실패:', error);
+      alert(`폴더 이름 변경 실패: ${error}`);
+    } finally {
+      renamingRef.current = false;
+    }
+  };
+
+  // 폴더 삭제 (하위 폴더 포함, 파일은 미분류로 이동)
+  const deleteFolder = async (folderId: string) => {
+    if (folderId === 'root') return;
+    setFolderContextMenu(null);
+    const folder = folders.find(f => f.id === folderId);
+    if (!folder) return;
+
+    const hasChild = folders.some(f => f.parentId === folderId);
+    const msg = hasChild
+      ? `"${folder.name}" 폴더와 하위 폴더를 모두 삭제하시겠습니까?\n(파일은 삭제되지 않고 미분류로 이동됩니다)`
+      : `"${folder.name}" 폴더를 삭제하시겠습니까?\n(파일은 삭제되지 않고 미분류로 이동됩니다)`;
+    if (!confirm(msg)) return;
+
+    const token = localStorage.getItem('access_token');
+    if (!token) return;
+
+    const categoryId = parseInt(folderId.replace('cat-', ''));
+    try {
+      const response = await fetch(`http://localhost:8000/api/v1/evidence/categories/delete/${categoryId}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (!response.ok) throw new Error('삭제 실패');
+      await refreshCategories();
+      await fetchEvidences();
+      if (selectedFolder === folderId) setSelectedFolder('root');
+    } catch (error) {
+      console.error('폴더 삭제 실패:', error);
+      alert(`폴더 삭제 실패: ${error}`);
+    }
+  };
+
+  // 폴더 드래그 앤 드롭 이동
+  const isDescendantOf = (parentId: string, targetId: string): boolean => {
+    const children = folders.filter(f => f.parentId === parentId);
+    return children.some(c => c.id === targetId || isDescendantOf(c.id, targetId));
+  };
+
+  const handleMoveFolder = async (folderId: string, newParentId: string) => {
+    if (folderId === newParentId || folderId === 'root') return;
+    if (newParentId !== 'root' && isDescendantOf(folderId, newParentId)) return;
+
+    const currentFolder = folders.find(f => f.id === folderId);
+    if (currentFolder?.parentId === newParentId) return;
+
+    const token = localStorage.getItem('access_token');
+    if (!token) return;
+
+    const categoryId = parseInt(folderId.replace('cat-', ''));
+    const parentCategoryId = newParentId === 'root' ? null : parseInt(newParentId.replace('cat-', ''));
+
+    try {
+      const response = await fetch(`http://localhost:8000/api/v1/evidence/categories/${categoryId}/move`, {
+        method: 'PATCH',
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ parent_id: parentCategoryId })
+      });
+      if (!response.ok) throw new Error('이동 실패');
+      await refreshCategories();
+    } catch (error) {
+      console.error('폴더 이동 실패:', error);
+      alert(`폴더 이동 실패: ${error}`);
+    }
+  };
+
+  const getDocumentTypeName = (type: string) => {
+    const typeMap: Record<string, string> = {
+      complaint: "고소장",
+      notice: "내용증명",
+      civil_suit: "소장",
+    };
+    return typeMap[type] || type;
+  };
+
+  const handleDocumentClick = (doc: DocumentItem) => {
+    navigate(`/cases/${doc.case_id}?tab=documents`);
+  };
+
+
   const renderFolderTree = (parentId: string | null, depth: number = 0) => {
     const childFolders = getChildFolders(parentId);
-    if (childFolders.length === 0) return null;
+    const showInlineInput = inlineNewFolderParentId === parentId;
+
+    if (childFolders.length === 0 && !showInlineInput) return null;
 
     return (
       <div className={depth > 0 ? "ml-4" : ""}>
         {childFolders.map((folder) => {
           const isExpanded = folder.expanded;
           const hasChildFolders = hasChildren(folder.id);
-          const isSelected = selectedFolder === folder.id && sidebarView === "folders";
+          const isSelected = selectedFolder === folder.id;
           const fileCount = files.filter((f) => f.folder === folder.id).length;
+          const needsSubtree = (isExpanded && hasChildFolders) || inlineNewFolderParentId === folder.id;
+          const isRenaming = renamingFolderId === folder.id;
+          const isDragOver = dragOverFolderId === folder.id;
 
           return (
             <div key={folder.id}>
-              <button
-                type="button"
-                onClick={() => {
-                  setSidebarView("folders");
-                  setSelectedFolder(folder.id);
+              <div
+                draggable
+                onDragStart={(e) => {
+                  e.stopPropagation();
+                  setDraggedFolderId(folder.id);
+                  e.dataTransfer.effectAllowed = 'move';
                 }}
-                className={`w-full flex items-center gap-1.5 px-2 py-1.5 rounded-md text-sm transition-colors group ${isSelected
-                  ? "bg-secondary text-foreground font-medium"
-                  : "text-muted-foreground hover:bg-secondary/50 hover:text-foreground"
-                  }`}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  if (draggedFolderId && draggedFolderId !== folder.id) {
+                    setDragOverFolderId(folder.id);
+                  }
+                }}
+                onDragLeave={(e) => {
+                  e.stopPropagation();
+                  if (dragOverFolderId === folder.id) setDragOverFolderId(null);
+                }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setDragOverFolderId(null);
+                  if (draggedFolderId && draggedFolderId !== folder.id) {
+                    handleMoveFolder(draggedFolderId, folder.id);
+                  }
+                  setDraggedFolderId(null);
+                }}
+                onDragEnd={() => { setDraggedFolderId(null); setDragOverFolderId(null); }}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setFolderContextMenu({ folderId: folder.id, x: e.clientX, y: e.clientY });
+                }}
+                onClick={() => setSelectedFolder(folder.id)}
+                onDoubleClick={() => startRenameFolder(folder.id)}
+                className={`w-full flex items-center gap-1.5 px-2 py-1.5 rounded-md text-sm transition-colors group cursor-default ${
+                  isDragOver
+                    ? "bg-primary/15 ring-1 ring-primary/40"
+                    : isSelected
+                      ? "bg-secondary text-foreground font-medium"
+                      : "text-muted-foreground hover:bg-secondary/50 hover:text-foreground"
+                }`}
               >
                 {hasChildFolders ? (
                   <button
@@ -777,15 +1098,75 @@ export function EvidenceUploadPage({
                 ) : (
                   <Folder className="h-4 w-4 text-muted-foreground shrink-0" />
                 )}
-                <span className="truncate flex-1 text-left">{folder.name}</span>
-                {fileCount > 0 && (
-                  <span className="text-xs text-muted-foreground/70">{fileCount}</span>
+                {isRenaming ? (
+                  <input
+                    autoFocus
+                    onFocus={(e) => e.target.select()}
+                    value={renamingFolderName}
+                    onChange={(e) => setRenamingFolderName(e.target.value)}
+                    onClick={(e) => e.stopPropagation()}
+                    onDoubleClick={(e) => e.stopPropagation()}
+                    onKeyDown={(e) => {
+                      e.stopPropagation();
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        handleRenameFolder();
+                      } else if (e.key === 'Escape') {
+                        cancelRenameFolder();
+                      }
+                    }}
+                    onBlur={() => {
+                      if (renamingRef.current) return;
+                      if (renamingFolderName.trim()) {
+                        handleRenameFolder();
+                      } else {
+                        cancelRenameFolder();
+                      }
+                    }}
+                    className="flex-1 text-sm bg-transparent border border-primary/30 rounded px-1.5 py-0.5 outline-none focus:border-primary min-w-0"
+                  />
+                ) : (
+                  <>
+                    <span className="truncate flex-1 text-left">{folder.name}</span>
+                    {fileCount > 0 && (
+                      <span className="text-xs text-muted-foreground/70">{fileCount}</span>
+                    )}
+                  </>
                 )}
-              </button>
-              {isExpanded && hasChildFolders && renderFolderTree(folder.id, depth + 1)}
+              </div>
+              {needsSubtree && renderFolderTree(folder.id, depth + 1)}
             </div>
           );
         })}
+        {showInlineInput && (
+          <div className="flex items-center gap-1.5 px-2 py-1">
+            <span className="w-4" />
+            <Folder className="h-4 w-4 text-muted-foreground shrink-0" />
+            <input
+              autoFocus
+              onFocus={(e) => e.target.select()}
+              value={inlineNewFolderName}
+              onChange={(e) => setInlineNewFolderName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  handleCreateCategory();
+                } else if (e.key === 'Escape') {
+                  cancelInlineFolder();
+                }
+              }}
+              onBlur={() => {
+                if (creatingFolderRef.current) return;
+                if (inlineNewFolderName.trim()) {
+                  handleCreateCategory();
+                } else {
+                  cancelInlineFolder();
+                }
+              }}
+              className="flex-1 text-sm bg-transparent border border-primary/30 rounded px-1.5 py-0.5 outline-none focus:border-primary min-w-0"
+            />
+          </div>
+        )}
       </div>
     );
   };
@@ -801,74 +1182,27 @@ export function EvidenceUploadPage({
   }
 
   return (
-    <div className="h-[calc(100vh-7rem)] flex flex-col gap-4">
-      {/* Back Button */}
-      <div className="pb-2">
-        <Button
-          variant="ghost"
-          className="h-9 px-3 -ml-3 text-muted-foreground hover:text-foreground"
-          onClick={() => navigate(-1)}
-        >
-          <ArrowLeft className="h-4 w-4 mr-2" />
-          이전으로
-        </Button>
-      </div>
-
-      {/* Top Toolbar */}
-      <div className="flex items-center justify-between pb-4 border-b border-border/60">
+    <div className="h-[calc(100vh-7rem)] flex flex-col">
+      {/* Header */}
+      <div className="flex items-center justify-between pb-3 border-b border-border/60">
         <div className="flex items-center gap-3">
-          {/* Breadcrumb */}
-          <nav className="flex items-center gap-1 text-sm">
-            <button
-              type="button"
-              onClick={() => {
-                setSidebarView("folders");
-                setSelectedFolder("root");
-              }}
-              className="flex items-center gap-1.5 px-2 py-1 rounded hover:bg-secondary transition-colors text-muted-foreground hover:text-foreground"
-            >
-              <HardDrive className="h-4 w-4" />
-              <span>내 드라이브</span>
-            </button>
-            {sidebarView === "folders" && selectedFolder !== "root" && (
-              <>
-                {currentFolderPath.slice(1).map((folder, idx) => (
-                  <React.Fragment key={folder.id}>
-                    <ChevronRight className="h-4 w-4 text-muted-foreground/50" />
-                    <button
-                      type="button"
-                      onClick={() => setSelectedFolder(folder.id)}
-                      className={`px-2 py-1 rounded hover:bg-secondary transition-colors ${idx === currentFolderPath.length - 2
-                        ? "text-foreground font-medium"
-                        : "text-muted-foreground hover:text-foreground"
-                        }`}
-                    >
-                      {folder.name}
-                    </button>
-                  </React.Fragment>
-                ))}
-              </>
-            )}
-            {sidebarView === "starred" && (
-              <>
-                <ChevronRight className="h-4 w-4 text-muted-foreground/50" />
-                <span className="px-2 py-1 text-foreground font-medium">중요 파일</span>
-              </>
-            )}
-            {sidebarView === "recent" && (
-              <>
-                <ChevronRight className="h-4 w-4 text-muted-foreground/50" />
-                <span className="px-2 py-1 text-foreground font-medium">최근 항목</span>
-              </>
-            )}
-          </nav>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8 text-muted-foreground hover:text-foreground shrink-0"
+            onClick={() => navigate(-1)}
+          >
+            <ArrowLeft className="h-4 w-4" />
+          </Button>
+          <h1 className="text-base font-semibold">파일 관리</h1>
         </div>
+
         <div className="flex items-center gap-2">
           {/* Search */}
-          <div className="relative w-64">
-            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <div className="relative w-56">
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
             <Input
-              placeholder="파일 검색..."
+              placeholder={pageMode === "evidence" ? "파일 검색..." : "문서 검색..."}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="pl-8 h-8 text-sm"
@@ -893,111 +1227,239 @@ export function EvidenceUploadPage({
               <Grid className="h-4 w-4" />
             </Button>
           </div>
-          {/* Upload Button */}
-          <input
-            type="file"
-            multiple
-            accept="image/*,application/pdf,audio/*,video/*"
-            onChange={handleFileSelect}
-            className="hidden"
-            id="file-upload-main"
-            disabled={isUploading}
-          />
-          <Button
-            size="sm"
-            onClick={() => document.getElementById("file-upload-main")?.click()}
-            disabled={isUploading}
+          {/* Upload Button (증거 파일 모드에서만) */}
+          {pageMode === "evidence" && (
+            <>
+              <input
+                type="file"
+                multiple
+                accept="image/*,application/pdf,audio/*,video/*"
+                onChange={handleFileSelect}
+                className="hidden"
+                id="file-upload-main"
+                disabled={isUploading}
+              />
+              <Button
+                size="sm"
+                onClick={() => document.getElementById("file-upload-main")?.click()}
+                disabled={isUploading}
+              >
+                {isUploading ? (
+                  <>
+                    <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
+                    업로드 중...
+                  </>
+                ) : (
+                  <>
+                    <Upload className="h-4 w-4 mr-1.5" />
+                    업로드
+                  </>
+                )}
+              </Button>
+            </>
+          )}
+        </div>
+      </div>
+
+      {/* Sub toolbar: Breadcrumb + Filter */}
+      <div className="flex items-center justify-between py-2">
+        {/* Breadcrumb */}
+        <nav className="flex items-center gap-1 text-sm">
+          {pageMode === "evidence" && selectedFolder !== "root" ? (
+            currentFolderPath.slice(1).map((folder, idx) => (
+              <React.Fragment key={folder.id}>
+                {idx > 0 && <ChevronRight className="h-3 w-3 text-muted-foreground/40" />}
+                <button
+                  type="button"
+                  onClick={() => setSelectedFolder(folder.id)}
+                  className={`px-1.5 py-0.5 rounded text-xs hover:bg-secondary transition-colors ${idx === currentFolderPath.length - 2
+                    ? "text-foreground font-medium"
+                    : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  {folder.name}
+                </button>
+              </React.Fragment>
+            ))
+          ) : pageMode === "documents" && selectedCaseFolder !== null ? (
+            <span className="px-1.5 py-0.5 text-xs text-foreground font-medium">
+              {caseFolders.find(c => c.id === selectedCaseFolder)?.title}
+            </span>
+          ) : null}
+        </nav>
+
+        {/* Filter Pills */}
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={() => setFilterMode("all")}
+            className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${
+              filterMode === "all"
+                ? "bg-secondary text-foreground"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
           >
-            {isUploading ? (
-              <>
-                <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
-                업로드 중...
-              </>
-            ) : (
-              <>
-                <Upload className="h-4 w-4 mr-1.5" />
-                업로드
-              </>
-            )}
-          </Button>
+            전체
+          </button>
+          <button
+            type="button"
+            onClick={() => setFilterMode("recent")}
+            className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${
+              filterMode === "recent"
+                ? "bg-secondary text-foreground"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            <Clock className="h-3 w-3" />
+            최근
+          </button>
+          {pageMode === "evidence" && (
+            <button
+              type="button"
+              onClick={() => setFilterMode("starred")}
+              className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${
+                filterMode === "starred"
+                  ? "bg-secondary text-foreground"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              <Star className="h-3 w-3" />
+              중요
+            </button>
+          )}
         </div>
       </div>
 
       {/* Main Content */}
-      <div className="flex-1 flex gap-0 mt-4 min-h-0">
+      <div className="flex-1 flex gap-0 min-h-0">
         {/* Sidebar */}
-        <div className="w-56 shrink-0 pr-4 border-r border-border/60">
-          <div className="space-y-1">
-            {/* Quick Access */}
+        <div className="w-48 shrink-0 pr-3 border-r border-border/40 flex flex-col">
+          {/* Sub-page Tabs */}
+          <div className="flex gap-1 mb-3">
             <button
               type="button"
-              onClick={() => {
-                setSidebarView("folders");
-                setSelectedFolder("root");
-              }}
-              className={`w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm transition-colors ${sidebarView === "folders" && selectedFolder === "root"
-                ? "bg-secondary text-foreground font-medium"
-                : "text-muted-foreground hover:bg-secondary/50 hover:text-foreground"
-                }`}
+              className={`flex-1 flex items-center justify-center gap-1.5 text-xs py-1.5 rounded-md font-medium transition-colors ${
+                pageMode === "evidence"
+                  ? "bg-primary/10 text-primary"
+                  : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
+              }`}
+              onClick={() => { setPageMode("evidence"); setFilterMode("all"); setSearchQuery(""); }}
             >
-              <Home className="h-4 w-4" />
-              <span>내 드라이브</span>
+              <HardDrive className="h-3.5 w-3.5" />
+              증거
             </button>
             <button
               type="button"
-              onClick={() => setSidebarView("recent")}
-              className={`w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm transition-colors ${sidebarView === "recent"
-                ? "bg-secondary text-foreground font-medium"
-                : "text-muted-foreground hover:bg-secondary/50 hover:text-foreground"
-                }`}
+              className={`flex-1 flex items-center justify-center gap-1.5 text-xs py-1.5 rounded-md font-medium transition-colors ${
+                pageMode === "documents"
+                  ? "bg-primary/10 text-primary"
+                  : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
+              }`}
+              onClick={() => { setPageMode("documents"); setFilterMode("all"); setSearchQuery(""); }}
             >
-              <Clock className="h-4 w-4" />
-              <span>최근 항목</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setSidebarView("starred")}
-              className={`w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm transition-colors ${sidebarView === "starred"
-                ? "bg-secondary text-foreground font-medium"
-                : "text-muted-foreground hover:bg-secondary/50 hover:text-foreground"
-                }`}
-            >
-              <Star className="h-4 w-4" />
-              <span>중요 파일</span>
+              <FileText className="h-3.5 w-3.5" />
+              문서
             </button>
           </div>
 
-          {/* Folder Tree */}
-          <div className="mt-4 pt-4 border-t border-border/60">
-            <div className="flex items-center justify-between px-2 mb-2">
-              <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">폴더</span>
-              <Button variant="ghost" size="icon" className="h-6 w-6" onClick={addCategory}>
-                <FolderPlus className="h-3.5 w-3.5" />
-              </Button>
-            </div>
-            <div className="space-y-0.5">
-              {renderFolderTree("root")}
-            </div>
-          </div>
-
-          {/* Storage Info */}
-          <div className="mt-4 pt-4 border-t border-border/60 px-2">
-            <div className="text-xs text-muted-foreground mb-2">저장 공간</div>
-            <div className="h-1.5 bg-secondary rounded-full overflow-hidden">
-              <div className="h-full w-1/3 bg-foreground/60 rounded-full" />
-            </div>
-            <div className="text-xs text-muted-foreground mt-1.5">3.2 GB / 10 GB 사용</div>
+          {/* Sidebar Content */}
+          <div className="flex-1 overflow-y-auto space-y-0.5">
+            {pageMode === "evidence" ? (
+              <>
+                <div
+                  onClick={() => setSelectedFolder("root")}
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    if (draggedFolderId) setDragOverFolderId("root");
+                  }}
+                  onDragLeave={() => { if (dragOverFolderId === "root") setDragOverFolderId(null); }}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    setDragOverFolderId(null);
+                    if (draggedFolderId) {
+                      handleMoveFolder(draggedFolderId, "root");
+                      setDraggedFolderId(null);
+                    }
+                  }}
+                  className={`w-full flex items-center gap-1.5 px-2 py-1.5 rounded-md text-xs transition-colors cursor-default ${
+                    dragOverFolderId === "root"
+                      ? "bg-primary/15 ring-1 ring-primary/40"
+                      : selectedFolder === "root"
+                        ? "bg-secondary text-foreground font-medium"
+                        : "text-muted-foreground hover:bg-secondary/50 hover:text-foreground"
+                  }`}
+                >
+                  <HardDrive className="h-3.5 w-3.5 shrink-0" />
+                  <span>전체</span>
+                  <span className="ml-auto text-[10px] text-muted-foreground/50 tabular-nums">{files.length}</span>
+                </div>
+                {renderFolderTree("root")}
+                <button
+                  type="button"
+                  onClick={addCategory}
+                  className="w-full flex items-center gap-1.5 px-2 py-1.5 rounded-md text-xs text-muted-foreground/50 hover:text-muted-foreground hover:bg-secondary/30 transition-colors mt-1"
+                >
+                  <Plus className="h-3.5 w-3.5 shrink-0" />
+                  <span>폴더 추가</span>
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setSelectedCaseFolder(null)}
+                  className={`w-full flex items-center gap-1.5 px-2 py-1.5 rounded-md text-xs transition-colors ${
+                    selectedCaseFolder === null
+                      ? "bg-secondary text-foreground font-medium"
+                      : "text-muted-foreground hover:bg-secondary/50 hover:text-foreground"
+                  }`}
+                >
+                  <FileText className="h-3.5 w-3.5 shrink-0" />
+                  <span>전체</span>
+                  <span className="ml-auto text-[10px] text-muted-foreground/50 tabular-nums">{allDocuments.length}</span>
+                </button>
+                {caseFolders.map((caseItem) => {
+                  const isSelected = selectedCaseFolder === caseItem.id;
+                  const docCount = allDocuments.filter(d => d.case_id === caseItem.id).length;
+                  return (
+                    <button
+                      key={caseItem.id}
+                      type="button"
+                      onClick={() => setSelectedCaseFolder(caseItem.id)}
+                      className={`w-full flex items-center gap-1.5 px-2 py-1.5 rounded-md text-xs transition-colors ${
+                        isSelected
+                          ? "bg-secondary text-foreground font-medium"
+                          : "text-muted-foreground hover:bg-secondary/50 hover:text-foreground"
+                      }`}
+                    >
+                      <Briefcase className="h-3.5 w-3.5 shrink-0" />
+                      <span className="truncate flex-1 text-left">{caseItem.title}</span>
+                      {docCount > 0 && (
+                        <span className="text-[10px] text-muted-foreground/50 tabular-nums">{docCount}</span>
+                      )}
+                    </button>
+                  );
+                })}
+                {caseFolders.length === 0 && (
+                  <p className="px-2 py-3 text-[11px] text-muted-foreground/40 text-center">등록된 사건이 없습니다</p>
+                )}
+              </>
+            )}
           </div>
         </div>
 
         {/* File Area */}
         <div className="flex-1 pl-4 flex flex-col min-h-0">
           {/* Bulk Actions Bar */}
-          {selectedFiles.size > 0 && (
-            <div className="flex items-center gap-3 pb-3 border-b border-border/60 mb-3">
+          {selectedFiles.size > 0 && pageMode === "evidence" && (
+            <div className="flex items-center gap-2 pb-3 border-b border-border/60 mb-3">
               <span className="text-sm text-muted-foreground">
                 {selectedFiles.size}개 선택됨
               </span>
+              <Button variant="outline" size="sm" onClick={() => openLinkModal()}>
+                <Link2 className="h-3.5 w-3.5 mr-1.5" />
+                사건에 연결
+              </Button>
               <Button variant="outline" size="sm" onClick={deleteSelectedFiles}>
                 <Trash2 className="h-3.5 w-3.5 mr-1.5" />
                 삭제
@@ -1016,7 +1478,93 @@ export function EvidenceUploadPage({
             </div>
           )}
 
-          {/* Drop Zone (when dragging) */}
+          {/* Documents View */}
+          {pageMode === "documents" ? (
+            <div className="flex-1 overflow-auto">
+              {isLoadingDocuments ? (
+                <div className="h-full flex items-center justify-center">
+                  <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+                </div>
+              ) : filteredDocuments.length === 0 ? (
+                <div className="h-full flex items-center justify-center">
+                  <div className="text-center">
+                    <FileText className="h-12 w-12 mx-auto text-muted-foreground/30 mb-3" />
+                    <p className="text-sm text-muted-foreground">
+                      {searchQuery ? "검색 결과가 없습니다" : selectedCaseFolder !== null ? "이 사건에 작성된 문서가 없습니다" : "작성된 문서가 없습니다"}
+                    </p>
+                    <p className="text-xs text-muted-foreground/70 mt-1">
+                      사건 상세 페이지에서 문서를 작성해보세요
+                    </p>
+                  </div>
+                </div>
+              ) : viewMode === "list" ? (
+                <div className="border border-border/60 rounded-lg overflow-hidden">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="bg-secondary/30 border-b border-border/60">
+                        <th className="text-left px-3 py-2 text-xs font-medium text-muted-foreground">제목</th>
+                        <th className="text-left px-3 py-2 text-xs font-medium text-muted-foreground w-28">문서 유형</th>
+                        {selectedCaseFolder === null && (
+                          <th className="text-left px-3 py-2 text-xs font-medium text-muted-foreground w-48">사건명</th>
+                        )}
+                        <th className="text-left px-3 py-2 text-xs font-medium text-muted-foreground w-32">수정일</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filteredDocuments.map((doc) => (
+                        <tr
+                          key={doc.id}
+                          onClick={() => handleDocumentClick(doc)}
+                          className="border-b border-border/40 hover:bg-secondary/20 transition-colors cursor-pointer"
+                        >
+                          <td className="px-3 py-2">
+                            <div className="flex items-center gap-2.5">
+                              <div className="w-8 h-8 rounded bg-secondary/50 flex items-center justify-center shrink-0">
+                                <FileText className="h-4 w-4 text-muted-foreground" />
+                              </div>
+                              <span className="font-medium truncate">{doc.title}</span>
+                            </div>
+                          </td>
+                          <td className="px-3 py-2">
+                            <Badge variant="secondary" className="text-xs">
+                              {getDocumentTypeName(doc.document_type)}
+                            </Badge>
+                          </td>
+                          {selectedCaseFolder === null && (
+                            <td className="px-3 py-2 text-muted-foreground text-xs">
+                              {caseFolders.find(c => c.id === doc.case_id)?.title || "-"}
+                            </td>
+                          )}
+                          <td className="px-3 py-2 text-muted-foreground">
+                            {doc.updated_at ? new Date(doc.updated_at).toLocaleDateString('ko-KR') : "-"}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="grid grid-cols-5 gap-3">
+                  {filteredDocuments.map((doc) => (
+                    <div
+                      key={doc.id}
+                      onClick={() => handleDocumentClick(doc)}
+                      className="group relative p-3 rounded-lg border border-border/60 hover:border-border hover:bg-secondary/20 transition-all cursor-pointer"
+                    >
+                      <div className="w-12 h-12 mx-auto rounded-lg bg-secondary/50 flex items-center justify-center mb-2 mt-2">
+                        <FileText className="h-6 w-6 text-muted-foreground" />
+                      </div>
+                      <p className="text-sm font-medium text-center truncate px-1">{doc.title}</p>
+                      <p className="text-xs text-muted-foreground text-center mt-0.5">
+                        {getDocumentTypeName(doc.document_type)}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : (
+          /* Drop Zone (when dragging) */
           <div
             onDragOver={isUploading ? undefined : handleDragOver}
             onDragLeave={isUploading ? undefined : handleDragLeave}
@@ -1031,7 +1579,7 @@ export function EvidenceUploadPage({
                   <Upload className="h-12 w-12 mx-auto text-muted-foreground mb-3" />
                   <p className="text-sm font-medium">파일을 여기에 놓으세요</p>
                   <p className="text-xs text-muted-foreground mt-1">
-                    "{folders.find((f) => f.id === selectedFolder)?.name || "내 드라이브"}" 폴더에 업로드됩니다
+                    "{folders.find((f) => f.id === selectedFolder)?.name || "전체"}" 폴더에 업로드됩니다
                   </p>
                 </div>
               </div>
@@ -1225,116 +1773,75 @@ export function EvidenceUploadPage({
               </div>
             )}
           </div>
+          )}
         </div>
       </div>
 
       {/* Link to Case Modal */}
-      {showLinkModal && selectedFileForLink && (
+      {showLinkModal && filesToLink.length > 0 && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
           <Card className="w-full max-w-md">
             <CardHeader>
               <CardTitle className="text-base">사건에 연결</CardTitle>
               <CardDescription className="text-sm">
-                "{selectedFileForLink.name}" 파일을 연결할 사건을 선택하세요
+                {selectedFileForLink
+                  ? `"${selectedFileForLink.name}" 파일을 연결할 사건을 선택하세요`
+                  : `${filesToLink.length}개 파일을 연결할 사건을 선택하세요`}
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              <Select
-                value={selectedCaseForLink}
-                onValueChange={setSelectedCaseForLink}
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder="사건을 선택하세요" />
-                </SelectTrigger>
-                <SelectContent>
-                  {cases.map((caseItem) => (
-                    <SelectItem key={caseItem.id} value={caseItem.id}>
-                      {caseItem.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              {/* 사건 검색 */}
+              <div className="relative">
+                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+                <Input
+                  placeholder="사건명 검색..."
+                  value={caseSearchQuery}
+                  onChange={(e) => setCaseSearchQuery(e.target.value)}
+                  className="pl-8 h-8 text-sm"
+                  autoFocus
+                />
+              </div>
+              {/* 사건 목록 (스크롤) */}
+              <div className="max-h-56 overflow-y-auto border border-border/60 rounded-lg">
+                {caseFolders
+                  .filter((c) => !caseSearchQuery || c.title.toLowerCase().includes(caseSearchQuery.toLowerCase()))
+                  .map((caseItem) => {
+                    const isSelected = selectedCaseForLink === String(caseItem.id);
+                    return (
+                      <button
+                        key={caseItem.id}
+                        type="button"
+                        onClick={() => setSelectedCaseForLink(String(caseItem.id))}
+                        className={`w-full flex items-center gap-2.5 px-3 py-2.5 text-sm text-left transition-colors border-b border-border/30 last:border-b-0 ${
+                          isSelected
+                            ? "bg-primary/10 text-primary font-medium"
+                            : "hover:bg-secondary/50"
+                        }`}
+                      >
+                        <Briefcase className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                        <span className="truncate">{caseItem.title}</span>
+                      </button>
+                    );
+                  })}
+                {caseFolders.filter((c) => !caseSearchQuery || c.title.toLowerCase().includes(caseSearchQuery.toLowerCase())).length === 0 && (
+                  <p className="px-3 py-4 text-sm text-muted-foreground text-center">
+                    {caseSearchQuery ? "검색 결과가 없습니다" : "등록된 사건이 없습니다"}
+                  </p>
+                )}
+              </div>
               <div className="flex justify-end gap-2">
                 <Button
                   variant="outline"
                   onClick={() => {
                     setShowLinkModal(false);
                     setSelectedFileForLink(null);
+                    setFilesToLink([]);
                   }}
                 >
                   취소
                 </Button>
                 <Button onClick={linkFileToCase} disabled={!selectedCaseForLink}>
                   연결하기
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
-      )}
-
-      {/* Add Category Dialog */}
-      {showAddCategoryDialog && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <Card className="w-full max-w-md">
-            <CardHeader>
-              <CardTitle className="text-base">카테고리 추가</CardTitle>
-              <CardDescription className="text-sm">
-                새로운 증거 카테고리를 생성합니다
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="space-y-2">
-                <label htmlFor="category-name" className="text-sm font-medium">
-                  카테고리명 <span className="text-destructive">*</span>
-                </label>
-                <Input
-                  id="category-name"
-                  placeholder="예: 계약서류, 증거자료..."
-                  value={categoryName}
-                  onChange={(e) => setCategoryName(e.target.value)}
-                  autoFocus
-                />
-              </div>
-              <div className="space-y-2">
-                <label htmlFor="parent-folder" className="text-sm font-medium">
-                  상위 카테고리
-                </label>
-                <Select
-                  value={selectedParentFolder}
-                  onValueChange={setSelectedParentFolder}
-                >
-                  <SelectTrigger id="parent-folder">
-                    <SelectValue placeholder="루트 (최상위)" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="root">루트 (최상위)</SelectItem>
-                    {folders
-                      .filter((f) => f.id !== "root")
-                      .map((folder) => (
-                        <SelectItem key={folder.id} value={folder.id}>
-                          {folder.name}
-                        </SelectItem>
-                      ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="flex justify-end gap-2">
-                <Button
-                  variant="outline"
-                  onClick={() => {
-                    setShowAddCategoryDialog(false);
-                    setCategoryName("");
-                    setSelectedParentFolder("root");
-                  }}
-                >
-                  취소
-                </Button>
-                <Button
-                  onClick={handleCreateCategory}
-                  disabled={!categoryName.trim()}
-                >
-                  만들기
                 </Button>
               </div>
             </CardContent>
@@ -1438,6 +1945,30 @@ export function EvidenceUploadPage({
               </div>
             </CardContent>
           </Card>
+        </div>
+      )}
+
+      {/* Folder Context Menu */}
+      {folderContextMenu && (
+        <div
+          className="fixed z-50 bg-popover border border-border rounded-md shadow-md py-1 min-w-[120px]"
+          style={{ left: folderContextMenu.x, top: folderContextMenu.y }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <button
+            type="button"
+            className="w-full text-left px-3 py-1.5 text-sm hover:bg-secondary transition-colors"
+            onClick={() => startRenameFolder(folderContextMenu.folderId)}
+          >
+            이름 변경
+          </button>
+          <button
+            type="button"
+            className="w-full text-left px-3 py-1.5 text-sm hover:bg-secondary transition-colors text-destructive"
+            onClick={() => deleteFolder(folderContextMenu.folderId)}
+          >
+            삭제
+          </button>
         </div>
       )}
     </div>

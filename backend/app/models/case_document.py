@@ -14,6 +14,7 @@ class CaseDocument(Base):
     title = Column(String(255), nullable=False)
     document_type = Column(String(50), default="complaint")  # complaint, civil_suit, notice, brief, opinion, settlement
     content = Column(Text, nullable=True)  # Markdown 형식
+    access_level = Column(String(20), default="firm_readonly")  # private, firm_readonly, firm_editable
     version = Column(Integer, default=1)
     parent_id = Column(BigInteger, ForeignKey('case_documents.id', ondelete='SET NULL'), nullable=True)
     created_at = Column(DateTime, server_default=func.now())

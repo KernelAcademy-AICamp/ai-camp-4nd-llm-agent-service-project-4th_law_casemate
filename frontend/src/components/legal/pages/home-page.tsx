@@ -19,8 +19,8 @@ interface Message {
 
 // ── Constants ──
 const hintPhrases = [
-  "의뢰인 진술과 카톡 내용을 기준으로 사실관계만 정리해줘...",
-  "오늘 상담한 사건에서 쟁점이 될 수 있는 포인트를 정리해줘...",
+  "의뢰인 진술과 카톡 내용을 토대로 사실 관계만 정리해줘...",
+  "오늘 상담한 사건과 유사한 사건 및 판례를 검색해줘...",
 ];
 
 const TYPING_SPEED = 58; // ms per character
@@ -128,6 +128,36 @@ function getRoleTitle(role?: string): string {
   return "";
 }
 
+function getRandomGreeting(name?: string, role?: string): string {
+  const hour = new Date().getHours();
+  const displayName = name
+    ? `${name}${getRoleTitle(role)}님`
+    : undefined;
+
+  const greetings: string[] = [
+    "무엇이든 도와드릴게요.",
+    "어떤 업무를 함께할까요?",
+  ];
+
+  if (displayName) {
+    greetings.push(`${displayName}, 안녕하세요!`);
+  }
+
+  if (hour >= 5 && hour < 12) {
+    greetings.push("좋은 아침이에요! 오늘은 어떤 사건을 볼까요?");
+    if (displayName) greetings.push(`${displayName}, 새로운 하루가 시작됐어요.`);
+  } else if (hour >= 12 && hour < 18) {
+    greetings.push("좋은 오후에요! 진행 중인 업무를 이어볼까요?");
+    if (displayName) greetings.push(`${displayName}, 좋은 오후에요.`);
+  } else {
+    greetings.push("오늘도 수고 많으셨어요.");
+    greetings.push("마무리할 업무가 있으신가요?");
+    if (displayName) greetings.push(`${displayName}, 늦은 시간까지 고생이 많아요.`);
+  }
+
+  return greetings[Math.floor(Math.random() * greetings.length)];
+}
+
 // ── Component ──
 export function HomePage() {
   const navigate = useNavigate();
@@ -138,6 +168,9 @@ export function HomePage() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const hasMessages = messages.length > 0;
+  const [greeting] = useState(() =>
+    getRandomGreeting(userInfo?.name, userInfo?.role)
+  );
 
   const userStartedTyping = input.length > 0 || hasMessages;
   const { hintText, hintDone } = useTypingHint(
@@ -230,10 +263,10 @@ export function HomePage() {
           {/* Greeting */}
           <div className="mb-12 text-center">
             <h1 className="text-[32px] font-semibold text-foreground tracking-tight">
-              무엇을 도와드릴까요?
+              {greeting}
             </h1>
             <p className="mt-2 text-sm text-muted-foreground">
-              업무 관련 질문을 입력해 주세요
+              업무와 관련된 질문을 입력해 주세요.
             </p>
           </div>
 
@@ -247,15 +280,15 @@ export function HomePage() {
                   onChange={(e) => setInput(e.target.value)}
                   onInput={handleTextareaInput}
                   onKeyDown={handleKeyDown}
-                  placeholder={showNativePlaceholder ? "메시지를 입력하세요..." : ""}
+                  placeholder=""
                   rows={1}
                   className="w-full resize-none bg-transparent text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none leading-relaxed"
                   style={{ maxHeight: 160 }}
                 />
-                {/* Typing hint overlay */}
-                {hintText && !input && (
+                {/* Typing hint overlay / placeholder (동일 위치) */}
+                {!input && (
                   <div className="absolute inset-0 flex items-center pointer-events-none text-sm leading-relaxed" style={{ color: '#A0A7B5' }}>
-                    {hintText}
+                    {hintText || (hintDone ? "AI 사건 분석, 초안 작성, 유사 판례 검색 등을 도와드립니다." : "")}
                   </div>
                 )}
               </div>

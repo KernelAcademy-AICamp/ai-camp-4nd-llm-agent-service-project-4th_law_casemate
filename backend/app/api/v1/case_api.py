@@ -277,6 +277,7 @@ async def analyze_case(
             if cached_summary:
                 cached_summary.legal_keywords = None
                 cached_summary.legal_laws = None
+                cached_summary.crime_names = None
                 cached_summary.legal_search_results = None
 
         print(f"📭 캐시 미스: LLM 분석 시작")
@@ -552,6 +553,7 @@ async def update_case(
                 case_analysis.claims = None
                 case_analysis.legal_keywords = None
                 case_analysis.legal_laws = None
+                case_analysis.crime_names = None
                 case_analysis.legal_search_results = None
                 case_analysis.description_hash = None
                 case_analysis.analyzed_at = None

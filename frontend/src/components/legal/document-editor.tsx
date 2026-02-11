@@ -39,8 +39,20 @@ import {
   FilePen,
   ChevronLeft,
   ChevronRight,
+  FileType,
+  Lock,
+  Eye,
+  UsersRound,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+} from "@/components/ui/dialog";
+import type { ExportFormat } from "@/lib/document-export";
 import { TiptapEditor } from "./tiptap-editor";
 import type { Editor } from "@tiptap/react";
 import { AgentLoadingOverlay, type AgentStep } from "@/components/ui/agent-loading-overlay";
@@ -54,8 +66,8 @@ const AI_SUPPORTED_TYPES = ["complaint", "notice", "civil_suit"];
 
 const API_BASE = "http://localhost:8000/api/v1/documents";
 
-// 검정색 col-resize 커서 (Windows 흰색 반전 방지)
-const COL_RESIZE_CURSOR = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'%3E%3Cpath d='M8 2l-4 4h3v12H4l4 4 4-4H9V6h3L8 2z' fill='%23000'/%3E%3Cpath d='M16 2l4 4h-3v12h3l-4 4-4-4h3V6h-3l4-4z' fill='%23000'/%3E%3C/svg%3E") 12 12, col-resize`;
+// Windows col-resize 동일 모양 (←|→) 검정 고정 커서 (stroke 통일)
+const COL_RESIZE_CURSOR = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%23222' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cline x1='12' y1='5' x2='12' y2='19'/%3E%3Cpolyline points='7,9.5 4,12 7,14.5'/%3E%3Cline x1='4' y1='12' x2='10' y2='12'/%3E%3Cpolyline points='17,9.5 20,12 17,14.5'/%3E%3Cline x1='20' y1='12' x2='14' y2='12'/%3E%3C/svg%3E") 12 12, col-resize`;
 
 function getAuthHeaders(): Record<string, string> {
   const token = localStorage.getItem("access_token");
@@ -102,7 +114,7 @@ const templateContents: Record<string, string> = {
 <hr>
 <h2>3. 고소취지*</h2>
 <p><em>(죄명 및 피고소인에 대한 처벌의사 기재)</em></p>
-<p>고소인은 피고소인을 <strong>○○죄</strong>로 고소하오니 처벌하여 주시기 바랍니다.*</p>
+<p>고소인은 피고소인을 <strong>○○죄</strong>로 고소하오니 철저히 수사하여 엄벌에 처하여 주시기 바랍니다.</p>
 <p></p>
 <hr>
 <h2>4. 범죄사실*</h2>
@@ -141,7 +153,7 @@ const templateContents: Record<string, string> = {
 </tbody></table>
 <blockquote><p>※ 고소장 제출일을 기재하여야 하며, 고소인 난에는 고소인이 직접 자필로 서명 날(무)인 해야 합니다. 또한 법정대리인이나 변호사에 의한 고소대리의 경우에는 제출인을 기재하여야 합니다.</p></blockquote>
 <p></p>
-<p style="text-align: center"><strong>○○경찰서 귀중</strong></p>
+<p style="text-align: center"><strong>관할 경찰서장 귀하</strong></p>
 <blockquote><p>※ 고소장은 가까운 경찰서에 제출하셔도 됩니다.</p></blockquote>
 <hr>
 <h1>별지 : 증거자료 세부 목록</h1>
@@ -270,6 +282,7 @@ interface CaseContext {
     summary: string | null;
     facts: string[] | string | null;
     claims: Record<string, unknown> | string | null;
+    crime_names: string[];
     legal_keywords: string[];
     legal_laws: string[];
   };
@@ -289,7 +302,6 @@ interface CaseContext {
 interface GeneratedSections {
   crime_facts: string;
   complaint_reason: string;
-  charge_detail: string;
 }
 
 /**
@@ -299,25 +311,25 @@ interface GeneratedSections {
 function insertNarrativeSections(html: string, sections: GeneratedSections): string {
   const AI = (text: string) => `<span data-ai-filled="true">${text}</span>`;
 
-  // 범죄사실: [범죄사실 기재] → GPT 텍스트
+  // 범죄사실: [범죄사실 기재] → GPT 텍스트 (줄바꿈을 </p><p>로 변환하여 가/나/다/라 구조 보존)
+  const crimeFactsHtml = sections.crime_facts
+    .split(/\n\n+/)
+    .map(para => `<p>${AI(para.replace(/\n/g, "<br>"))}</p>`)
+    .join("\n");
   html = html.replace(
     /<p>\[범죄사실 기재\]<\/p>/,
-    `<p>${AI(sections.crime_facts)}</p>`
+    crimeFactsHtml
   );
 
   // 고소이유: [고소이유 기재] → GPT 텍스트
+  const complaintReasonHtml = sections.complaint_reason
+    .split(/\n\n+/)
+    .map(para => `<p>${AI(para.replace(/\n/g, "<br>"))}</p>`)
+    .join("\n");
   html = html.replace(
     /<p>\[고소이유 기재\]<\/p>/,
-    `<p>${AI(sections.complaint_reason)}</p>`
+    complaintReasonHtml
   );
-
-  // 고소취지 상세: 기존 고소취지 문단 뒤에 추가
-  if (sections.charge_detail) {
-    html = html.replace(
-      /(처벌하여 주시기 바랍니다\.\*<\/p>\n<p><\/p>)/,
-      `$1\n<p>${AI(sections.charge_detail)}</p>`
-    );
-  }
 
   return html;
 }
@@ -340,24 +352,85 @@ function buildFilledComplaint(context: CaseContext): string {
     `$1<td>${AI(c.client_name)}</td>`
   );
 
+  // 1-1. 고소인 주민등록번호 [기재 필요]
+  html = html.replace(
+    /(1\. 고소인\*<\/h2>[\s\S]*?주민등록번호<br>\(법인등록번호\)<\/th>)<td>\u00a0+ - \u00a0+<\/td>/,
+    `$1<td>${AI("[기재 필요]")}</td>`
+  );
+
+  // 1-2. 고소인 주소 [기재 필요]
+  html = html.replace(
+    /(1\. 고소인\*<\/h2>[\s\S]*?주 \u00a0 소<br>\(주사무소 소재지\)<\/th>)<td colspan="3">\u00a0+\(현 거주지\)<\/td>/,
+    `$1<td colspan="3">${AI("[기재 필요]")}</td>`
+  );
+
+  // 1-3. 고소인 직업 [기재 필요]
+  html = html.replace(
+    /(1\. 고소인\*<\/h2>[\s\S]*?직 \u00a0 업<\/th>)<td><\/td>/,
+    `$1<td>${AI("[기재 필요]")}</td>`
+  );
+
+  // 1-4. 고소인 전화 [기재 필요]
+  html = html.replace(
+    /(1\. 고소인\*<\/h2>[\s\S]*?전 \u00a0 화<\/th>)<td colspan="3">\(휴대폰\)\u00a0+\(자택\)\u00a0+\(사무실\)<\/td>/,
+    `$1<td colspan="3">${AI("[기재 필요]")}</td>`
+  );
+
+  // 1-5. 고소인 이메일 [기재 필요]
+  html = html.replace(
+    /(1\. 고소인\*<\/h2>[\s\S]*?이메일<\/th>)<td colspan="3"><\/td>/,
+    `$1<td colspan="3">${AI("[기재 필요]")}</td>`
+  );
+
   // 2. 피고소인 성명
   html = html.replace(
     /(2\. 피고소인\*<\/h2>[\s\S]*?성 \u00a0 명<\/th>)<td><\/td>/,
     `$1<td>${AI(c.opponent_name)}</td>`
   );
 
-  // 3. 피고소인 기타사항 (관계)
+  // 3-1. 피고소인 주소 "불상" 처리
   html = html.replace(
-    /(기타사항<\/th>)<td colspan="3"><br><br><\/td>/,
-    `$1<td colspan="3">${AI(`고소인과의 관계: ${c.opponent_role}`)}</td>`
+    /(2\. 피고소인\*<\/h2>[\s\S]*?주 \u00a0 소<\/th>)<td colspan="3">\u00a0+\(현 거주지\)<\/td>/,
+    `$1<td colspan="3">${AI("주소 불상")}</td>`
   );
 
-  // 4. ○○죄 → 실제 죄명
-  const crimeName = c.case_type.includes("죄") ? c.case_type : `${c.case_type}죄`;
+  // 3-2. 피고소인 주민등록번호 "불상" 처리
   html = html.replace(
-    /<strong>○○죄<\/strong>/,
-    `<strong>${AI(crimeName)}</strong>`
+    /(2\. 피고소인\*<\/h2>[\s\S]*?주민등록번호<\/th>)<td>\u00a0+ - \u00a0+<\/td>/,
+    `$1<td>${AI("주민등록번호 불상")}</td>`
   );
+
+  // 3-3. 피고소인 직업 "불상" 처리
+  html = html.replace(
+    /(2\. 피고소인\*<\/h2>[\s\S]*?직 \u00a0 업<\/th>)<td><\/td>/,
+    `$1<td>${AI("직업 불상")}</td>`
+  );
+
+  // 3-4. 피고소인 전화 "불상" 처리
+  html = html.replace(
+    /(2\. 피고소인\*<\/h2>[\s\S]*?전 \u00a0 화<\/th>)<td colspan="3">\(휴대폰\)\u00a0+\(자택\)\u00a0+\(사무실\)<\/td>/,
+    `$1<td colspan="3">${AI("연락처 불상")}</td>`
+  );
+
+  // 4. ○○죄 → 실제 죄명 (crime_names 사용, fallback: legal_keywords)
+  const analysis = context.analysis;
+  if (analysis.crime_names?.length) {
+    const crimeNames = analysis.crime_names.join(", ");
+    html = html.replace(
+      /<strong>○○죄<\/strong>/,
+      `<strong>${AI(crimeNames)}</strong>`
+    );
+  } else if (analysis.legal_keywords?.length) {
+    const crimeNames = analysis.legal_keywords
+      .filter((kw: string) => kw.endsWith("죄"))
+      .join(", ");
+    if (crimeNames) {
+      html = html.replace(
+        /<strong>○○죄<\/strong>/,
+        `<strong>${AI(crimeNames)}</strong>`
+      );
+    }
+  }
 
   // 5. 증거자료 체크란
   if (hasEvidence) {
@@ -372,16 +445,55 @@ function buildFilledComplaint(context: CaseContext): string {
     );
   }
 
-  // 6. 별지 증거서류 테이블
+  // 6. 별지 증거서류/증거물 분류 및 테이블 기입
   if (hasEvidence) {
-    const evidenceDocRows = evidences.map((ev, i) =>
-      `<tr><td>${i + 1}</td><td>${AI(`갑 제${i + 1}호증: ${ev.file_name} (${ev.doc_type})`)}</td><td></td><td>☐ 접수시 제출 \u00a0 ☐ 수사 중 제출</td></tr>`
-    ).join("\n");
+    // 증거서류에 해당하는 doc_type (정식 서류)
+    const documentTypes = new Set([
+      "진술서", "차용증", "각서", "금융거래내역", "금융거래내역서",
+      "진단서", "계약서", "이메일", "내용증명", "등기부등본",
+      "판결문", "조서", "영수증", "세금계산서", "확인서",
+    ]);
 
-    html = html.replace(
-      /(2\. 증거서류[^<]*<\/h2>\n<table><tbody>\n<tr><th>순번<\/th><th>증거<\/th><th>작성자<\/th><th>제출 유무<\/th><\/tr>)\n(?:<tr><td>\d+<\/td><td><\/td><td><\/td><td>☐ 접수시 제출 \u00a0 ☐ 수사 중 제출<\/td><\/tr>\n?)+/,
-      `$1\n${evidenceDocRows}\n`
-    );
+    const docs: typeof evidences = [];
+    const items: typeof evidences = [];
+    for (const ev of evidences) {
+      if (documentTypes.has(ev.doc_type)) {
+        docs.push(ev);
+      } else {
+        items.push(ev);
+      }
+    }
+
+    // 증거번호는 서류/물 관계없이 전체 순번으로 통일
+    let evidenceIdx = 0;
+
+    // 6-1. 증거서류 테이블
+    if (docs.length > 0) {
+      const docRows = docs.map((ev) => {
+        evidenceIdx++;
+        const title = ev.description || ev.doc_type;
+        return `<tr><td>${evidenceIdx}</td><td>${AI(`증 제${evidenceIdx}호증  ${title}`)}</td><td></td><td>☐ 접수시 제출 \u00a0 ☐ 수사 중 제출</td></tr>`;
+      }).join("\n");
+
+      html = html.replace(
+        /(2\. 증거서류[^<]*<\/h2>\n<table><tbody>\n<tr><th>순번<\/th><th>증거<\/th><th>작성자<\/th><th>제출 유무<\/th><\/tr>)\n(?:<tr><td>\d+<\/td><td><\/td><td><\/td><td>☐ 접수시 제출 \u00a0 ☐ 수사 중 제출<\/td><\/tr>\n?)+/,
+        `$1\n${docRows}\n`
+      );
+    }
+
+    // 6-2. 증거물 테이블 (파일명에서 확장자 제거하여 표기)
+    if (items.length > 0) {
+      const itemRows = items.map((ev) => {
+        evidenceIdx++;
+        const nameWithoutExt = ev.file_name.replace(/\.[^.]+$/, "");
+        return `<tr><td>${evidenceIdx}</td><td>${AI(`증 제${evidenceIdx}호증 ${nameWithoutExt}`)}</td><td></td><td>☐ 접수시 제출 \u00a0 ☐ 수사 중 제출</td></tr>`;
+      }).join("\n");
+
+      html = html.replace(
+        /(3\. 증거물<\/h2>\n<table><tbody>\n<tr><th>순번<\/th><th>증거<\/th><th>소유자<\/th><th>제출 유무<\/th><\/tr>)\n(?:<tr><td>\d+<\/td><td><\/td><td><\/td><td>☐ 접수시 제출 \u00a0 ☐ 수사 중 제출<\/td><\/tr>\n?)+/,
+        `$1\n${itemRows}\n`
+      );
+    }
   }
 
   // 7. 하단 고소인 서명란
@@ -397,15 +509,23 @@ interface DocumentItem {
   id: string;
   title: string;
   document_type: string;
+  access_level: string;
+  created_by: number | null;
   updated_at: string;
 }
+
+const ACCESS_LEVEL_LABELS: Record<string, string> = {
+  private: "비공개",
+  firm_readonly: "열람 전용",
+  firm_editable: "공동 편집",
+};
 
 const DRAFT_STEPS: AgentStep[] = [
   { label: "사건 기록 분석 중…", status: "pending" },
   { label: "당사자 정보 대조 중…", status: "pending" },
   { label: "고소장 양식 기본 정보 기입 중…", status: "pending" },
   { label: "관련 판례 및 법조문 참조 중…", status: "pending" },
-  { label: "범죄사실 및 고소 취지 작성 중…", status: "pending" },
+  { label: "범죄사실 및 고소이유 작성 중…", status: "pending" },
   { label: "법적 논리 구성 및 초안 검토 중…", status: "pending" },
 ];
 
@@ -429,7 +549,13 @@ export function DocumentEditor({ caseData }: DocumentEditorProps) {
   const [rightCollapsed, setRightCollapsed] = useState(false);
   const [editor, setEditor] = useState<Editor | null>(null);
   const [contentSource, setContentSource] = useState<"template" | "ai" | "user">("template");
+  const [accessLevel, setAccessLevel] = useState<string>("firm_readonly");
+  const [saveDialogOpen, setSaveDialogOpen] = useState(false);
   const [draftAgentSteps, setDraftAgentSteps] = useState<AgentStep[]>([]);
+  const [exportDialogOpen, setExportDialogOpen] = useState(false);
+  const [exportFormat, setExportFormat] = useState<ExportFormat | null>(null);
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
 
   // 양쪽 패널 리사이즈
   const [leftPanelWidth, setLeftPanelWidth] = useState(224);
@@ -483,10 +609,12 @@ export function DocumentEditor({ caseData }: DocumentEditorProps) {
       if (!res.ok) return;
       const data = await res.json();
       setDocuments(
-        data.map((d: { id: number; title: string; document_type: string; updated_at: string }) => ({
+        data.map((d: any) => ({
           id: String(d.id),
           title: d.title,
           document_type: d.document_type,
+          access_level: d.access_level || "firm_readonly",
+          created_by: d.created_by ?? null,
           updated_at: d.updated_at?.split("T")[0] || "",
         }))
       );
@@ -504,6 +632,7 @@ export function DocumentEditor({ caseData }: DocumentEditorProps) {
     setDocumentTitle("새 문서");
     setDocumentContent("");
     setSelectedTemplate(null);
+    setAccessLevel("firm_readonly");
     setIsSaved(false);
     setContentSource("template");
   };
@@ -519,12 +648,14 @@ export function DocumentEditor({ caseData }: DocumentEditorProps) {
       setDocumentTitle(data.title);
       setDocumentContent(data.content || "");
       setSelectedTemplate(data.document_type);
+      setAccessLevel(data.access_level || "firm_readonly");
       setIsSaved(true);
     } catch {
       // fallback: 목록 정보만 사용
       setActiveDocId(doc.id);
       setDocumentTitle(doc.title);
       setDocumentContent("");
+      setAccessLevel(doc.access_level || "firm_readonly");
       setIsSaved(true);
     }
   };
@@ -617,9 +748,12 @@ export function DocumentEditor({ caseData }: DocumentEditorProps) {
         const res = await fetch(`${API_BASE}/${activeDocId}`, {
           method: "PUT",
           headers: getAuthHeaders(),
-          body: JSON.stringify({ title: documentTitle, content: documentContent }),
+          body: JSON.stringify({ title: documentTitle, content: documentContent, access_level: accessLevel }),
         });
-        if (!res.ok) throw new Error("저장에 실패했습니다.");
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.detail || "저장에 실패했습니다.");
+        }
       } else {
         // 새 문서 생성
         const res = await fetch(`${API_BASE}/`, {
@@ -630,6 +764,7 @@ export function DocumentEditor({ caseData }: DocumentEditorProps) {
             title: documentTitle,
             document_type: selectedTemplate || "complaint",
             content: documentContent,
+            access_level: accessLevel,
           }),
         });
         if (!res.ok) throw new Error("저장에 실패했습니다.");
@@ -638,6 +773,7 @@ export function DocumentEditor({ caseData }: DocumentEditorProps) {
       }
       setIsSaved(true);
       setContentSource("user");
+      setSaveDialogOpen(false);
       fetchDocuments();
     } catch (err) {
       console.error("저장 오류:", err);
@@ -685,27 +821,53 @@ export function DocumentEditor({ caseData }: DocumentEditorProps) {
   };
 
   const handleExport = () => {
-    const htmlDoc = `<!DOCTYPE html>
-<html lang="ko"><head><meta charset="UTF-8">
-<title>${documentTitle || "문서"}</title>
-<style>
-@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700&display=swap');
-body{font-family:'Noto Sans KR',sans-serif;font-size:10pt;color:#000;line-height:1.6;max-width:210mm;margin:0 auto;padding:15mm 20mm}
-h1{text-align:center;font-size:22pt;font-weight:700;letter-spacing:12pt;margin:12pt 0}
-h2{font-size:10.5pt;font-weight:700;margin:12pt 0 4pt}
-table{width:100%;border-collapse:collapse;margin:4pt 0}
-th,td{border:1px solid #000;padding:4pt 6pt;font-size:9.5pt;vertical-align:middle}
-th{background:#f5f5f5;font-weight:500;text-align:center;white-space:nowrap}
-blockquote{font-size:8pt;color:#333;border-left:3px solid #ccc;padding-left:8pt;margin:4pt 0}
-hr{border:none;border-top:1px solid #000;margin:10pt 0}
-</style></head><body>${documentContent}</body></html>`;
-    const blob = new Blob([htmlDoc], { type: "text/html;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${documentTitle || "document"}.html`;
-    a.click();
-    URL.revokeObjectURL(url);
+    setExportFormat(null);
+    setExportError(null);
+    setIsExporting(false);
+    setExportDialogOpen(true);
+  };
+
+  const handleExportConfirm = async (format: ExportFormat) => {
+    // 빈 문서 체크
+    const plainText = documentContent.replace(/<[^>]*>/g, "").trim();
+    if (!plainText) {
+      setExportError("내보낼 내용이 없습니다. 문서를 먼저 작성해주세요.");
+      return;
+    }
+
+    setExportFormat(format);
+    setIsExporting(true);
+    setExportError(null);
+
+    try {
+      const { exportToPdf, exportToDocx, exportToHwpx } = await import("@/lib/document-export");
+
+      switch (format) {
+        case "pdf":
+          await exportToPdf(documentTitle, documentContent, editor);
+          break;
+        case "docx":
+          await exportToDocx(documentTitle, documentContent, editor);
+          break;
+        case "hwpx":
+          await exportToHwpx(documentTitle, documentContent);
+          break;
+      }
+
+      // 성공 시 500ms 후 다이얼로그 닫기
+      setTimeout(() => {
+        setExportDialogOpen(false);
+        setIsExporting(false);
+        setExportFormat(null);
+      }, 500);
+    } catch (err) {
+      console.error("내보내기 오류:", err);
+      setExportError(
+        err instanceof Error ? err.message : "내보내기 중 오류가 발생했습니다."
+      );
+      setIsExporting(false);
+      setExportFormat(null);
+    }
   };
 
   // 툴바 버튼 helper
@@ -739,7 +901,7 @@ hr{border:none;border-top:1px solid #000;margin:10pt 0}
       {/* Left Panel */}
       <div
         className={cn(
-          "flex-shrink-0 flex flex-col relative transition-all duration-200",
+          "flex-shrink-0 flex flex-col relative transition-all duration-200 overflow-visible",
           leftCollapsed ? "w-9 items-center pt-1 gap-2" : "pr-1"
         )}
         style={leftCollapsed ? undefined : { width: leftPanelWidth }}
@@ -796,47 +958,49 @@ hr{border:none;border-top:1px solid #000;margin:10pt 0}
             새 문서 작성
           </button>
 
-          <ScrollArea className="flex-1">
+          <div className="flex-1 overflow-y-auto overflow-x-visible">
             {leftTab === "docs" ? (
               <div className="space-y-1">
                 {documents.map((doc) => (
                   <div
                     key={doc.id}
                     className={cn(
-                      "group p-2.5 rounded-lg cursor-pointer transition-colors",
+                      "group relative p-2.5 rounded-lg cursor-pointer transition-colors",
                       activeDocId === doc.id
                         ? "bg-primary/8 text-foreground"
                         : "hover:bg-muted/60"
                     )}
                     onClick={() => handleSelectDocument(doc)}
                   >
-                    <div className="flex items-start justify-between gap-1">
-                      <div className="min-w-0">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-1">
+                        {doc.access_level === "private" && <Lock className="h-3 w-3 text-muted-foreground/60 shrink-0" />}
+                        {doc.access_level === "firm_editable" && <UsersRound className="h-3 w-3 text-muted-foreground/60 shrink-0" />}
                         <p className="text-xs font-medium truncate">{doc.title}</p>
-                        <p className="text-[11px] text-muted-foreground mt-0.5">{doc.updated_at}</p>
                       </div>
-                      <div className="flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-                        <button
-                          type="button"
-                          className="p-1 rounded hover:bg-muted"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleDuplicateDocument(doc);
-                          }}
-                        >
-                          <Copy className="h-3 w-3 text-muted-foreground" />
-                        </button>
-                        <button
-                          type="button"
-                          className="p-1 rounded hover:bg-muted"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleDeleteDocument(doc.id);
-                          }}
-                        >
-                          <Trash2 className="h-3 w-3 text-destructive" />
-                        </button>
-                      </div>
+                      <p className="text-[11px] text-muted-foreground mt-0.5">{doc.updated_at}</p>
+                    </div>
+                    <div className="absolute right-1 top-0 bottom-0 flex items-center gap-0.5 pl-4 opacity-0 group-hover:opacity-100 transition-opacity bg-gradient-to-l from-background/90 from-60% to-transparent">
+                      <button
+                        type="button"
+                        className="p-1 rounded hover:bg-muted"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDuplicateDocument(doc);
+                        }}
+                      >
+                        <Copy className="h-3 w-3 text-muted-foreground" />
+                      </button>
+                      <button
+                        type="button"
+                        className="p-1 rounded hover:bg-muted"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDeleteDocument(doc.id);
+                        }}
+                      >
+                        <Trash2 className="h-3 w-3 text-destructive" />
+                      </button>
                     </div>
                   </div>
                 ))}
@@ -862,7 +1026,7 @@ hr{border:none;border-top:1px solid #000;margin:10pt 0}
                 })}
               </div>
             )}
-          </ScrollArea>
+          </div>
           </>
         )}
       </div>
@@ -916,7 +1080,7 @@ hr{border:none;border-top:1px solid #000;margin:10pt 0}
               {isGenerating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
               {isGenerating ? "생성 중..." : "AI 초안"}
             </Button>
-            <Button variant="ghost" size="sm" onClick={handleSave} className="gap-1 h-8 text-xs">
+            <Button variant="ghost" size="sm" onClick={() => setSaveDialogOpen(true)} className="gap-1 h-8 text-xs">
               {isSaved ? <Check className="h-3.5 w-3.5 text-green-600" /> : <Save className="h-3.5 w-3.5" />}
               저장
             </Button>
@@ -1150,6 +1314,104 @@ hr{border:none;border-top:1px solid #000;margin:10pt 0}
           </>
         )}
       </div>
+
+      {/* Export Dialog */}
+      {/* Save Dialog with Access Level */}
+      <Dialog open={saveDialogOpen} onOpenChange={setSaveDialogOpen}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="text-base">문서 저장</DialogTitle>
+            <DialogDescription className="text-sm">
+              공개 범위를 설정하고 저장합니다.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2 py-2">
+            {([
+              { value: "firm_readonly", icon: Eye, label: "열람 전용", desc: "회사 전원 열람 가능, 편집은 나만" },
+              { value: "firm_editable", icon: UsersRound, label: "공동 편집", desc: "회사 전원 열람/편집 가능, 삭제는 나만" },
+              { value: "private", icon: Lock, label: "비공개", desc: "나만 열람/편집 가능" },
+            ] as const).map((opt) => {
+              const Icon = opt.icon;
+              const selected = accessLevel === opt.value;
+              return (
+                <button
+                  key={opt.value}
+                  type="button"
+                  onClick={() => setAccessLevel(opt.value)}
+                  className={cn(
+                    "w-full flex items-start gap-3 p-3 rounded-lg border text-left transition-colors",
+                    selected
+                      ? "border-primary bg-primary/5"
+                      : "border-border/60 hover:bg-muted/40"
+                  )}
+                >
+                  <Icon className={cn("h-4 w-4 mt-0.5 shrink-0", selected ? "text-primary" : "text-muted-foreground")} />
+                  <div>
+                    <p className={cn("text-sm font-medium", selected && "text-primary")}>{opt.label}</p>
+                    <p className="text-xs text-muted-foreground mt-0.5">{opt.desc}</p>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="outline" size="sm" onClick={() => setSaveDialogOpen(false)}>
+              취소
+            </Button>
+            <Button size="sm" onClick={handleSave}>
+              <Save className="h-3.5 w-3.5 mr-1.5" />
+              저장
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={exportDialogOpen} onOpenChange={(open) => {
+        if (!isExporting) {
+          setExportDialogOpen(open);
+          if (!open) { setExportError(null); setExportFormat(null); }
+        }
+      }}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>문서 내보내기</DialogTitle>
+            <DialogDescription>내보낼 파일 형식을 선택하세요</DialogDescription>
+          </DialogHeader>
+          <div className="grid grid-cols-3 gap-3 py-2">
+            {([
+              { format: "pdf" as ExportFormat, icon: FileText, label: "PDF", desc: "인쇄용 문서" },
+              { format: "docx" as ExportFormat, icon: FileType, label: "DOCX", desc: "Word 편집용" },
+              { format: "hwpx" as ExportFormat, icon: FileCheck, label: "HWPX", desc: "한/글 편집용" },
+            ]).map((item) => (
+              <button
+                key={item.format}
+                type="button"
+                disabled={isExporting}
+                onClick={() => handleExportConfirm(item.format)}
+                className={cn(
+                  "flex flex-col items-center gap-2 p-4 rounded-lg border-2 transition-all",
+                  "hover:border-primary/50 hover:bg-primary/5",
+                  isExporting && exportFormat === item.format
+                    ? "border-primary bg-primary/5"
+                    : "border-border/50",
+                  isExporting && exportFormat !== item.format && "opacity-50 cursor-not-allowed"
+                )}
+              >
+                {isExporting && exportFormat === item.format ? (
+                  <Loader2 className="h-6 w-6 animate-spin text-primary" />
+                ) : (
+                  <item.icon className="h-6 w-6 text-muted-foreground" />
+                )}
+                <span className="text-sm font-semibold">{item.label}</span>
+                <span className="text-[11px] text-muted-foreground leading-tight text-center">{item.desc}</span>
+              </button>
+            ))}
+          </div>
+          {exportError && (
+            <p className="text-xs text-destructive text-center">{exportError}</p>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

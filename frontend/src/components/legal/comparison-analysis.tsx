@@ -12,6 +12,10 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { useSearch, type ComparisonResult } from "@/contexts/search-context";
+import {
+  AgentLoadingOverlay,
+  type AgentStep,
+} from "@/components/ui/agent-loading-overlay";
 
 interface ComparisonAnalysisProps {
   originCaseId: string;
@@ -30,6 +34,21 @@ interface SectionConfig {
   emptyMessage?: string;
 }
 
+const COMPARISON_STEPS: AgentStep[] = [
+  { label: "판례 원문 조회 중…", status: "pending" },
+  { label: "사실관계 대조 중…", status: "pending" },
+  { label: "유사점 분석 중…", status: "pending" },
+  { label: "차이점 도출 중…", status: "pending" },
+  { label: "전략 포인트 정리 중…", status: "pending" },
+];
+
+const advanceStep = (steps: AgentStep[], index: number): AgentStep[] =>
+  steps.map((s, i) =>
+    i < index ? { ...s, status: "done" }
+      : i === index ? { ...s, status: "in_progress" }
+        : s
+  );
+
 export function ComparisonAnalysisContent({
   originCaseId,
   originFacts,
@@ -40,6 +59,7 @@ export function ComparisonAnalysisContent({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<ComparisonResult | null>(null);
+  const [agentSteps, setAgentSteps] = useState<AgentStep[]>([]);
 
   useEffect(() => {
     const fetchComparison = async () => {
@@ -53,11 +73,18 @@ export function ComparisonAnalysisContent({
         return;
       }
 
-      // 2. 캐시에 없으면 API 호출
+      // 2. 캐시에 없으면 API 호출 + 에이전트 오버레이
       setLoading(true);
       setError(null);
 
+      const steps = [...COMPARISON_STEPS];
+      setAgentSteps(advanceStep(steps, 0));
+
       try {
+        const timer1 = setTimeout(() => setAgentSteps(prev => advanceStep(prev, 1)), 1500);
+        const timer2 = setTimeout(() => setAgentSteps(prev => advanceStep(prev, 2)), 4000);
+        const timer3 = setTimeout(() => setAgentSteps(prev => advanceStep(prev, 3)), 7000);
+
         const response = await fetch("/api/v1/search/cases/compare", {
           method: "POST",
           headers: {
@@ -70,21 +97,34 @@ export function ComparisonAnalysisContent({
           }),
         });
 
+        clearTimeout(timer1);
+        clearTimeout(timer2);
+        clearTimeout(timer3);
+
         if (!response.ok) {
           const errData = await response.json();
           throw new Error(errData.detail || "비교 분석 중 오류가 발생했습니다.");
         }
 
+        // 결과 수신 → 마지막 단계
+        setAgentSteps(prev => advanceStep(prev, 4));
         const result: ComparisonResult = await response.json();
         setData(result);
 
         // 3. 결과를 캐시에 저장
         setComparison(originCaseId, targetCaseNumber, result);
+
+        // 모든 단계 완료 표시
+        await new Promise(r => setTimeout(r, 800));
+        setAgentSteps(prev => prev.map(s => ({ ...s, status: "done" as const })));
       } catch (err) {
         console.error("비교 분석 실패:", err);
         setError(err instanceof Error ? err.message : "비교 분석 중 오류가 발생했습니다.");
       } finally {
-        setLoading(false);
+        setTimeout(() => {
+          setLoading(false);
+          setAgentSteps([]);
+        }, 500);
       }
     };
 
@@ -150,14 +190,22 @@ export function ComparisonAnalysisContent({
     );
   };
 
-  // 로딩 상태
+  // 로딩 상태 (에이전트 오버레이)
+  if (agentSteps.length > 0) {
+    return (
+      <div className="relative" style={{ minHeight: "340px" }}>
+        <AgentLoadingOverlay steps={agentSteps} />
+      </div>
+    );
+  }
+
+  // 캐시 로딩 등 간단한 로딩
   if (loading) {
     return (
       <div className="py-12">
         <div className="flex flex-col items-center justify-center gap-3 text-muted-foreground">
           <Loader2 className="h-8 w-8 animate-spin text-primary" />
-          <p className="text-sm">AI가 판례를 비교 분석하고 있습니다...</p>
-
+          <p className="text-sm">불러오는 중...</p>
         </div>
       </div>
     );

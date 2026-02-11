@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   type CaseData,
   type EvidenceData,
@@ -47,6 +47,7 @@ interface RelatedLawResult {
 }
 
 interface ExtractedLegalIssues {
+  crime_names: string[];
   keywords: string[];
   laws: string[];
   search_query: string;
@@ -95,6 +96,7 @@ import {
   Clock,
   TrendingUp,
   XCircle,
+  X,
   User,
   UserX,
   Circle,
@@ -133,6 +135,8 @@ export function CaseDetailPage({
 }: CaseDetailPageProps) {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const initialTab = searchParams.get("tab") || "overview";
   const { getSimilarCases, setSimilarCases: cacheSimilarCases } = useSearch();
 
   // 모든 useState 훅을 컴포넌트 최상단에 선언 (React 훅 규칙)
@@ -418,6 +422,25 @@ export function CaseDetailPage({
       alert('파일 업로드에 실패했습니다.');
     } finally {
       setIsUploading(false);
+    }
+  };
+
+  // 증거 연결 해제
+  const unlinkEvidence = async (evidenceId: string) => {
+    if (!caseData?.id) return;
+    const token = localStorage.getItem('access_token');
+    if (!token) return;
+
+    try {
+      const response = await fetch(
+        `http://localhost:8000/api/v1/evidence/${evidenceId}/unlink-case/${caseData.id}`,
+        { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } }
+      );
+      if (!response.ok) throw new Error('연결 해제 실패');
+      await fetchEvidences();
+    } catch (error) {
+      console.error('증거 연결 해제 실패:', error);
+      alert('증거 연결 해제에 실패했습니다.');
     }
   };
 
@@ -1173,7 +1196,7 @@ export function CaseDetailPage({
       </div>
 
       {/* Tabs - New Structure */}
-      <Tabs defaultValue="overview" className="w-full">
+      <Tabs defaultValue={initialTab} className="w-full">
         <TabsList className="grid w-full grid-cols-4 h-10 p-1 bg-secondary/50">
           <TabsTrigger value="overview" className="text-sm">
             사건 개요
@@ -1196,7 +1219,7 @@ export function CaseDetailPage({
             <CardHeader className="pb-2">
               <div className="flex items-center justify-between">
                 <CardTitle className="text-base font-medium">
-                  사건 상세 정보
+                  사건 상세
                 </CardTitle>
                 {/* 서브 탭에 따라 다른 버튼 표시 */}
                 {detailSubTab === "analysis" ? (
@@ -1564,7 +1587,7 @@ export function CaseDetailPage({
                   </div>
 
                   {/* Editable Fields */}
-                  <div className="space-y-7">
+                  <div className="space-y-7 mt-6">
                     <div className="space-y-2">
                       <Label className="text-sm font-semibold">사건 요약</Label>
                       {isEditingOverview ? (
@@ -1607,15 +1630,24 @@ export function CaseDetailPage({
                       )}
                     </div>
 
-                    {/* AI 분석 법적 쟁점 (항상 읽기 전용) */}
-                    {extractedIssues?.keywords && extractedIssues.keywords.length > 0 && (
+                    {/* AI 분석 법적 쟁점: 범죄명(빨간) + 쟁점(보라) 한 줄 표시 */}
+                    {((extractedIssues?.crime_names && extractedIssues.crime_names.length > 0) || (extractedIssues?.keywords && extractedIssues.keywords.length > 0)) && (
                       <div className="flex flex-wrap items-center gap-2">
                         <span className="text-[11px] text-gray-400 italic">AI 분석 법적 쟁점</span>
-                        {extractedIssues.keywords.map((keyword, index) => (
+                        {extractedIssues?.crime_names?.map((name, index) => (
+                          <Badge
+                            key={`crime-${index}`}
+                            variant="default"
+                            className="font-normal text-xs bg-transparent text-red-600 dark:text-red-400"
+                          >
+                            {name}
+                          </Badge>
+                        ))}
+                        {extractedIssues?.keywords?.map((keyword, index) => (
                           <Badge
                             key={`keyword-${index}`}
                             variant="default"
-                            className="font-normal text-xs bg-primary/10 text-primary"
+                            className="font-normal text-xs bg-transparent text-primary"
                           >
                             {keyword}
                           </Badge>
@@ -1765,7 +1797,7 @@ export function CaseDetailPage({
                       <th className="text-left px-3 py-2 text-xs font-medium text-muted-foreground">증거명</th>
                       <th className="text-left px-3 py-2 text-xs font-medium text-muted-foreground hidden sm:table-cell">유형</th>
                       <th className="text-left px-3 py-2 text-xs font-medium text-muted-foreground hidden md:table-cell">일시</th>
-                      <th className="text-left px-3 py-2 text-xs font-medium text-muted-foreground">상태</th>
+                      <th className="w-8" />
                     </tr>
                   </thead>
                   <tbody>
@@ -1790,10 +1822,20 @@ export function CaseDetailPage({
                           </td>
                           <td className="px-3 py-2.5 text-muted-foreground hidden sm:table-cell">{evidence.type}</td>
                           <td className="px-3 py-2.5 text-muted-foreground hidden md:table-cell">{evidence.date} {evidence.time}</td>
-                          <td className="px-3 py-2.5">
-                            <Badge variant="outline" className="text-xs font-normal py-0 h-5">
-                              {evidence.status}
-                            </Badge>
+                          <td className="px-2 py-2.5">
+                            <button
+                              type="button"
+                              title="사건에서 연결 해제"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (confirm(`"${evidence.name}" 증거를 이 사건에서 연결 해제하시겠습니까?\n(파일은 삭제되지 않습니다)`)) {
+                                  unlinkEvidence(evidence.id);
+                                }
+                              }}
+                              className="p-1 rounded hover:bg-destructive/10 text-muted-foreground/40 hover:text-destructive transition-colors"
+                            >
+                              <X className="h-3.5 w-3.5" />
+                            </button>
                           </td>
                         </tr>
                       ))

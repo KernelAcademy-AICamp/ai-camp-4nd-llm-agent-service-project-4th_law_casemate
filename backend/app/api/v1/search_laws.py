@@ -116,6 +116,7 @@ async def search_laws_by_case(
             try:
                 cached_results = json.loads(case_summary.legal_search_results)
                 cached_results["extracted"] = {
+                    "crime_names": json.loads(case_summary.crime_names) if case_summary.crime_names else [],
                     "keywords": json.loads(case_summary.legal_keywords) if case_summary.legal_keywords else [],
                     "laws": json.loads(case_summary.legal_laws) if case_summary.legal_laws else [],
                 }
@@ -137,7 +138,8 @@ async def search_laws_by_case(
                     laws=cached_laws,
                     limit=request.limit,
                 )
-                extracted = {"keywords": cached_keywords, "laws": cached_laws}
+                cached_crime_names = json.loads(case_summary.crime_names) if case_summary.crime_names else []
+                extracted = {"crime_names": cached_crime_names, "keywords": cached_keywords, "laws": cached_laws}
                 results["extracted"] = extracted
 
                 # 벡터 검색 결과도 캐시에 저장
@@ -158,6 +160,7 @@ async def search_laws_by_case(
             # hash 불일치 시 기존 캐시 모두 무효화
             case_summary.legal_keywords = None
             case_summary.legal_laws = None
+            case_summary.crime_names = None
             case_summary.legal_search_results = None
             print(f"   🗑️ hash 불일치: 기존 법령 캐시 무효화")
 
@@ -174,6 +177,7 @@ async def search_laws_by_case(
 
         # 추출 결과 + 검색 결과 DB 저장
         if extracted.get("keywords") and case_summary:
+            case_summary.crime_names = json.dumps(extracted.get("crime_names", []), ensure_ascii=False)
             case_summary.legal_keywords = json.dumps(extracted.get("keywords", []), ensure_ascii=False)
             case_summary.legal_laws = json.dumps(extracted.get("laws", []), ensure_ascii=False)
             results_to_cache = {"total": results.get("total", 0), "results": results.get("results", [])}

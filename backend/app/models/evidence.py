@@ -92,6 +92,7 @@ class CaseAnalysis(Base):
     facts = Column(Text, nullable=True)  # 사실관계
     claims = Column(Text, nullable=True)  # 청구내용
     legal_keywords = Column(Text, nullable=True)  # 법적 쟁점 키워드 (JSON)
+    crime_names = Column(Text, nullable=True)  # 죄명 목록 (JSON) - "~죄" 형태
     legal_laws = Column(Text, nullable=True)  # 관련 법조문 (JSON)
     similar_precedents = Column(Text, nullable=True)  # 유사 판례 검색 결과 (JSON)
     search_query = Column(Text, nullable=True)  # 판례 검색용 변환 쿼리 (GPT 캐싱)

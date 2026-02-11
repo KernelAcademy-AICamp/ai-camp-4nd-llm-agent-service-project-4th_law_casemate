@@ -22,6 +22,12 @@ class CategoryCreateRequest(BaseModel):
     parent_id: int | None = None
     order_index: int | None = 0
 
+class CategoryRenameRequest(BaseModel):
+    name: str
+
+class CategoryMoveRequest(BaseModel):
+    parent_id: int | None = None
+
 # 환경변수 로드
 load_dotenv()
 
@@ -270,15 +276,15 @@ async def delete_category(
     current_user: User = Depends(get_current_user)
 ):
     """
-    증거 카테고리 삭제
+    증거 카테고리 삭제 (하위 폴더 포함 재귀 삭제)
 
     - category_id: 삭제할 카테고리 ID
-    - 해당 카테고리가 현재 사용자의 firm_id에 속하는지 검증 후 삭제
+    - 하위 카테고리가 있으면 함께 삭제
+    - 해당 폴더 및 하위 폴더의 파일은 미분류(category_id=NULL)로 이동
     """
     print(f"🗑️ 카테고리 삭제 요청: category_id={category_id}, user_id={current_user.id}, firm_id={current_user.firm_id}")
 
     try:
-        # 1. 카테고리 조회
         category = db.query(models.EvidenceCategory).filter(
             models.EvidenceCategory.id == category_id
         ).first()
@@ -286,17 +292,36 @@ async def delete_category(
         if not category:
             raise HTTPException(status_code=404, detail="카테고리를 찾을 수 없습니다")
 
-        # 2. 소유권 검증
         if category.firm_id != current_user.firm_id:
             raise HTTPException(status_code=403, detail="해당 카테고리를 삭제할 권한이 없습니다")
 
-        # 3. 카테고리 삭제
-        db.delete(category)
+        # 하위 카테고리 ID 재귀 수집
+        all_ids = []
+        def collect_children(parent_id):
+            all_ids.append(parent_id)
+            children = db.query(models.EvidenceCategory).filter(
+                models.EvidenceCategory.parent_id == parent_id
+            ).all()
+            for child in children:
+                collect_children(child.id)
+
+        collect_children(category_id)
+
+        # 해당 폴더들의 파일을 미분류로 이동
+        db.query(models.Evidence).filter(
+            models.Evidence.category_id.in_(all_ids)
+        ).update({models.Evidence.category_id: None}, synchronize_session='fetch')
+
+        # 하위부터 역순으로 삭제 (FK 제약 회피)
+        for cid in reversed(all_ids):
+            db.query(models.EvidenceCategory).filter(
+                models.EvidenceCategory.id == cid
+            ).delete()
+
         db.commit()
+        print(f"✅ 카테고리 삭제 완료: {len(all_ids)}개 폴더 삭제 (id: {all_ids})")
 
-        print(f"✅ 카테고리 삭제 완료: category_id={category_id}")
-
-        return {"message": "카테고리 삭제 완료"}
+        return {"message": "카테고리 삭제 완료", "deleted_count": len(all_ids)}
 
     except HTTPException:
         raise
@@ -363,6 +388,133 @@ async def create_category(
         db.rollback()
         print(f"❌ 카테고리 생성 실패: {str(e)}")
         raise HTTPException(status_code=500, detail=f"카테고리 생성 실패: {str(e)}")
+
+@router.patch("/categories/{category_id}/rename")
+async def rename_category(
+    category_id: int,
+    request: CategoryRenameRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    증거 카테고리 이름 변경
+
+    - category_id: 이름을 변경할 카테고리 ID
+    - name: 새로운 카테고리명
+    - firm_id 소유권 검증 후 이름 변경
+    """
+    print(f"✏️ 카테고리 이름 변경: category_id={category_id}, new_name={request.name}")
+
+    try:
+        # 1. 카테고리 조회
+        category = db.query(models.EvidenceCategory).filter(
+            models.EvidenceCategory.id == category_id
+        ).first()
+
+        if not category:
+            raise HTTPException(status_code=404, detail="카테고리를 찾을 수 없습니다")
+
+        # 2. 소유권 검증
+        if category.firm_id != current_user.firm_id:
+            raise HTTPException(status_code=403, detail="해당 카테고리를 수정할 권한이 없습니다")
+
+        # 3. 이름 변경
+        category.name = request.name
+        db.commit()
+        db.refresh(category)
+
+        print(f"✅ 카테고리 이름 변경 완료: category_id={category_id}, name={category.name}")
+
+        return {
+            "message": "이름 변경 완료",
+            "category_id": category.id,
+            "name": category.name
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        print(f"❌ 카테고리 이름 변경 실패: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"카테고리 이름 변경 실패: {str(e)}")
+
+@router.patch("/categories/{category_id}/move")
+async def move_category(
+    category_id: int,
+    request: CategoryMoveRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    증거 카테고리를 다른 부모 카테고리로 이동
+
+    - category_id: 이동할 카테고리 ID
+    - parent_id: 새 부모 카테고리 ID (None이면 루트로 이동)
+    - firm_id 소유권 검증
+    - 순환 참조 방지 (자기 자신의 하위 카테고리로 이동 불가)
+    """
+    print(f"📦 카테고리 이동: category_id={category_id}, new_parent_id={request.parent_id}")
+
+    try:
+        # 1. 카테고리 조회
+        category = db.query(models.EvidenceCategory).filter(
+            models.EvidenceCategory.id == category_id
+        ).first()
+
+        if not category:
+            raise HTTPException(status_code=404, detail="카테고리를 찾을 수 없습니다")
+
+        # 2. 소유권 검증
+        if category.firm_id != current_user.firm_id:
+            raise HTTPException(status_code=403, detail="해당 카테고리를 이동할 권한이 없습니다")
+
+        # 3. 새 부모 카테고리 검증 (parent_id가 None이 아닌 경우)
+        if request.parent_id is not None:
+            parent_category = db.query(models.EvidenceCategory).filter(
+                models.EvidenceCategory.id == request.parent_id
+            ).first()
+
+            if not parent_category:
+                raise HTTPException(status_code=404, detail="대상 부모 카테고리를 찾을 수 없습니다")
+
+            if parent_category.firm_id != current_user.firm_id:
+                raise HTTPException(status_code=403, detail="대상 부모 카테고리에 접근할 권한이 없습니다")
+
+            # 4. 순환 참조 방지: 새 부모가 자기 자신이거나 자신의 하위인지 확인
+            if request.parent_id == category_id:
+                raise HTTPException(status_code=400, detail="자기 자신을 부모로 설정할 수 없습니다")
+
+            # 하위 카테고리 순회하여 순환 참조 검사
+            current_parent_id = parent_category.parent_id
+            while current_parent_id is not None:
+                if current_parent_id == category_id:
+                    raise HTTPException(status_code=400, detail="순환 참조가 발생합니다. 하위 카테고리로 이동할 수 없습니다")
+                ancestor = db.query(models.EvidenceCategory).filter(
+                    models.EvidenceCategory.id == current_parent_id
+                ).first()
+                if not ancestor:
+                    break
+                current_parent_id = ancestor.parent_id
+
+        # 5. 부모 변경
+        category.parent_id = request.parent_id
+        db.commit()
+        db.refresh(category)
+
+        print(f"✅ 카테고리 이동 완료: category_id={category_id}, parent_id={category.parent_id}")
+
+        return {
+            "message": "이동 완료",
+            "category_id": category.id,
+            "parent_id": category.parent_id
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        print(f"❌ 카테고리 이동 실패: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"카테고리 이동 실패: {str(e)}")
 
 @router.get("/categories")
 async def get_category_list(
@@ -583,6 +735,43 @@ async def link_evidence_to_case(
         db.rollback()
         print(f"❌ 증거-사건 연결 실패: {str(e)}")
         raise HTTPException(status_code=500, detail=f"연결 실패: {str(e)}")
+
+@router.delete("/{evidence_id}/unlink-case/{case_id}")
+async def unlink_evidence_from_case(
+    evidence_id: int,
+    case_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    증거와 사건 연결 해제 (파일 자체는 보존)
+    """
+    try:
+        evidence = db.query(models.Evidence).filter(models.Evidence.id == evidence_id).first()
+        if not evidence:
+            raise HTTPException(status_code=404, detail="증거를 찾을 수 없습니다")
+
+        if evidence.law_firm_id != current_user.firm_id:
+            raise HTTPException(status_code=403, detail="해당 증거에 접근할 권한이 없습니다")
+
+        deleted = db.query(models.CaseEvidenceMapping).filter(
+            models.CaseEvidenceMapping.evidence_id == evidence_id,
+            models.CaseEvidenceMapping.case_id == case_id
+        ).delete()
+
+        db.commit()
+
+        if deleted == 0:
+            raise HTTPException(status_code=404, detail="해당 연결을 찾을 수 없습니다")
+
+        return {"message": "연결 해제 완료", "evidence_id": evidence_id, "case_id": case_id}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"연결 해제 실패: {str(e)}")
+
 
 @router.post("/{evidence_id}/link-case-with-details/{case_id}")
 async def link_evidence_to_case_with_details(
