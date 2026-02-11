@@ -42,6 +42,7 @@ import {
   Link2,
   MousePointer,
   MousePointerClick,
+  RefreshCw,
 } from "lucide-react";
 
 // Types
@@ -66,6 +67,12 @@ export interface RelationshipEdge {
 
 interface RelationshipEditorProps {
   caseId: string;
+  data?: {
+    persons: any[];
+    relationships: any[];
+  };
+  loading?: boolean;
+  onRefresh?: () => void;
 }
 
 const roleConfig: Record<
@@ -111,91 +118,110 @@ const roleConfig: Record<
 
 export function RelationshipEditor({
   caseId,
+  data,
+  loading: externalLoading = false,
+  onRefresh,
 }: RelationshipEditorProps) {
   // State
   const [nodes, setNodes] = useState<PersonNode[]>([]);
   const [edges, setEdges] = useState<RelationshipEdge[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [internalLoading, setInternalLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Load relationship data from API
+  const loading = externalLoading || internalLoading;
+
+  // Convert API data to editor format
+  const convertData = useCallback((rawData: { persons: any[], relationships: any[] }) => {
+    // Valid role mapping
+    const validRoles: PersonRole[] = ["피해자", "가해자", "증인", "동료", "미확인"];
+    const normalizeRole = (role: string): PersonRole => {
+      if (validRoles.includes(role as PersonRole)) {
+        return role as PersonRole;
+      }
+      const roleMap: Record<string, PersonRole> = {
+        "원고": "피해자",
+        "피고": "가해자",
+        "피고소인": "가해자",
+        "고소인": "피해자",
+        "상사": "동료",
+        "관련자": "미확인",
+      };
+      return roleMap[role] || "미확인";
+    };
+
+    const convertedNodes: PersonNode[] = rawData.persons
+      .filter((person: any) => person && person.id && person.name && person.role)
+      .map((person: any, index: number) => ({
+        id: String(person.id),
+        name: person.name,
+        role: normalizeRole(person.role),
+        x: person.position_x ?? (300 + (index % 3) * 200),
+        y: person.position_y ?? (200 + Math.floor(index / 3) * 150),
+      }));
+
+    const validPersonIds = new Set(convertedNodes.map(node => node.id));
+
+    const convertedEdges: RelationshipEdge[] = rawData.relationships
+      .filter((rel: any) => {
+        if (!rel || !rel.id || !rel.source_person_id || !rel.target_person_id) {
+          return false;
+        }
+        const sourceId = String(rel.source_person_id);
+        const targetId = String(rel.target_person_id);
+        if (!validPersonIds.has(sourceId) || !validPersonIds.has(targetId)) {
+          return false;
+        }
+        return true;
+      })
+      .map((rel: any) => ({
+        id: String(rel.id),
+        sourceId: String(rel.source_person_id),
+        targetId: String(rel.target_person_id),
+        label: rel.label || rel.relationship_type || "관계",
+        memo: rel.memo || "",
+        directed: rel.is_directed ?? true,
+      }));
+
+    return { nodes: convertedNodes, edges: convertedEdges };
+  }, []);
+
+  // Load relationship data (from props or API)
   useEffect(() => {
+    // If data is provided via props, use it directly
+    if (data) {
+      console.log("[RelationshipEditor] Using data from props");
+      const { nodes: convertedNodes, edges: convertedEdges } = convertData(data);
+      setNodes(convertedNodes);
+      setEdges(convertedEdges);
+      setError(null);
+      return;
+    }
+
+    // Otherwise, fetch from API (fallback for backward compatibility)
     const loadRelationships = async () => {
       try {
-        setLoading(true);
+        setInternalLoading(true);
         setError(null);
 
-        console.log("[RelationshipEditor] Loading relationships for caseId:", caseId);
+        console.log("[RelationshipEditor] Fetching from API for caseId:", caseId);
 
         const response = await fetch(
           `http://localhost:8000/api/v1/relationships/${caseId}`
         );
-
-        console.log("[RelationshipEditor] Response status:", response.status);
 
         if (!response.ok) {
           const errorData = await response.json().catch(() => ({}));
           throw new Error(errorData.detail || "관계도를 불러오는데 실패했습니다");
         }
 
-        const data = await response.json();
-        console.log("[RelationshipEditor] Received data:", data);
+        const rawData = await response.json();
 
         // Validate response data
-        if (!data || !Array.isArray(data.persons) || !Array.isArray(data.relationships)) {
+        if (!rawData || !Array.isArray(rawData.persons) || !Array.isArray(rawData.relationships)) {
           throw new Error("잘못된 응답 형식입니다");
         }
 
-        // Valid role mapping
-        const validRoles: PersonRole[] = ["피해자", "가해자", "증인", "동료", "미확인"];
-        const normalizeRole = (role: string): PersonRole => {
-          if (validRoles.includes(role as PersonRole)) {
-            return role as PersonRole;
-          }
-          const roleMap: Record<string, PersonRole> = {
-            "원고": "피해자",
-            "피고": "가해자",
-            "피고소인": "가해자",
-            "상사": "동료",
-            "관련자": "미확인",
-          };
-          return roleMap[role] || "미확인";
-        };
-
-        const convertedNodes: PersonNode[] = data.persons
-          .filter((person: any) => person && person.id && person.name && person.role)
-          .map((person: any, index: number) => ({
-            id: String(person.id),
-            name: person.name,
-            role: normalizeRole(person.role),
-            x: person.position_x ?? (300 + (index % 3) * 200),
-            y: person.position_y ?? (200 + Math.floor(index / 3) * 150),
-          }));
-
-        const validPersonIds = new Set(convertedNodes.map(node => node.id));
-
-        const convertedEdges: RelationshipEdge[] = data.relationships
-          .filter((rel: any) => {
-            if (!rel || !rel.id || !rel.source_person_id || !rel.target_person_id) {
-              console.warn("[RelationshipEditor] Invalid relationship:", rel);
-              return false;
-            }
-            const sourceId = String(rel.source_person_id);
-            const targetId = String(rel.target_person_id);
-            if (!validPersonIds.has(sourceId) || !validPersonIds.has(targetId)) {
-              console.warn("[RelationshipEditor] Relationship references non-existent person:", rel);
-              return false;
-            }
-            return true;
-          })
-          .map((rel: any) => ({
-            id: String(rel.id),
-            sourceId: String(rel.source_person_id),
-            targetId: String(rel.target_person_id),
-            label: rel.label || rel.relationship_type || "관계",
-            memo: rel.memo || "",
-            directed: rel.is_directed ?? true,
-          }));
+        const { nodes: convertedNodes, edges: convertedEdges } = convertData(rawData);
 
         console.log("[RelationshipEditor] Converted nodes:", convertedNodes.length);
         console.log("[RelationshipEditor] Converted edges:", convertedEdges.length);
@@ -206,7 +232,7 @@ export function RelationshipEditor({
         console.error("[RelationshipEditor] Failed to load relationships:", err);
         setError(err instanceof Error ? err.message : "알 수 없는 오류가 발생했습니다");
       } finally {
-        setLoading(false);
+        setInternalLoading(false);
       }
     };
 
@@ -214,10 +240,9 @@ export function RelationshipEditor({
       loadRelationships();
     } else {
       console.warn("[RelationshipEditor] No caseId provided");
-      setLoading(false);
       setError("사건 ID가 필요합니다");
     }
-  }, [caseId]);
+  }, [caseId, data, convertData]);
 
   // Zoom & Pan state
   const [zoom, setZoom] = useState(1);
@@ -482,7 +507,7 @@ export function RelationshipEditor({
   );
 
   // Add new person (place at viewport center)
-  const handleAddPerson = useCallback(() => {
+  const handleAddPerson = useCallback(async () => {
     if (!newPerson.name) return;
 
     let cx = 350, cy = 200;
@@ -492,70 +517,207 @@ export function RelationshipEditor({
       cy = (rect.height / 2 - panOffset.y) / zoom - 45;
     }
 
-    const id = Date.now().toString();
-    const newNode: PersonNode = {
-      id,
-      name: newPerson.name,
-      role: (newPerson.role as PersonRole) || "미확인",
-      x: cx + Math.random() * 60 - 30,
-      y: cy + Math.random() * 60 - 30,
-    };
+    const position_x = Math.round(cx + Math.random() * 60 - 30);
+    const position_y = Math.round(cy + Math.random() * 60 - 30);
 
-    setNodes((prev) => [...prev, newNode]);
-    setNewPerson({ name: "", role: "미확인" });
-    setIsAddPersonOpen(false);
-  }, [newPerson, zoom, panOffset]);
+    try {
+      // Save to database
+      const response = await fetch(
+        `http://localhost:8000/api/v1/relationships/${caseId}/persons`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: newPerson.name,
+            role: newPerson.role || "미확인",
+            description: "",
+            position_x,
+            position_y,
+          }),
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error("인물 추가에 실패했습니다");
+      }
+
+      const createdPerson = await response.json();
+
+      // Add to local state with DB-generated ID
+      const newNode: PersonNode = {
+        id: String(createdPerson.id),
+        name: createdPerson.name,
+        role: createdPerson.role as PersonRole,
+        x: createdPerson.position_x,
+        y: createdPerson.position_y,
+      };
+
+      setNodes((prev) => [...prev, newNode]);
+      setNewPerson({ name: "", role: "미확인" });
+      setIsAddPersonOpen(false);
+    } catch (err) {
+      console.error("[RelationshipEditor] Failed to add person:", err);
+      alert("인물 추가에 실패했습니다");
+    }
+  }, [newPerson, zoom, panOffset, caseId]);
 
   // Update person
-  const handleUpdatePerson = useCallback(() => {
+  const handleUpdatePerson = useCallback(async () => {
     if (!editingPerson) return;
 
-    setNodes((prev) =>
-      prev.map((node) => (node.id === editingPerson.id ? editingPerson : node))
-    );
-    setEditingPerson(null);
-    setIsEditPersonOpen(false);
-  }, [editingPerson]);
+    try {
+      // Save to database
+      const response = await fetch(
+        `http://localhost:8000/api/v1/relationships/${caseId}/persons/${editingPerson.id}`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: editingPerson.name,
+            role: editingPerson.role,
+            description: "",
+          }),
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error("인물 수정에 실패했습니다");
+      }
+
+      // Update local state
+      setNodes((prev) =>
+        prev.map((node) => (node.id === editingPerson.id ? editingPerson : node))
+      );
+      setEditingPerson(null);
+      setIsEditPersonOpen(false);
+    } catch (err) {
+      console.error("[RelationshipEditor] Failed to update person:", err);
+      alert("인물 수정에 실패했습니다");
+    }
+  }, [editingPerson, caseId]);
 
   // Delete person
-  const handleDeletePerson = useCallback((nodeId: string) => {
-    setNodes((prev) => prev.filter((n) => n.id !== nodeId));
-    setEdges((prev) =>
-      prev.filter((e) => e.sourceId !== nodeId && e.targetId !== nodeId)
-    );
-    setSelectedNode(null);
-  }, []);
+  const handleDeletePerson = useCallback(async (nodeId: string) => {
+    if (!confirm("이 인물을 삭제하시겠습니까?")) return;
+
+    try {
+      // Delete from database
+      const response = await fetch(
+        `http://localhost:8000/api/v1/relationships/${caseId}/persons/${nodeId}`,
+        { method: "DELETE" }
+      );
+
+      if (!response.ok) {
+        throw new Error("인물 삭제에 실패했습니다");
+      }
+
+      // Update local state
+      setNodes((prev) => prev.filter((n) => n.id !== nodeId));
+      setEdges((prev) =>
+        prev.filter((e) => e.sourceId !== nodeId && e.targetId !== nodeId)
+      );
+      setSelectedNode(null);
+    } catch (err) {
+      console.error("[RelationshipEditor] Failed to delete person:", err);
+      alert("인물 삭제에 실패했습니다");
+    }
+  }, [caseId]);
 
   // Add or update edge
-  const handleSaveEdge = useCallback(() => {
+  const handleSaveEdge = useCallback(async () => {
     if (!editingEdge || !editingEdge.label) return;
 
-    if (newEdgeData) {
-      const newEdge: RelationshipEdge = {
-        id: Date.now().toString(),
-        sourceId: newEdgeData.sourceId,
-        targetId: newEdgeData.targetId,
-        label: editingEdge.label,
-        memo: editingEdge.memo,
-        directed: editingEdge.directed,
-      };
-      setEdges((prev) => [...prev, newEdge]);
-      setNewEdgeData(null);
-    } else {
-      setEdges((prev) =>
-        prev.map((e) => (e.id === editingEdge.id ? editingEdge : e))
-      );
-    }
+    try {
+      if (newEdgeData) {
+        // Create new relationship
+        const response = await fetch(
+          `http://localhost:8000/api/v1/relationships/${caseId}/relationships`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              source_person_id: parseInt(newEdgeData.sourceId),
+              target_person_id: parseInt(newEdgeData.targetId),
+              relationship_type: editingEdge.label,
+              label: editingEdge.label,
+              memo: editingEdge.memo || "",
+              is_directed: editingEdge.directed ?? true,
+            }),
+          }
+        );
 
-    setEditingEdge(null);
-    setIsEditEdgeOpen(false);
-  }, [editingEdge, newEdgeData]);
+        if (!response.ok) {
+          throw new Error("관계 추가에 실패했습니다");
+        }
+
+        const createdRelationship = await response.json();
+
+        const newEdge: RelationshipEdge = {
+          id: String(createdRelationship.id),
+          sourceId: String(createdRelationship.source_person_id),
+          targetId: String(createdRelationship.target_person_id),
+          label: createdRelationship.label,
+          memo: createdRelationship.memo,
+          directed: createdRelationship.is_directed,
+        };
+        setEdges((prev) => [...prev, newEdge]);
+        setNewEdgeData(null);
+      } else {
+        // Update existing relationship
+        const response = await fetch(
+          `http://localhost:8000/api/v1/relationships/${caseId}/relationships/${editingEdge.id}`,
+          {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              relationship_type: editingEdge.label,
+              label: editingEdge.label,
+              memo: editingEdge.memo,
+              is_directed: editingEdge.directed,
+            }),
+          }
+        );
+
+        if (!response.ok) {
+          throw new Error("관계 수정에 실패했습니다");
+        }
+
+        setEdges((prev) =>
+          prev.map((e) => (e.id === editingEdge.id ? editingEdge : e))
+        );
+      }
+
+      setEditingEdge(null);
+      setIsEditEdgeOpen(false);
+    } catch (err) {
+      console.error("[RelationshipEditor] Failed to save relationship:", err);
+      alert("관계 저장에 실패했습니다");
+    }
+  }, [editingEdge, newEdgeData, caseId]);
 
   // Delete edge
-  const handleDeleteEdge = useCallback((edgeId: string) => {
-    setEdges((prev) => prev.filter((e) => e.id !== edgeId));
-    setSelectedEdge(null);
-  }, []);
+  const handleDeleteEdge = useCallback(async (edgeId: string) => {
+    if (!confirm("이 관계를 삭제하시겠습니까?")) return;
+
+    try {
+      // Delete from database
+      const response = await fetch(
+        `http://localhost:8000/api/v1/relationships/${caseId}/relationships/${edgeId}`,
+        { method: "DELETE" }
+      );
+
+      if (!response.ok) {
+        throw new Error("관계 삭제에 실패했습니다");
+      }
+
+      // Update local state
+      setEdges((prev) => prev.filter((e) => e.id !== edgeId));
+      setSelectedEdge(null);
+    } catch (err) {
+      console.error("[RelationshipEditor] Failed to delete relationship:", err);
+      alert("관계 삭제에 실패했습니다");
+    }
+  }, [caseId]);
 
   // Open edit person dialog
   const openEditPerson = useCallback(
@@ -643,6 +805,17 @@ export function RelationshipEditor({
       {/* Toolbar */}
       <div className="flex items-center justify-between p-3 border-b border-border/60 bg-[#FBFBFF]">
         <div className="flex items-center gap-2">
+          {onRefresh && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={onRefresh}
+              disabled={loading}
+            >
+              <RefreshCw className={`h-4 w-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
+              새로고침
+            </Button>
+          )}
           <Button
             size="sm"
             variant="outline"
@@ -729,7 +902,12 @@ export function RelationshipEditor({
           }}
         >
           {/* SVG for edges */}
-          <svg className="absolute overflow-visible w-0 h-0 pointer-events-none" style={{ top: 0, left: 0 }}>
+          <svg
+            className="absolute overflow-visible pointer-events-none"
+            style={{ top: 0, left: 0 }}
+            width="2000"
+            height="2000"
+          >
             <defs>
               <marker
                 id="arrowhead"

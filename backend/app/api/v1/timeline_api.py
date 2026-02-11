@@ -128,19 +128,24 @@ async def get_timelines(case_id: str, db: Session = Depends(get_db)):
                 result.append(format_timeline_with_evidence(timeline, db))
             return result
 
-        # Step 3: 타임라인이 없으면 자동 생성
-        print(f"[Timeline GET] 타임라인 없음 - 자동 생성 시작: case_id={numeric_case_id}")
+        # Step 3: 타임라인이 없으면 자동 생성 시도 (실패 시 빈 배열 반환)
+        print(f"[Timeline GET] 타임라인 없음 - 자동 생성 시도: case_id={numeric_case_id}")
 
-        timeline_service = TimeLineService(db=db, case_id=numeric_case_id)
-        generated_timelines = await timeline_service.generate_timeline_auto()
+        try:
+            timeline_service = TimeLineService(db=db, case_id=numeric_case_id)
+            generated_timelines = await timeline_service.generate_timeline_auto()
 
-        # Step 4: 생성된 타임라인을 응답 형식으로 변환 (증거 정보 포함)
-        result = []
-        for timeline in generated_timelines:
-            result.append(format_timeline_with_evidence(timeline, db))
+            # Step 4: 생성된 타임라인을 응답 형식으로 변환 (증거 정보 포함)
+            result = []
+            for timeline in generated_timelines:
+                result.append(format_timeline_with_evidence(timeline, db))
 
-        print(f"[Timeline GET] 자동 생성 완료: {len(result)}개")
-        return result
+            print(f"[Timeline GET] 자동 생성 완료: {len(result)}개")
+            return result
+        except Exception as gen_error:
+            # 자동 생성 실패 시 빈 배열 반환 (사용자는 수동으로 생성 버튼 클릭 가능)
+            print(f"[Timeline GET] 자동 생성 실패 (빈 배열 반환): {str(gen_error)}")
+            return []
 
     except HTTPException:
         raise

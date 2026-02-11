@@ -286,7 +286,7 @@ class TimeLineService:
                     }
                 ],
                 temperature=0.3,
-                max_tokens=2000
+                max_tokens=4000
             )
 
             llm_response = response.choices[0].message.content

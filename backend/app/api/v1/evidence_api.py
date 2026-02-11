@@ -92,6 +92,26 @@ async def process_evidence_in_background(evidence_id: int, file_content: bytes, 
                 print(f"   - 문서 유형: {doc_type}")
                 print(f"   - 추출 방법: {result.get('method')}")
                 print(f"   - 비용 추정: {result.get('cost_estimate')}\n")
+
+                # 5. 사건과 연결된 경우 자동 분석 트리거
+                case_mappings = db.query(models.CaseEvidenceMapping).filter(
+                    models.CaseEvidenceMapping.evidence_id == evidence_id
+                ).all()
+
+                if case_mappings:
+                    print(f"🔗 [백그라운드] 증거가 {len(case_mappings)}개 사건과 연결됨. 자동 분석 시작...")
+                    for mapping in case_mappings:
+                        # 기존 분석이 없는 경우만 분석 수행
+                        existing_analysis = db.query(models.EvidenceAnalysis).filter(
+                            models.EvidenceAnalysis.evidence_id == evidence_id,
+                            models.EvidenceAnalysis.case_id == mapping.case_id
+                        ).first()
+
+                        if not existing_analysis:
+                            print(f"   📊 사건 ID {mapping.case_id}에 대한 분석 시작...")
+                            await analyze_evidence_on_link_background(evidence_id, mapping.case_id)
+                        else:
+                            print(f"   ⏭️  사건 ID {mapping.case_id}는 이미 분석됨. 건너뜀.")
             else:
                 print(f"⚠️ [백그라운드] DB에서 증거를 찾을 수 없음: evidence_id={evidence_id}")
         else:
@@ -99,6 +119,161 @@ async def process_evidence_in_background(evidence_id: int, file_content: bytes, 
 
     except Exception as e:
         print(f"❌ [백그라운드] 증거 분석 중 오류: {str(e)}\n")
+        import traceback
+        traceback.print_exc()
+    finally:
+        db.close()
+
+
+async def analyze_evidence_on_link_background(evidence_id: int, case_id: int):
+    """
+    백그라운드에서 증거를 사건 맥락으로 분석
+
+    증거가 사건에 처음 연결될 때 자동으로 호출됨
+
+    Args:
+        evidence_id: 증거 ID
+        case_id: 사건 ID
+    """
+    from tool.database import SessionLocal
+    import json
+    import re
+
+    print(f"\n{'='*80}")
+    print(f"🤖 [백그라운드] 증거-사건 연결 분석 시작: evidence_id={evidence_id}, case_id={case_id}")
+    print(f"{'='*80}\n")
+
+    db = SessionLocal()
+    try:
+        # 1. 증거 조회
+        evidence = db.query(models.Evidence).filter(models.Evidence.id == evidence_id).first()
+        if not evidence:
+            print(f"⚠️ [백그라운드] 증거를 찾을 수 없음: evidence_id={evidence_id}")
+            return
+
+        # 2. content 확인
+        if not evidence.content or len(evidence.content.strip()) < 20:
+            print(f"⚠️ [백그라운드] 분석할 텍스트가 없음 (content가 비어있거나 너무 짧음)")
+            return
+
+        # 3. 사건 정보 조회
+        case = db.query(models.Case).filter(models.Case.id == case_id).first()
+        if not case:
+            print(f"⚠️ [백그라운드] 사건을 찾을 수 없음: case_id={case_id}")
+            return
+
+        case_context = f"""
+
+**사건 맥락:**
+- 사건명: {case.title}
+- 사건 유형: {case.case_type if case.case_type else '미분류'}
+- 의뢰인: {case.client_name} ({case.client_role})
+- 상대방: {case.opponent_name} ({case.opponent_role})
+- 사건 설명: {case.description[:300] if case.description else '없음'}
+"""
+
+        # 4. AI 분석 수행
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            print(f"⚠️ [백그라운드] OPENAI_API_KEY가 설정되지 않음")
+            return
+
+        client = AsyncOpenAI(api_key=api_key)
+
+        print(f"🤖 [백그라운드] AI 분석 중... (텍스트 길이: {len(evidence.content)}자)")
+
+        # 분석 프롬프트
+        prompt = f"""당신은 법률 전문가입니다. 다음 증거 자료를 특정 사건의 맥락에서 분석해주세요.
+
+**파일명:** {evidence.file_name}
+**문서 유형:** {evidence.doc_type if evidence.doc_type else '미분류'}
+{case_context}
+**증거 내용:**
+{evidence.content}
+
+---
+
+다음 형식으로 JSON 응답을 작성해주세요:
+
+```json
+{{
+  "summary": "증거 내용을 3-5문장으로 요약",
+  "legal_relevance": "이 사건에서 이 증거가 법적으로 어떤 의미를 가지는지, 어떤 주장을 뒷받침하는지 분석 (3-5문장)",
+  "risk_level": "high, medium, low 중 하나 (상대방에게 불리한 정도)"
+}}
+```
+
+**주의사항:**
+- summary: 핵심 내용만 간결하게 요약
+- legal_relevance: 사건 맥락을 고려하여 법적 쟁점, 증거 가치, 활용 방안을 구체적으로 작성
+- risk_level: 상대방 입장에서 불리한 정도를 평가 (높을수록 우리에게 유리)
+"""
+
+        response = await client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "당신은 법률 증거 분석 전문가입니다."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.3,
+            max_tokens=1500
+        )
+
+        content = response.choices[0].message.content or ""
+
+        # JSON 파싱
+        try:
+            # JSON 코드블록 제거
+            json_match = re.search(r'```json\s*(.*?)\s*```', content, re.DOTALL)
+            if json_match:
+                json_str = json_match.group(1)
+            else:
+                json_str = content
+
+            parsed = json.loads(json_str)
+            summary = parsed.get("summary", "")
+            legal_relevance = parsed.get("legal_relevance", "")
+            risk_level = parsed.get("risk_level", "medium")
+
+            print(f"✅ [백그라운드] AI 분석 완료: risk_level={risk_level}")
+
+        except (json.JSONDecodeError, AttributeError) as e:
+            print(f"⚠️ [백그라운드] JSON 파싱 실패: {str(e)}")
+            summary = content[:500]
+            legal_relevance = "자동 분석 실패"
+            risk_level = "medium"
+
+        # 5. DB 저장 (기존 분석이 있으면 업데이트, 없으면 생성)
+        existing_analysis = db.query(models.EvidenceAnalysis).filter(
+            models.EvidenceAnalysis.evidence_id == evidence_id,
+            models.EvidenceAnalysis.case_id == case_id
+        ).first()
+
+        if existing_analysis:
+            # 업데이트
+            existing_analysis.summary = summary
+            existing_analysis.legal_relevance = legal_relevance
+            existing_analysis.risk_level = risk_level
+            existing_analysis.ai_model = "gpt-4o-mini"
+            existing_analysis.created_at = func.now()
+            db.commit()
+            print(f"✅ [백그라운드] 분석 업데이트 완료: analysis_id={existing_analysis.id}")
+        else:
+            # 새로 생성
+            new_analysis = models.EvidenceAnalysis(
+                evidence_id=evidence_id,
+                case_id=case_id,
+                summary=summary,
+                legal_relevance=legal_relevance,
+                risk_level=risk_level,
+                ai_model="gpt-4o-mini"
+            )
+            db.add(new_analysis)
+            db.commit()
+            print(f"✅ [백그라운드] 분석 생성 완료: case_id={case_id}")
+
+    except Exception as e:
+        print(f"❌ [백그라운드] 증거-사건 연결 분석 중 오류: {str(e)}")
         import traceback
         traceback.print_exc()
     finally:
@@ -560,6 +735,7 @@ async def get_category_list(
         print(f"❌ 카테고리 목록 조회 실패: {str(e)}")
         raise HTTPException(status_code=500, detail=f"카테고리 목록 조회 실패: {str(e)}")
 
+
 @router.get("/list")
 async def get_evidence_list(
     case_id: int | None = None,  # 선택적: 특정 사건의 파일만 조회
@@ -677,10 +853,67 @@ async def get_evidence_list(
         print(f"{'='*80}\n")
         raise HTTPException(status_code=500, detail=f"목록 조회 실패: {str(e)}")
 
+
+@router.get("/{evidence_id}")
+async def get_evidence_detail(
+    evidence_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    증거 단일 조회
+
+    - 증거 상세 정보 반환 (파일 정보, content, 연결된 사건 ID 등)
+    - 권한 확인: 같은 law_firm_id만 조회 가능
+    """
+    print(f"📄 증거 상세 조회: evidence_id={evidence_id}, user_id={current_user.id}, firm_id={current_user.firm_id}")
+
+    try:
+        # 증거 조회
+        evidence = db.query(models.Evidence).filter(
+            models.Evidence.id == evidence_id,
+            models.Evidence.law_firm_id == current_user.firm_id
+        ).first()
+
+        if not evidence:
+            raise HTTPException(status_code=404, detail="증거를 찾을 수 없거나 접근 권한이 없습니다")
+
+        # 연결된 사건 ID 조회
+        linked_cases = db.query(models.CaseEvidenceMapping.case_id).filter(
+            models.CaseEvidenceMapping.evidence_id == evidence_id
+        ).all()
+        linked_case_ids = [case[0] for case in linked_cases]
+
+        # 응답 데이터 구성
+        result = {
+            "evidence_id": evidence.id,
+            "file_name": evidence.file_name,
+            "file_type": evidence.file_type,
+            "file_size": evidence.size if evidence.size else 0,
+            "file_path": evidence.file_path,
+            "content": evidence.content,  # OCR/VLM/STT 결과
+            "starred": evidence.starred if evidence.starred is not None else False,
+            "linked_case_ids": linked_case_ids,
+            "category_id": evidence.category_id,
+            "created_at": evidence.created_at.isoformat() if evidence.created_at else None,
+            "uploader_id": evidence.uploader_id
+        }
+
+        print(f"✅ 증거 상세 조회 성공: {evidence.file_name}")
+        return result
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ 증거 상세 조회 실패: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"증거 조회 실패: {str(e)}")
+
+
 @router.post("/{evidence_id}/link-case/{case_id}")
 async def link_evidence_to_case(
     evidence_id: int,
     case_id: int,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -721,6 +954,10 @@ async def link_evidence_to_case(
         db.refresh(new_mapping)
 
         print(f"✅ 증거-사건 연결 완료: mapping_id={new_mapping.id}")
+
+        # 4. 백그라운드에서 증거 분석 (사건 맥락 포함)
+        background_tasks.add_task(analyze_evidence_on_link_background, evidence_id, case_id)
+        print(f"🤖 백그라운드 분석 작업 예약: evidence_id={evidence_id}, case_id={case_id}")
 
         return {
             "message": "연결 성공",
@@ -779,6 +1016,7 @@ async def link_evidence_to_case_with_details(
     case_id: int,
     evidence_date: str | None = None,
     description: str | None = None,
+    background_tasks: BackgroundTasks = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -834,6 +1072,11 @@ async def link_evidence_to_case_with_details(
         db.refresh(new_mapping)
 
         print(f"✅ 증거-사건 연결 완료: mapping_id={new_mapping.id}")
+
+        # 4. 백그라운드에서 증거 분석 (사건 맥락 포함)
+        if background_tasks:
+            background_tasks.add_task(analyze_evidence_on_link_background, evidence_id, case_id)
+            print(f"🤖 백그라운드 분석 작업 예약: evidence_id={evidence_id}, case_id={case_id}")
 
         return {
             "message": "연결 성공",
@@ -945,6 +1188,7 @@ async def get_signed_url(
 @router.get("/{evidence_id}/analysis")
 async def get_evidence_analysis(
     evidence_id: int,
+    case_id: int | None = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -952,9 +1196,10 @@ async def get_evidence_analysis(
     증거 분석 정보 조회
 
     - evidence_id: 증거 ID
+    - case_id: (선택) 사건 ID - 특정 사건 맥락의 분석 조회
     - 해당 증거의 분석 정보 반환 (없으면 null)
     """
-    print(f"📊 분석 정보 조회: evidence_id={evidence_id}, user_id={current_user.id}")
+    print(f"📊 분석 정보 조회: evidence_id={evidence_id}, case_id={case_id}, user_id={current_user.id}")
 
     try:
         # 1. 증거 조회 및 권한 확인
@@ -965,13 +1210,18 @@ async def get_evidence_analysis(
         if evidence.law_firm_id != current_user.firm_id:
             raise HTTPException(status_code=403, detail="해당 증거에 접근할 권한이 없습니다")
 
-        # 2. 분석 정보 조회 (최신 것만)
-        analysis = db.query(models.EvidenceAnalysis).filter(
+        # 2. 분석 정보 조회 (case_id로 필터링)
+        query = db.query(models.EvidenceAnalysis).filter(
             models.EvidenceAnalysis.evidence_id == evidence_id
-        ).order_by(models.EvidenceAnalysis.created_at.desc()).first()
+        )
+
+        if case_id is not None:
+            query = query.filter(models.EvidenceAnalysis.case_id == case_id)
+
+        analysis = query.order_by(models.EvidenceAnalysis.created_at.desc()).first()
 
         if not analysis:
-            print(f"📊 분석 정보 없음: evidence_id={evidence_id}")
+            print(f"📊 분석 정보 없음: evidence_id={evidence_id}, case_id={case_id}")
             return {
                 "has_analysis": False,
                 "analysis": None
@@ -983,6 +1233,7 @@ async def get_evidence_analysis(
             "has_analysis": True,
             "analysis": {
                 "id": analysis.id,
+                "case_id": analysis.case_id,
                 "summary": analysis.summary,
                 "legal_relevance": analysis.legal_relevance,
                 "risk_level": analysis.risk_level,
@@ -1000,6 +1251,7 @@ async def get_evidence_analysis(
 @router.post("/{evidence_id}/analyze")
 async def analyze_evidence(
     evidence_id: int,
+    case_id: int | None = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -1007,10 +1259,11 @@ async def analyze_evidence(
     증거 분석 수행
 
     - evidence_id: 증거 ID
+    - case_id: (선택) 사건 ID - 특정 사건 맥락에서 분석
     - 증거의 content를 AI로 분석하여 요약, 법적 관련성, 위험도 평가
     - 결과를 evidence_analyses 테이블에 저장
     """
-    print(f"🤖 증거 분석 시작: evidence_id={evidence_id}, user_id={current_user.id}")
+    print(f"🤖 증거 분석 시작: evidence_id={evidence_id}, case_id={case_id}, user_id={current_user.id}")
 
     try:
         # 1. 증거 조회 및 권한 확인
@@ -1037,13 +1290,28 @@ async def analyze_evidence(
 
         print(f"🤖 AI 분석 중... (텍스트 길이: {len(evidence.content)}자)")
 
+        # 사건 정보 조회 (case_id가 있는 경우)
+        case_context = ""
+        if case_id:
+            case = db.query(models.Case).filter(models.Case.id == case_id).first()
+            if case:
+                case_context = f"""
+
+**사건 맥락:**
+- 사건명: {case.title}
+- 사건 유형: {case.case_type if case.case_type else '미분류'}
+- 의뢰인: {case.client_name} ({case.client_role})
+- 상대방: {case.opponent_name} ({case.opponent_role})
+- 사건 설명: {case.description[:300] if case.description else '없음'}
+"""
+
         # 분석 프롬프트
-        prompt = f"""당신은 법률 전문가입니다. 다음 증거 자료를 분석해주세요.
+        prompt = f"""당신은 법률 전문가입니다. 다음 증거 자료를 {"특정 사건의 맥락에서 " if case_id else ""}분석해주세요.
 
 **파일명:** {evidence.file_name}
 **문서 유형:** {evidence.doc_type if evidence.doc_type else '미분류'}
-
-**내용:**
+{case_context}
+**증거 내용:**
 {evidence.content}
 
 ---
@@ -1053,14 +1321,14 @@ async def analyze_evidence(
 ```json
 {{
   "summary": "증거 내용을 3-5문장으로 요약",
-  "legal_relevance": "이 증거가 법적으로 어떤 의미를 가지는지, 어떤 주장을 뒷받침하는지 분석 (3-5문장)",
+  "legal_relevance": "{"이 사건에서 " if case_id else ""}이 증거가 법적으로 어떤 의미를 가지는지, 어떤 주장을 뒷받침하는지 분석 (3-5문장)",
   "risk_level": "high, medium, low 중 하나 (상대방에게 불리한 정도)"
 }}
 ```
 
 **주의사항:**
 - summary: 핵심 내용만 간결하게 요약
-- legal_relevance: 법적 쟁점, 증거 가치, 활용 방안을 구체적으로 작성
+- legal_relevance: {"사건 맥락을 고려하여 " if case_id else ""}법적 쟁점, 증거 가치, 활용 방안을 구체적으로 작성
 - risk_level: 상대방 입장에서 불리한 정도를 평가 (높을수록 우리에게 유리)
 """
 
@@ -1103,9 +1371,13 @@ async def analyze_evidence(
             risk_level = "medium"
 
         # 4. DB 저장 (기존 분석이 있으면 업데이트, 없으면 생성)
-        existing_analysis = db.query(models.EvidenceAnalysis).filter(
+        query = db.query(models.EvidenceAnalysis).filter(
             models.EvidenceAnalysis.evidence_id == evidence_id
-        ).first()
+        )
+        if case_id is not None:
+            query = query.filter(models.EvidenceAnalysis.case_id == case_id)
+
+        existing_analysis = query.first()
 
         if existing_analysis:
             # 기존 분석 업데이트
@@ -1123,6 +1395,7 @@ async def analyze_evidence(
                 "message": "분석 완료 (업데이트)",
                 "analysis": {
                     "id": existing_analysis.id,
+                    "case_id": existing_analysis.case_id,
                     "summary": existing_analysis.summary,
                     "legal_relevance": existing_analysis.legal_relevance,
                     "risk_level": existing_analysis.risk_level,
@@ -1134,6 +1407,7 @@ async def analyze_evidence(
             # 새 분석 생성
             new_analysis = models.EvidenceAnalysis(
                 evidence_id=evidence_id,
+                case_id=case_id,
                 summary=summary,
                 legal_relevance=legal_relevance,
                 risk_level=risk_level,
@@ -1143,12 +1417,13 @@ async def analyze_evidence(
             db.commit()
             db.refresh(new_analysis)
 
-            print(f"✅ 분석 생성 완료: analysis_id={new_analysis.id}")
+            print(f"✅ 분석 생성 완료: analysis_id={new_analysis.id}, case_id={case_id}")
 
             return {
                 "message": "분석 완료",
                 "analysis": {
                     "id": new_analysis.id,
+                    "case_id": new_analysis.case_id,
                     "summary": new_analysis.summary,
                     "legal_relevance": new_analysis.legal_relevance,
                     "risk_level": new_analysis.risk_level,
