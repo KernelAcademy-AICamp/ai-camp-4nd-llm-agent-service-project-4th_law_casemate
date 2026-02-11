@@ -14,6 +14,8 @@ from qdrant_client.http import models
 from fastembed import SparseTextEmbedding
 from dotenv import load_dotenv
 
+from app.config import EmbeddingConfig
+
 logger = logging.getLogger(__name__)
 load_dotenv()
 
@@ -85,8 +87,9 @@ def get_executor():
 class PrecedentEmbeddingService:
     """판례 임베딩 생성 서비스"""
 
-    MODEL_SMALL = "text-embedding-3-small"
-    MODEL_LARGE = "text-embedding-3-large"
+    # 레거시 호환성을 위해 유지 (EmbeddingConfig 사용 권장)
+    MODEL_SMALL = EmbeddingConfig.CHUNK_MODEL
+    MODEL_LARGE = EmbeddingConfig.SUMMARY_MODEL
 
     def __init__(self, model: str = MODEL_SMALL):
         """
@@ -138,3 +141,70 @@ class PrecedentEmbeddingService:
         dense_future = self.executor.submit(self.create_dense, text)
         sparse_future = self.executor.submit(self.create_sparse, text)
         return dense_future.result(), sparse_future.result()
+
+    # ==================== 배치 임베딩 ====================
+
+    def create_dense_batch(self, texts: List[str]) -> List[List[float]]:
+        """
+        Dense 임베딩 배치 생성 (한 번의 API 호출로 여러 텍스트)
+
+        Args:
+            texts: 임베딩할 텍스트 리스트
+
+        Returns:
+            임베딩 벡터 리스트
+        """
+        if not texts:
+            return []
+
+        client = get_openai_client()
+        response = client.embeddings.create(
+            model=self.dense_model,
+            input=texts
+        )
+        # API 응답 순서대로 정렬
+        sorted_data = sorted(response.data, key=lambda x: x.index)
+        return [item.embedding for item in sorted_data]
+
+    def create_sparse_batch(self, texts: List[str]) -> List[models.SparseVector]:
+        """
+        Sparse 임베딩 배치 생성
+
+        Args:
+            texts: 임베딩할 텍스트 리스트
+
+        Returns:
+            SparseVector 리스트
+        """
+        if not texts:
+            return []
+
+        sparse_embeddings = list(self.sparse_model.embed(texts))
+        return [
+            models.SparseVector(
+                indices=emb.indices.tolist(),
+                values=emb.values.tolist(),
+            )
+            for emb in sparse_embeddings
+        ]
+
+    def create_both_batch(self, texts: List[str]) -> List[Tuple[List[float], models.SparseVector]]:
+        """
+        Dense + Sparse 임베딩 배치 병렬 생성
+
+        Args:
+            texts: 임베딩할 텍스트 리스트
+
+        Returns:
+            [(dense_vector, sparse_vector), ...] 리스트
+        """
+        if not texts:
+            return []
+
+        dense_future = self.executor.submit(self.create_dense_batch, texts)
+        sparse_future = self.executor.submit(self.create_sparse_batch, texts)
+
+        dense_vectors = dense_future.result()
+        sparse_vectors = sparse_future.result()
+
+        return list(zip(dense_vectors, sparse_vectors))

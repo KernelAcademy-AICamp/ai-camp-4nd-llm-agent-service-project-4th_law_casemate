@@ -3,37 +3,30 @@
 현재 사건과 유사 판례를 비교하여 전략적 인사이트 제공 (RAG)
 """
 
-import os
 import time
 import logging
 from typing import Dict, Any, Optional
-from openai import OpenAI
-from qdrant_client import QdrantClient
 from qdrant_client.http import models
-from dotenv import load_dotenv
 
+from tool.qdrant_client import get_qdrant_client
 from app.prompts.comparison_prompt import (
     COMPARISON_SYSTEM_PROMPT,
     COMPARISON_USER_TEMPLATE,
     COMPARISON_PROMPT_VERSION,
 )
+from app.services.precedent_embedding_service import get_openai_client
 
 logger = logging.getLogger(__name__)
-
-load_dotenv()
 
 
 class ComparisonService:
     """판례 비교 분석 서비스"""
 
-    CASES_COLLECTION = "cases"
+    CASES_COLLECTION = "precedents"
 
     def __init__(self):
-        self.openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-        self.qdrant_client = QdrantClient(
-            host=os.getenv("QDRANT_HOST", "localhost"),
-            port=int(os.getenv("QDRANT_PORT", "6333"))
-        )
+        self.openai_client = get_openai_client()  # 싱글톤 사용
+        self.qdrant_client = get_qdrant_client()  # 싱글톤 사용
 
     def _get_precedent_content(self, case_number: str) -> Optional[Dict[str, Any]]:
         """
@@ -134,7 +127,7 @@ class ComparisonService:
                 "error": f"판례를 찾을 수 없습니다: {target_case_number}",
             }
 
-        # 2. 프롬프트 생성
+        # 2. 프롬프트 생성 (V2: 구체적 인용 강화)
         user_prompt = COMPARISON_USER_TEMPLATE.format(
             origin_facts=origin_facts,
             origin_claims=origin_claims,

@@ -1069,7 +1069,7 @@ export function DocumentEditor({ caseData }: DocumentEditorProps) {
               variant="outline"
               size="sm"
               onClick={handleGenerateDraft}
-              disabled={isGenerating || !selectedTemplate === "complaint"}
+              disabled={isGenerating || selectedTemplate !== "complaint"}
               className="gap-1.5 h-8 text-xs"
               style={!isGenerating && selectedTemplate === "complaint" ? {
                 background: "linear-gradient(135deg, #6D5EF5, #8B7AF7)",
@@ -1275,6 +1275,7 @@ export function DocumentEditor({ caseData }: DocumentEditorProps) {
                       )}
                     </div>
                   </div>
+
 
                   <div>
                     <h4 className="text-[11px] font-semibold text-muted-foreground mb-2 flex items-center gap-1.5">

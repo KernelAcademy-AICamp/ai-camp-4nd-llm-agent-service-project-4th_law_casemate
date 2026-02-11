@@ -178,7 +178,8 @@ class LawAPIClient:
         case_type: Optional[str] = None,
         page: int = 1,
         display: int = 20,
-        sort: str = "선고일자"
+        sort: str = "선고일자",
+        search_type: int = 2,  # 1=판례명만, 2=본문검색 (기본값: 본문검색)
     ) -> Dict[str, Any]:
         """
         판례 목록 검색
@@ -190,6 +191,7 @@ class LawAPIClient:
             page: 페이지 번호
             display: 한 페이지당 결과 수
             sort: 정렬 기준
+            search_type: 검색범위 (1=판례명만, 2=본문검색)
 
         Returns:
             JSON 응답 딕셔너리
@@ -201,6 +203,7 @@ class LawAPIClient:
             "page": page,
             "display": display,
             "sort": sort,
+            "search": search_type,  # 본문검색 활성화
         }
 
         if query:
@@ -242,6 +245,140 @@ class LawAPIClient:
         response.raise_for_status()
 
         return response.json()
+
+    # ==================== 조문 조회 ====================
+
+    async def get_article(
+        self,
+        law_name: str,
+        article_number: str,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        특정 조문 조회 (법령명 + 조문번호)
+
+        1. 법령명으로 검색하여 MST(법령 일련번호) 획득
+        2. 법령 상세 조회하여 조문 목록에서 해당 조문 찾기
+
+        Args:
+            law_name: 법령명 (예: "형법", "민법")
+            article_number: 조문번호 (예: "307", "750", "70의2")
+
+        Returns:
+            조문 정보 딕셔너리 또는 None
+        """
+        import re
+
+        try:
+            # 1. 법령명으로 검색
+            search_result = await self.search_laws(query=law_name, display=10)
+
+            law_list = search_result.get("LawSearch", {}).get("law", [])
+            if not law_list:
+                print(f"법령 검색 결과 없음: {law_name}")
+                return None
+
+            # 단일 결과인 경우 리스트로 변환
+            if isinstance(law_list, dict):
+                law_list = [law_list]
+
+            # 정확히 일치하는 법령 찾기
+            mst = None
+            matched_law_name = None
+            for law in law_list:
+                name = law.get("법령명한글", "")
+                # 정확히 일치하거나 검색어가 법령명에 포함된 경우
+                if name == law_name or law_name in name or name in law_name:
+                    mst = law.get("법령일련번호")
+                    matched_law_name = name
+                    print(f"법령 매칭: {law_name} → {matched_law_name}")
+                    break
+
+            if not mst:
+                # 정확한 매칭 실패 시 첫 번째 결과 사용
+                mst = law_list[0].get("법령일련번호")
+                matched_law_name = law_list[0].get("법령명한글", law_name)
+                print(f"법령 매칭 (폴백): {law_name} → {matched_law_name}")
+
+            # 2. 법령 상세 조회
+            detail_result = await self.get_law_detail(mst=mst)
+            law_service = detail_result.get("법령", {})
+
+            if not law_service:
+                print(f"법령 상세 조회 실패: {matched_law_name}")
+                return None
+
+            # 조문 목록 추출
+            articles = law_service.get("조문", {}).get("조문단위", [])
+            if isinstance(articles, dict):
+                articles = [articles]
+
+            # 조문번호 정규화: "제70조의2" → ("70", "2"), "제307조" → ("307", None)
+            target_match = re.match(r"제?(\d+)(?:조)?(?:의(\d+))?", str(article_number))
+            if target_match:
+                target_base = target_match.group(1)
+                target_sub = target_match.group(2)  # "의X"가 있으면 X, 없으면 None
+            else:
+                target_base = re.sub(r"[^0-9]", "", str(article_number))
+                target_sub = None
+
+            print(f"찾는 조문: 제{target_base}조" + (f"의{target_sub}" if target_sub else ""))
+
+            # 해당 조문 찾기
+            for article in articles:
+                jo_num_raw = str(article.get("조문번호", ""))
+
+                # API 응답의 조문번호 파싱
+                jo_match = re.match(r"제?(\d+)(?:조)?(?:의(\d+))?", jo_num_raw)
+                if jo_match:
+                    jo_base = jo_match.group(1)
+                    jo_sub = jo_match.group(2)
+                else:
+                    jo_base = re.sub(r"[^0-9]", "", jo_num_raw)
+                    jo_sub = None
+
+                # 정확한 매칭: 기본 번호와 "의X" 모두 일치해야 함
+                if jo_base == target_base and jo_sub == target_sub:
+                    # 조문 내용 구성
+                    content_parts = []
+
+                    # 조문 제목
+                    jo_title = article.get("조문제목", "")
+
+                    # 조문 내용
+                    jo_content = article.get("조문내용", "")
+                    if jo_content:
+                        content_parts.append(jo_content)
+
+                    # 항 내용
+                    hangs = article.get("항", [])
+                    if isinstance(hangs, dict):
+                        hangs = [hangs]
+
+                    for hang in hangs:
+                        hang_content = hang.get("항내용", "")
+                        if hang_content:
+                            content_parts.append(hang_content)
+
+                    full_content = "\n".join(content_parts)
+
+                    result_article_num = f"{target_base}의{target_sub}" if target_sub else target_base
+                    print(f"조문 찾음: {matched_law_name} 제{result_article_num}조 ({jo_title})")
+
+                    return {
+                        "law_name": matched_law_name,
+                        "article_number": result_article_num,
+                        "article_title": jo_title,
+                        "content": full_content,
+                    }
+
+            print(f"조문 없음: {matched_law_name} 제{target_base}조" + (f"의{target_sub}" if target_sub else ""))
+            return None
+
+        except Exception as e:
+            print(f"조문 조회 API 오류: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
 
     # ==================== 코드 변환 헬퍼 ====================
 
