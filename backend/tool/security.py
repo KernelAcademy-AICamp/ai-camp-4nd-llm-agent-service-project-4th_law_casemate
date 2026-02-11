@@ -33,7 +33,7 @@ def verify_password(plain_password, hashed_password):
 
 def create_access_token(data: dict):
     to_encode = data.copy()
-    expire = datetime.utcnow() + timedelta(minutes=30) # 토큰 유효 시간
+    expire = datetime.utcnow() + timedelta(days=7) # 토큰 유효 시간: 7일
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
