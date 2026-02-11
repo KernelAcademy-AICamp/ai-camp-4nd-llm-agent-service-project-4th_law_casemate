@@ -3,17 +3,15 @@
 Qdrant 조회, 청크 병합, 법령 API 연동
 """
 
-import os
 import re
 import logging
 from typing import List, Dict, Any
 from dataclasses import dataclass
-from qdrant_client import QdrantClient
 from qdrant_client.http import models
-from dotenv import load_dotenv
+
+from tool.qdrant_client import get_qdrant_client
 
 logger = logging.getLogger(__name__)
-load_dotenv()
 
 
 # ==================== 데이터 클래스 ====================
@@ -46,19 +44,16 @@ class SearchResult:
 class PrecedentRepository:
     """판례 데이터 저장소"""
 
-    CASES_COLLECTION = "cases"
+    CASES_COLLECTION = "precedents"
 
     def __init__(self):
-        self.qdrant_client = QdrantClient(
-            host=os.getenv("QDRANT_HOST", "localhost"),
-            port=int(os.getenv("QDRANT_PORT", "6333"))
-        )
+        self.qdrant_client = get_qdrant_client()
 
     # ==================== 헬퍼 함수 ====================
 
     def _merge_chunks_to_text(self, chunks: List[Dict], include_section_header: bool = True) -> str:
         """
-        청크 리스트를 정렬하고 텍스트로 병합
+        청크 리스트를 정렬하고 텍스트로 병합 (오버랩 중복 제거)
 
         Args:
             chunks: [{"section": str, "chunk_index": int, "content": str}, ...]
@@ -74,13 +69,49 @@ class PrecedentRepository:
 
         content_parts = []
         current_section = None
+        prev_content = ""
+
         for chunk in chunks:
             if include_section_header and chunk.get("section") != current_section:
                 current_section = chunk.get("section")
                 content_parts.append(f"\n[{current_section}]")
-            content_parts.append(chunk.get("content", ""))
 
-        return "\n".join(content_parts)
+            content = chunk.get("content", "")
+
+            # 오버랩 중복 제거: 이전 청크 끝과 현재 청크 시작의 공통 부분 찾기
+            if prev_content and content:
+                content = self._remove_overlap(prev_content, content)
+
+            content_parts.append(content)
+            prev_content = chunk.get("content", "")  # 원본 저장 (제거 전)
+
+        return " ".join(content_parts)
+
+    def _remove_overlap(self, prev_text: str, curr_text: str, max_overlap: int = 150) -> str:
+        """
+        이전 텍스트 끝과 현재 텍스트 시작의 중복 부분 제거
+
+        Args:
+            prev_text: 이전 청크 텍스트
+            curr_text: 현재 청크 텍스트
+            max_overlap: 최대 오버랩 검사 길이
+
+        Returns:
+            중복 제거된 현재 텍스트
+        """
+        if not prev_text or not curr_text:
+            return curr_text
+
+        # 이전 텍스트의 끝 부분 (최대 max_overlap 글자)
+        prev_suffix = prev_text[-max_overlap:] if len(prev_text) > max_overlap else prev_text
+
+        # 현재 텍스트의 시작 부분이 이전 텍스트 끝에 포함되는지 확인
+        for i in range(min(len(prev_suffix), len(curr_text)), 0, -1):
+            if prev_suffix.endswith(curr_text[:i]):
+                # 중복 부분 제거
+                return curr_text[i:].lstrip()
+
+        return curr_text
 
     def _format_headers(self, text: str) -> str:
         """
@@ -104,6 +135,93 @@ class PrecedentRepository:
                 cleaned.append(part)
 
         result = ''.join(cleaned)
+        result = re.sub(r'\n{3,}', '\n\n', result)
+        return result.strip()
+
+    def _restore_paragraphs(self, text: str) -> str:
+        """
+        문단 마커({{PARA}})를 줄바꿈으로 복원
+
+        Args:
+            text: 마커가 포함된 텍스트
+
+        Returns:
+            문단 구조가 복원된 텍스트
+        """
+        if not text:
+            return ""
+
+        # {{PARA}} 마커를 줄바꿈 2개로 복원
+        result = text.replace('{{PARA}}', '\n\n')
+        # 연속 줄바꿈 정리
+        result = re.sub(r'\n{3,}', '\n\n', result)
+        return result.strip()
+
+    def _remove_section(self, text: str, section_name: str) -> str:
+        """
+        특정 섹션을 텍스트에서 제거
+
+        Args:
+            text: 원본 텍스트
+            section_name: 제거할 섹션명 (예: "사건명")
+
+        Returns:
+            섹션이 제거된 텍스트
+        """
+        if not text or not section_name:
+            return text
+
+        # 【섹션명】부터 다음 【】까지 또는 텍스트 끝까지 제거
+        pattern = rf'【{re.escape(section_name)}】.*?(?=【|$)'
+        result = re.sub(pattern, '', text, flags=re.DOTALL)
+        # 연속 줄바꿈 정리
+        result = re.sub(r'\n{3,}', '\n\n', result)
+        return result.strip()
+
+    def _reorder_sections(self, text: str) -> str:
+        """
+        섹션 순서 재배열: 참조조문, 참조판례를 전문 앞으로 이동
+
+        표시 순서: 판시사항 → 판결요지 → 참조조문 → 참조판례 → 전문
+        """
+        if not text:
+            return ""
+
+        # 섹션별로 분리
+        sections = {}
+        current_section = None
+        current_content = []
+
+        for line in text.split('\n'):
+            # 【섹션명】 패턴 찾기
+            match = re.match(r'^【([^】]+)】$', line.strip())
+            if match:
+                # 이전 섹션 저장
+                if current_section:
+                    sections[current_section] = '\n'.join(current_content)
+                current_section = match.group(1)
+                current_content = [line]
+            else:
+                current_content.append(line)
+
+        # 마지막 섹션 저장
+        if current_section:
+            sections[current_section] = '\n'.join(current_content)
+
+        # 원하는 순서로 재배열
+        ordered_sections = ['판시사항', '판결요지', '참조조문', '참조판례', '전문']
+        result_parts = []
+
+        for section_name in ordered_sections:
+            if section_name in sections:
+                result_parts.append(sections[section_name])
+
+        # 나머지 섹션 추가 (순서에 없는 것들)
+        for section_name, content in sections.items():
+            if section_name not in ordered_sections:
+                result_parts.append(content)
+
+        result = '\n\n'.join(result_parts)
         result = re.sub(r'\n{3,}', '\n\n', result)
         return result.strip()
 
@@ -268,6 +386,15 @@ class PrecedentRepository:
         # 【헤더】를 독립 줄로 변환 (프론트 섹션 파싱용)
         full_text = self._format_headers(full_text)
 
+        # 【사건명】 섹션 제거 (상단 메타데이터로 이미 표시됨)
+        full_text = self._remove_section(full_text, "사건명")
+
+        # 섹션 순서 재배열: 참조조문, 참조판례를 전문 앞으로
+        full_text = self._reorder_sections(full_text)
+
+        # 문단 마커({{PARA}})를 줄바꿈으로 복원
+        full_text = self._restore_paragraphs(full_text)
+
         return {
             **metadata,
             "full_text": full_text,
@@ -343,11 +470,9 @@ class PrecedentRepository:
     def _build_full_text_from_api(self, detail: Dict[str, Any]) -> str:
         """
         법령 API 응답을 full_text 형식으로 변환
+        표시 순서: 판시사항 → 판결요지 → 참조조문 → 참조판례 → 전문
         """
         parts = []
-
-        if detail.get("사건명"):
-            parts.append(f"【사건명】\n{detail.get('사건명')}")
 
         if detail.get("판시사항"):
             parts.append(f"【판시사항】\n{detail.get('판시사항')}")

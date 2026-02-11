@@ -9,19 +9,18 @@ import { Badge } from "@/components/ui/badge";
 import {
   ArrowLeft,
   Sparkles,
-  PanelRightOpen,
-  PanelRightClose,
-  Loader2,
   Gavel,
   FileText,
   Search,
   Lightbulb,
+  Star,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useSearch } from "@/contexts/search-context";
 import { highlightKeywords } from "@/lib/highlight";
 import { ComparisonAnalysisContent } from "@/components/legal/comparison-analysis";
+import { ArticleLink } from "@/components/legal/article-popup";
 
 // API 응답 타입
 interface CaseDetail {
@@ -92,7 +91,10 @@ export function PrecedentDetailPage({ }: PrecedentDetailPageProps) {
 
   const [summary, setSummary] = useState<string | null>(null);
   const [summaryLoading, setSummaryLoading] = useState(false);
-  const [summaryError, setSummaryError] = useState(false);
+
+  // 즐겨찾기 상태
+  const [isFavorite, setIsFavorite] = useState(false);
+  const [favoriteLoading, setFavoriteLoading] = useState(false);
 
   // 판례 상세 조회 (캐시 우선)
   useEffect(() => {
@@ -202,6 +204,59 @@ export function PrecedentDetailPage({ }: PrecedentDetailPageProps) {
     };
   }, [caseDetail?.case_number, isFromSimilarCase]);
 
+  // 즐겨찾기 상태 확인
+  useEffect(() => {
+    const checkFavoriteStatus = async () => {
+      if (!id) return;
+
+      const token = localStorage.getItem("access_token");
+      if (!token) return; // 로그인 안 된 경우 스킵
+
+      try {
+        const response = await fetch(`/api/v1/favorites/precedents/${encodeURIComponent(id)}/status`, {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        });
+        if (response.ok) {
+          const data = await response.json();
+          setIsFavorite(data.is_favorite);
+        }
+      } catch (err) {
+        console.error("즐겨찾기 상태 확인 실패:", err);
+      }
+    };
+
+    checkFavoriteStatus();
+  }, [id]);
+
+  // 즐겨찾기 토글
+  const toggleFavorite = async () => {
+    if (!id || favoriteLoading) return;
+
+    const token = localStorage.getItem("access_token");
+    if (!token) return;
+
+    setFavoriteLoading(true);
+    try {
+      const response = await fetch(`/api/v1/favorites/precedents/${encodeURIComponent(id)}/toggle`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        setIsFavorite(data.is_favorite);
+      }
+    } catch (err) {
+      console.error("즐겨찾기 토글 실패:", err);
+    } finally {
+      setFavoriteLoading(false);
+    }
+  };
+
   // 날짜 포맷 (20200515 → 2020.05.15)
   const formatDate = (dateStr: string) => {
     if (!dateStr || dateStr.length !== 8) return dateStr || "";
@@ -246,6 +301,91 @@ export function PrecedentDetailPage({ }: PrecedentDetailPageProps) {
     }
 
     return result.length > 0 ? result : [text];
+  };
+
+  // 참조조문 텍스트를 클릭 가능한 링크로 변환
+  // "제X조" 부분만 링크로 만듦
+  const renderWithArticleLinks = (text: string): React.ReactNode => {
+    const result: React.ReactNode[] = [];
+    let lastIndex = 0;
+    let currentLawName = "";
+    let currentArticleNum = "";
+
+    const articlePattern = /제(\d+)조(?:의(\d+))?(?:\s*제(\d+)항)?|제(\d+)항/g;
+    let match;
+
+    while ((match = articlePattern.exec(text)) !== null) {
+      // 괄호 안에 있는지 확인
+      const before = text.slice(0, match.index);
+      const openCount = (before.match(/\(/g) || []).length;
+      const closeCount = (before.match(/\)/g) || []).length;
+      if (openCount !== closeCount) continue;
+
+      // 매치 이전 텍스트 추가
+      if (match.index > lastIndex) {
+        const beforeText = text.slice(lastIndex, match.index);
+        result.push(beforeText);
+
+        // 법령명 추출: 마지막 쉼표/슬래시 이후의 텍스트
+        const separatorMatch = beforeText.match(/[,\/]\s*(?:\[\d+\]\s*)?([^,\/]+)$/);
+        if (separatorMatch) {
+          const lawNamePart = separatorMatch[1].trim();
+          if (lawNamePart && !lawNamePart.startsWith("제")) {
+            currentLawName = lawNamePart;
+          }
+        } else {
+          const cleanedBefore = beforeText.replace(/^\[\d+\]\s*/, "").trim();
+          if (cleanedBefore && !cleanedBefore.startsWith("제")) {
+            currentLawName = cleanedBefore;
+          }
+        }
+      }
+
+      if (match[1]) {
+        // "제X조" 패턴
+        const fullArticleNum = match[2] ? `${match[1]}의${match[2]}` : match[1];
+        const paragraph = match[3];
+        currentArticleNum = fullArticleNum;
+
+        if (currentLawName) {
+          result.push(
+            <ArticleLink
+              key={`link-${match.index}`}
+              lawName={currentLawName}
+              articleNumber={fullArticleNum}
+              paragraph={paragraph}
+            >
+              {match[0]}
+            </ArticleLink>
+          );
+        } else {
+          result.push(match[0]);
+        }
+      } else if (match[4] && currentLawName && currentArticleNum) {
+        // "제X항"만 - 이전 법령명과 조문번호 사용
+        result.push(
+          <ArticleLink
+            key={`link-${match.index}`}
+            lawName={currentLawName}
+            articleNumber={currentArticleNum}
+            paragraph={match[4]}
+          >
+            {match[0]}
+          </ArticleLink>
+        );
+      } else {
+        result.push(match[0]);
+      }
+
+      lastIndex = match.index + match[0].length;
+    }
+
+    // 남은 텍스트 추가
+    if (lastIndex < text.length) {
+      result.push(text.slice(lastIndex));
+    }
+
+    return result.length > 0 ? <>{result}</> : text;
   };
 
   // 로딩 상태
@@ -306,6 +446,16 @@ export function PrecedentDetailPage({ }: PrecedentDetailPageProps) {
           <Badge variant="secondary" className="text-xs font-normal">
             판례 정보
           </Badge>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={toggleFavorite}
+            disabled={favoriteLoading}
+            className={`h-8 px-2 ${isFavorite ? "text-yellow-500 hover:text-yellow-600" : "text-muted-foreground hover:text-yellow-500"}`}
+          >
+            <Star className={`h-4 w-4 ${isFavorite ? "fill-current" : ""}`} />
+            <span className="ml-1 text-xs">{isFavorite ? "즐겨찾기됨" : "즐겨찾기"}</span>
+          </Button>
         </div>
       </div>
 
@@ -323,7 +473,7 @@ export function PrecedentDetailPage({ }: PrecedentDetailPageProps) {
 
       {/* Content Area - Side by Side Layout */}
       <div className="flex gap-6">
-        {/* Full Text Section */}
+        {/* Full Text Section 줄 간격 (leading-loose / tight */}
         <div className="prose prose-base max-w-none transition-all duration-300 flex-[6]">
           <div className="whitespace-pre-wrap text-[0.95rem] leading-loose font-sans text-foreground/80">
             {(() => {
@@ -348,53 +498,56 @@ export function PrecedentDetailPage({ }: PrecedentDetailPageProps) {
 
               return sections.map((section, sIndex) => {
                 return (
-                  <div key={sIndex} className={section.header ? "mt-6" : "mt-0"}>
+                  <div key={sIndex} className={section.header ? "mt-1" : "mt-0"}> {/* 섹션 간의 간격*/}
                     {section.header && (
-                      <h3 className="text-lg font-bold text-gray-900 mb-2">
+                      <h3 className="text-lg font-bold text-gray-900 mb-1"> {/* 헤더 아래 간격*/}
                         {section.header.replace(/[【】]/g, '')}
                       </h3>
                     )}
-                    <div className={`${section.header ? "pl-6 md:pl-10" : ""} space-y-1`}>
-                      {section.lines.map((line, lIndex) => {
-                        // 연속 공백을 하나로 정리
-                        const cleanedLine = line.replace(/\s{2,}/g, ' ');
-                        const trimmedLine = cleanedLine.trim();
+                    <div className={`${section.header ? "pl-6 md:pl-10" : ""} space-y-0`}>
+                      {section.header?.includes("참조조문") ? (
+                        // 참조조문 섹션: 모든 줄을 합쳐서 한 번에 처리
+                        <div className="min-h-[1.5rem]">
+                          {renderWithArticleLinks(
+                            section.lines
+                              .map(l => l.replace(/\s{2,}/g, ' ').trim())
+                              .filter(l => l && !/^\[.+\]$/.test(l))
+                              .join(' ')
+                          )}
+                        </div>
+                      ) : (
+                        section.lines.map((line, lIndex) => {
+                          // 연속 공백을 하나로 정리
+                          const cleanedLine = line.replace(/\s{2,}/g, ' ');
+                          const trimmedLine = cleanedLine.trim();
 
-                        // [섹션명] 형태의 placeholder는 숨김 (예: [전문], [판시사항] 등)
-                        if (/^\[.+\]$/.test(trimmedLine)) {
-                          return null;
-                        }
+                          // [섹션명] 형태의 placeholder는 숨김 (예: [전문], [판시사항] 등)
+                          if (/^\[.+\]$/.test(trimmedLine)) {
+                            return null;
+                          }
 
-                        // 법률 문서 번호 패턴 감지: 1., 1), 가., 가), (1), ① 등
-                        const isNumbered = /^\d+\./.test(trimmedLine) ||
-                          /^\d+\)/.test(trimmedLine) ||
-                          /^[가-힣]\./.test(trimmedLine) ||
-                          /^[가-힣]\)/.test(trimmedLine) ||
-                          /^\(\d+\)/.test(trimmedLine) ||
-                          /^[①-⑳]/.test(trimmedLine);
+                          // 참조 섹션인지 확인
+                          const isRefPrecedent = section.header?.includes("참조판례");
 
-                        // 참조판례 섹션인지 확인
-                        const isRefSection = section.header?.includes("참조판례");
-
-                        return (
-                          <React.Fragment key={lIndex}>
-                            {isNumbered && <div className="min-h-[1.5rem]"></div>}
-                            <div className="min-h-[1.5rem]">
-                              {isRefSection ? (
-                                // 참조판례 섹션: 사건번호를 링크로 변환
-                                renderWithCaseLinks(cleanedLine)
-                              ) : (
-                                // 그 외 섹션: 기존 방식 (하이라이트)
-                                <span
-                                  dangerouslySetInnerHTML={{
-                                    __html: isFromSimilarCase ? cleanedLine : highlightKeywords(cleanedLine, searchQuery),
-                                  }}
-                                />
-                              )}
-                            </div>
-                          </React.Fragment>
-                        );
-                      })}
+                          return (
+                            <React.Fragment key={lIndex}>
+                              <div className="min-h-[1.5rem]">
+                                {isRefPrecedent ? (
+                                  // 참조판례 섹션: 사건번호를 링크로 변환
+                                  renderWithCaseLinks(cleanedLine)
+                                ) : (
+                                  // 그 외 섹션: 기존 방식 (하이라이트)
+                                  <span
+                                    dangerouslySetInnerHTML={{
+                                      __html: isFromSimilarCase ? cleanedLine : highlightKeywords(cleanedLine, searchQuery),
+                                    }}
+                                  />
+                                )}
+                              </div>
+                            </React.Fragment>
+                          );
+                        })
+                      )}
                     </div>
                   </div>
                 );

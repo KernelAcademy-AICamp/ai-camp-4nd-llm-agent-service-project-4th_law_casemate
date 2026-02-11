@@ -607,9 +607,11 @@ export function CaseDetailPage({
       return;
     }
 
-    // 2. 캐시에 없으면 API 호출 (요약 + 사실관계 + 청구내용)
-    const query = `${overviewData.summary} ${overviewData.facts} ${overviewData.claims}`;
-    if (!query.trim()) return;
+    // 2. 캐시에 없으면 API 호출 (case_id로 DB에서 직접 조회)
+    if (!caseData?.id) return;
+
+    // 이미 로딩 중이면 중복 호출 방지
+    if (similarCasesLoading) return;
 
     setSimilarCasesLoading(true);
     try {
@@ -619,7 +621,7 @@ export function CaseDetailPage({
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          query: query,
+          case_id: caseData.id,
           exclude_case_number: null  // 현재 사건은 판례가 아니므로 제외할 필요 없음
         }),
       });
@@ -639,7 +641,7 @@ export function CaseDetailPage({
     } finally {
       setSimilarCasesLoading(false);
     }
-  }, [caseData, overviewData.summary, overviewData.facts, overviewData.claims, getSimilarCases, cacheSimilarCases]);
+  }, [caseData, similarCasesLoading, getSimilarCases, cacheSimilarCases]);
 
   // 타임라인 데이터 가져오기
   const fetchTimeline = useCallback(async () => {
@@ -777,14 +779,21 @@ export function CaseDetailPage({
     }
   };
 
-  // 타임라인 생성 (샘플 데이터 - 하위 호환성)
-  const generateTimeline = regenerateTimeline;
-
-  // 컴포넌트 마운트 시 유사 판례 검색 (타임라인은 탭 클릭 시에만 로드)
+  // 타임라인 데이터 가져오기 (caseData 설정 시)
   useEffect(() => {
-    fetchSimilarCases();
-    // fetchTimeline(); // 타임라인은 탭 클릭 시에만 로드
-  }, [fetchSimilarCases]);
+    if (caseData) {
+      fetchTimeline();
+    }
+  }, [caseData, fetchTimeline]);
+
+  // 유사 판례 검색 (overviewData 설정 후에만 실행)
+  useEffect(() => {
+    const hasOverviewData = overviewData.summary || overviewData.facts || overviewData.claims;
+    if (caseData && hasOverviewData) {
+      fetchSimilarCases();
+    }
+  }, [caseData, overviewData.summary, overviewData.facts, overviewData.claims, fetchSimilarCases]);
+
   // 관련 법령 검색 (2단계 파이프라인: 법적 쟁점 추출 → 검색)
   const fetchRelatedLaws = async () => {
     if (!id) return;
@@ -818,12 +827,6 @@ export function CaseDetailPage({
       setRelatedLawsLoading(false);
     }
   };
-
-  // 컴포넌트 마운트 시 유사 판례 및 관련 법령 검색
-  useEffect(() => {
-    fetchSimilarCases();
-    fetchRelatedLaws();
-  }, []);
 
   // 날짜 포맷 (20200515 → 2020.05.15)
   const formatJudgmentDate = (dateStr: string) => {
@@ -1976,10 +1979,19 @@ export function CaseDetailPage({
                         </td>
                         <td className="px-3 py-2.5 text-muted-foreground hidden sm:table-cell">{evidence.type}</td>
                         <td className="px-3 py-2.5 text-muted-foreground hidden md:table-cell">{evidence.date} {evidence.time}</td>
-                        <td className="px-3 py-2.5">
-                          <Badge variant="outline" className="text-xs font-normal py-0 h-5">
-                            {evidence.status}
-                          </Badge>
+                        <td className="px-3 py-2.5 text-center">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (confirm('이 증거를 목록에서 제거하시겠습니까?')) {
+                                unlinkEvidence(evidence.id);
+                              }
+                            }}
+                            className="p-1 rounded hover:bg-destructive/10 hover:text-destructive transition-colors"
+                            title="증거 제거"
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </button>
                         </td>
                       </tr>
                     ))}
@@ -2148,7 +2160,7 @@ export function CaseDetailPage({
               ) : timelineEvents.length === 0 ? (
                 <div className="text-center py-12">
                   <p className="text-muted-foreground text-sm mb-4">타임라인 이벤트가 없습니다.</p>
-                  <Button onClick={generateTimeline} variant="outline">
+                  <Button onClick={regenerateTimeline} variant="outline">
                     타임라인 생성
                   </Button>
                 </div>
@@ -2429,7 +2441,7 @@ export function CaseDetailPage({
         {/* ===== 문서 작성 탭 ===== */}
         <TabsContent value="documents" className="mt-8">
           {caseData ? (
-            <DocumentEditor caseData={caseData} />
+            <DocumentEditor caseData={caseData} similarCases={similarCases} />
           ) : (
             <div className="flex flex-col items-center justify-center h-[600px] text-muted-foreground">
               <video src="/assets/loading-card.mp4" autoPlay loop muted playsInline className="h-20 w-20 mb-3" style={{ mixBlendMode: 'multiply', opacity: 0.3 }} />
