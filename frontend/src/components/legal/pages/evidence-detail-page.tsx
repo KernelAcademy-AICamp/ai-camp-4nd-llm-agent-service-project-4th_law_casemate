@@ -15,6 +15,8 @@ import {
   FileText,
   AlertCircle,
   Download,
+  CheckCircle,
+  XCircle,
 } from "lucide-react";
 
 interface Evidence {
@@ -67,6 +69,7 @@ export function EvidenceDetailPage() {
   const [analysisData, setAnalysisData] = useState<AnalysisData | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [isLoadingAnalysis, setIsLoadingAnalysis] = useState(false);
+  const [analysisMessage, setAnalysisMessage] = useState<{ type: 'success' | 'error', text: string } | null>(null);
 
   // 증거 정보 가져오기
   const fetchEvidence = async () => {
@@ -192,17 +195,20 @@ export function EvidenceDetailPage() {
   const handleAnalyze = async () => {
     const token = localStorage.getItem('access_token');
     if (!token || !id) {
-      alert('로그인이 필요합니다.');
+      setAnalysisMessage({ type: 'error', text: '로그인이 필요합니다.' });
+      setTimeout(() => setAnalysisMessage(null), 3000);
       return;
     }
 
     const evidenceIdNum = parseInt(id);
     if (isNaN(evidenceIdNum)) {
-      alert('잘못된 증거 ID입니다.');
+      setAnalysisMessage({ type: 'error', text: '잘못된 증거 ID입니다.' });
+      setTimeout(() => setAnalysisMessage(null), 3000);
       return;
     }
 
     setIsAnalyzing(true);
+    setAnalysisMessage(null);
     try {
       const url = caseId
         ? `http://localhost:8000/api/v1/evidence/${evidenceIdNum}/analyze?case_id=${caseId}`
@@ -227,12 +233,16 @@ export function EvidenceDetailPage() {
       setHasAnalysis(true);
       setAnalysisData(data.analysis);
 
-      alert(caseId
+      // 성공 메시지 표시 (3초 후 자동 사라짐)
+      const successMessage = caseId
         ? '사건 맥락을 고려한 분석이 완료되었습니다!'
-        : '분석이 완료되었습니다!');
+        : '분석이 완료되었습니다!';
+      setAnalysisMessage({ type: 'success', text: successMessage });
+      setTimeout(() => setAnalysisMessage(null), 3000);
     } catch (error: any) {
       console.error('분석 실패:', error);
-      alert(`분석 실패: ${error.message}`);
+      setAnalysisMessage({ type: 'error', text: `분석 실패: ${error.message}` });
+      setTimeout(() => setAnalysisMessage(null), 5000);
     } finally {
       setIsAnalyzing(false);
     }
@@ -513,6 +523,22 @@ export function EvidenceDetailPage() {
               </CardHeader>
               <CardContent className="space-y-3">
                 <Separator className="mb-4" />
+
+                {/* 분석 메시지 표시 */}
+                {analysisMessage && (
+                  <div className={`flex items-center gap-2 p-3 rounded-lg text-sm mb-4 ${
+                    analysisMessage.type === 'success'
+                      ? 'bg-green-50 dark:bg-green-950/20 text-green-800 dark:text-green-300 border border-green-200 dark:border-green-800'
+                      : 'bg-red-50 dark:bg-red-950/20 text-red-800 dark:text-red-300 border border-red-200 dark:border-red-800'
+                  }`}>
+                    {analysisMessage.type === 'success' ? (
+                      <CheckCircle className="h-4 w-4 shrink-0" />
+                    ) : (
+                      <XCircle className="h-4 w-4 shrink-0" />
+                    )}
+                    <span>{analysisMessage.text}</span>
+                  </div>
+                )}
 
                 {isLoadingAnalysis ? (
                   <div className="flex items-center justify-center py-8">
