@@ -9,13 +9,19 @@ AI 기반 법률 지능 플랫폼 - FastAPI 백엔드와 React + TypeScript 프�
 - 🤖 AI 판례 요약 (OpenAI LLM 기반)
 - ⚖️ 유사 판례 검색 및 비교 분석 (RAG)
 - 📄 증거 자동 분석 및 파일 관리
+- 🤖 **사건 맥락 기반 증거 AI 분석** (GPT-4o-mini 활용, 사건별 맞춤 분석)
+  - 증거-사건 연결 시 자동 분석 (백그라운드)
+  - 사건 재분석 시 연관 증거 자동 재분석 (백그라운드)
+  - 동일 증거도 사건별로 다른 분석 결과 저장 (case_id 기반)
 - 📁 증거 파일 업로드 및 Supabase Storage 통합
 - 🗂️ 증거 카테고리 관리 (계층 구조 지원)
 - 📋 사건(Case) 관리
+  - 사건 개요 AI 분석 (배경, 사실관계, 쟁점)
+  - 사건 내 인물 관계 자동 추출 및 관리
 - ⏱️ **사건 타임라인 관리** (시간순 이벤트 추적, CRUD 지원)
-- 🤖 **AI 기반 타임라인 자동 생성** (LLM을 활용한 지능형 이벤트 추출)
-- 🔍 판례 검색 (Qdrant 벡터 DB 기반 유사도 검색)
-- 📊 리스크 평가
+- 🤖 **AI 기반 타임라인 자동 생성** (LLM을 활용한 지능형 이벤트 추출, 증거 연동)
+- 👥 **인물 관계 분석** (사건 내 등장 인물 및 관계 자동 추출)
+- 📊 리스크 평가 (증거별 위험도 분석)
 - 🏢 법무법인/사무실(Firm) 기반 데이터 격리
 - 🤖 Markdown 렌더링 지원 (LLM 응답 포맷팅)
 - 📥 법령/판례 데이터 수집 스크립트 (국가법령정보 Open API 연동)
@@ -166,6 +172,7 @@ curl http://localhost:8000/db-init
 ```
 
 이 명령은 다음 테이블들을 자동으로 생성합니다:
+
 - `users` - 사용자 정보
 - `cases` - 사건 정보
 - `evidences` - 증거 파일 메타데이터
@@ -206,11 +213,13 @@ npm run dev
 ## 🔧 API 엔드포인트
 
 ### 기본 엔드포인트
+
 - `GET /` - API 루트
 - `GET /health` - 헬스 체크
 - `GET /db-init` - 데이터베이스 초기화 (테이블 생성)
 
 ### 인증 API (v1)
+
 - `POST /api/v1/auth/signup` - 회원가입
   - Request Body: `{ "name": "string", "email": "string", "password": "string", "role": "string", "firm_code": int }`
   - Response: `{ "message": "string", "user_id": int, "email": "string", "access_token": "string", "token_type": "bearer" }`
@@ -221,6 +230,7 @@ npm run dev
 - `GET /api/v1/auth/me` - 현재 사용자 정보 (인증 필요)
 
 ### 증거 관리 API (v1)
+
 - `POST /api/v1/evidence/upload` - 증거 파일 업로드 (인증 필요)
   - Request: multipart/form-data
   - Parameters: `file`, `case_id` (optional), `category_id` (optional)
@@ -231,20 +241,57 @@ npm run dev
 - `DELETE /api/v1/evidence/delete/{evidence_id}` - 증거 파일 삭제 (인증 필요)
   - Response: `{ "message": "string", "evidence_id": int }`
 - `POST /api/v1/evidence/{evidence_id}/link-case/{case_id}` - 증거를 사건에 연결 (인증 필요)
-  - Response: `{ "message": "string", "mapping_id": int }`
+  - **백그라운드에서 자동으로 사건 맥락 분석 수행**
+  - Response: `{ "message": "string", "mapping_id": int, "evidence_id": int, "case_id": int }`
+- `POST /api/v1/evidence/{evidence_id}/link-case-with-details/{case_id}` - 증거를 사건에 연결 (날짜/설명 포함)
+  - Parameters: `evidence_date` (optional), `description` (optional)
+  - **백그라운드에서 자동으로 사건 맥락 분석 수행**
+  - Response: `{ "message": "string", "mapping_id": int, "evidence_id": int, "case_id": int }`
 - `PATCH /api/v1/evidence/{evidence_id}/starred` - 즐겨찾기 토글 (인증 필요)
   - Response: `{ "message": "string", "starred": boolean }`
 - `GET /api/v1/evidence/{evidence_id}/url` - Signed URL 생성 (인증 필요)
   - Response: `{ "signed_url": "string", "expires_in": 60 }`
 
+### 증거 분석 API (v1)
+
+- `GET /api/v1/evidence/{evidence_id}/analysis` - 증거 분석 정보 조회 (인증 필요)
+  - Query Parameters: `case_id` (optional) - 특정 사건 맥락의 분석 조회
+  - Response: `{ "has_analysis": boolean, "analysis": { "id": int, "case_id": int, "summary": "string", "legal_relevance": "string", "risk_level": "string", "ai_model": "string", "created_at": "string" } }`
+- `POST /api/v1/evidence/{evidence_id}/analyze` - 증거 AI 분석 수행 (인증 필요)
+  - Query Parameters: `case_id` (optional) - 특정 사건 맥락에서 분석
+  - **사건 맥락 포함 시**: 사건명, 유형, 의뢰인/상대방 정보를 고려한 맞춤 분석
+  - **사건 맥락 미포함 시**: 일반적인 증거 분석
+  - Response: `{ "message": "string", "analysis": {...} }`
+
 ### 카테고리 관리 API (v1)
+
 - `POST /api/v1/evidence/categories` - 카테고리 생성 (인증 필요)
   - Request Body: `{ "name": "string", "parent_id": int | null, "order_index": int }`
   - Response: `{ "category_id": int, "name": "string", "firm_id": int, "parent_id": int | null }`
 - `GET /api/v1/evidence/categories` - 카테고리 목록 조회 (인증 필요)
   - Response: `{ "total": int, "categories": [...] }`
 
+### 사건 관리 API (v1)
+
+- `GET /api/v1/cases` - 사건 목록 조회 (인증 필요)
+- `GET /api/v1/cases/{case_id}` - 사건 상세 조회 (인증 필요)
+- `POST /api/v1/cases` - 새 사건 등록 (인증 필요)
+- `PUT /api/v1/cases/{case_id}` - 사건 정보 수정 (인증 필요)
+- `DELETE /api/v1/cases/{case_id}` - 사건 삭제 (인증 필요)
+- `POST /api/v1/cases/{case_id}/analyze` - 사건 개요 AI 분석 (인증 필요)
+  - **백그라운드 작업**: 타임라인, 인물 관계, 연관 증거 자동 분석
+  - Request Body: `{ "background": "string", "facts": "string", "issues": "string" }`
+  - **자동 수행 작업**:
+    1. 사건 개요 분석 저장
+    2. 타임라인 자동 생성 (AI 기반)
+    3. 인물 관계 자동 추출
+    4. 연관된 모든 증거 재분석 (사건 맥락 반영)
+  - Response: `{ "message": "분석이 시작되었습니다", "analysis_id": int }`
+- `GET /api/v1/cases/{case_id}/analysis` - 사건 분석 결과 조회 (인증 필요)
+  - Response: `{ "has_analysis": boolean, "analysis": {...} }`
+
 ### 판례 검색 API (v1)
+
 - `GET /api/v1/search/cases` - 판례 검색 (하이브리드: 의미 + 키워드)
   - Query Parameters: `query` (필수), `limit` (기본 30), `merge_chunks` (기본 true)
   - Response: `{ "results": [...], "total": int }`
@@ -262,24 +309,48 @@ npm run dev
 - `POST /api/v1/search/cases/compare` - 판례 비교 분석 (RAG)
   - Request Body: `{ "origin_facts": "string", "origin_claims": "string", "target_case_number": "string" }`
   - Response: 비교 분석 결과
+
 ### 타임라인 관리 API (v1)
+
 - `GET /api/v1/timeline/{case_id}` - 사건 타임라인 목록 조회 (인증 필요)
-  - Response: `[{ "id": "string", "case_id": int, "firm_id": int | null, "date": "YYYY-MM-DD", "time": "HH:MM", "title": "string", "description": "string", "type": "의뢰인|상대방|증거|기타", "actor": "string", "order_index": int }]`
+  - **타임라인이 없으면 자동 생성 시도 (실패 시 빈 배열 반환)**
+  - 증거 정보 포함 (연관된 증거가 있는 경우)
+  - Response: `[{ "id": "string", "case_id": "CASE-001", "firm_id": int, "evidence_id": "string", "date": "YYYY-MM-DD", "time": "HH:MM", "title": "string", "description": "string", "type": "의뢰인|상대방|증거|기타", "actor": "string", "order_index": int, "evidence": {...} }]`
 - `POST /api/v1/timeline/{case_id}` - 타임라인 이벤트 추가 (인증 필요)
-  - Request Body: `{ "date": "string", "time": "string", "title": "string", "description": "string", "type": "string", "actor": "string", "order_index": int, "firm_id": int | null }`
-  - Response: 생성된 타임라인 객체
+  - Request Body: `{ "date": "string", "time": "string", "title": "string", "description": "string", "type": "string", "actor": "string", "order_index": int, "firm_id": int, "evidence_id": int }`
+  - Response: 생성된 타임라인 객체 (증거 정보 포함)
 - `PUT /api/v1/timeline/{timeline_id}` - 타임라인 이벤트 수정 (인증 필요)
-  - Request Body: 타임라인 데이터 (POST와 동일, firm_id 포함)
-  - Response: 수정된 타임라인 객체
+  - Request Body: 타임라인 데이터 (POST와 동일)
+  - Response: 수정된 타임라인 객체 (증거 정보 포함)
 - `DELETE /api/v1/timeline/{timeline_id}` - 타임라인 이벤트 삭제 (인증 필요)
   - Response: `{ "message": "타임라인이 삭제되었습니다" }`
-- `POST /api/v1/timeline/{case_id}/generate?use_llm=false&firm_id=1` - AI 자동 생성 (인증 필요)
+- `POST /api/v1/timeline/{case_id}/generate?force=true` - 타임라인 강제 재생성 (인증 필요)
   - Query Parameters:
-    - `use_llm` (boolean, 기본값: false) - LLM 사용 여부
-    - `firm_id` (int, 옵션) - 소속 법무법인/사무실 ID
-  - Response: 생성된 타임라인 목록
+    - `force` (boolean, 기본값: true) - 기존 타임라인 삭제 여부
+  - **AI 기반 자동 생성**: 사건 개요, 증거 내용에서 이벤트 추출
+  - Response: 생성된 타임라인 목록 (증거 정보 포함)
+
+### 인물 관계 관리 API (v1)
+
+- `GET /api/v1/relationships/{case_id}` - 사건 내 인물 관계 조회 (인증 필요)
+  - **관계 정보가 없으면 자동 생성 시도**
+  - Response: `[{ "id": "REL-001", "case_id": "CASE-001", "person_a": "string", "person_b": "string", "relationship_type": "string", "description": "string", "created_at": "string" }]`
+- `POST /api/v1/relationships/{case_id}` - 인물 관계 추가 (인증 필요)
+  - Request Body: `{ "person_a": "string", "person_b": "string", "relationship_type": "string", "description": "string" }`
+  - Response: 생성된 관계 객체
+- `PUT /api/v1/relationships/{relationship_id}` - 인물 관계 수정 (인증 필요)
+  - Request Body: 관계 데이터 (POST와 동일)
+  - Response: 수정된 관계 객체
+- `DELETE /api/v1/relationships/{relationship_id}` - 인물 관계 삭제 (인증 필요)
+  - Response: `{ "message": "관계 삭제 완료" }`
+- `POST /api/v1/relationships/{case_id}/generate?force=true` - 인물 관계 강제 재생성 (인증 필요)
+  - Query Parameters:
+    - `force` (boolean, 기본값: true) - 기존 관계 삭제 여부
+  - **AI 기반 자동 생성**: 사건 개요에서 인물 및 관계 추출
+  - Response: 생성된 관계 목록
 
 ### LLM 채팅 API
+
 - `POST /api/chat` - LLM과 대화
 - `GET /api/conversations/{conversation_id}` - 대화 기록 조회
 - `DELETE /api/conversations/{conversation_id}` - 대화 기록 삭제
@@ -311,6 +382,7 @@ npm run preview
 ```
 
 Vite는 다음 기능을 제공합니다:
+
 - ⚡️ 초고속 HMR (Hot Module Replacement)
 - 📦 최적화된 프로덕션 빌드
 - 🔧 TypeScript 지원
@@ -321,6 +393,7 @@ Vite는 다음 기능을 제공합니다:
 ### Backend
 
 #### 코어 프레임워크
+
 ```bash
 pip install fastapi==0.109.0        # 웹 프레임워크
 pip install uvicorn[standard]==0.27.0  # ASGI 서버
@@ -330,6 +403,7 @@ pip install python-multipart==0.0.6 # 파일 업로드 처리
 ```
 
 #### 데이터베이스 및 스토리지
+
 ```bash
 pip install sqlalchemy==2.0.25      # ORM (Object-Relational Mapping)
 pip install psycopg2-binary==2.9.9  # PostgreSQL 어댑터
@@ -337,6 +411,7 @@ pip install supabase==2.10.0        # Supabase 클라이언트 (Storage 및 DB)
 ```
 
 #### 인증 및 보안
+
 ```bash
 pip install passlib==1.7.4          # 비밀번호 해싱 유틸리티
 pip install "bcrypt==4.0.1"         # Bcrypt 해싱 (passlib 1.7.4와 호환)
@@ -344,12 +419,14 @@ pip install python-jose[cryptography]==3.3.0  # JWT 토큰 생성 및 검증
 ```
 
 #### 벡터 DB 및 임베딩
+
 ```bash
 pip install qdrant-client==1.16.1   # Qdrant 벡터 데이터베이스 클라이언트
 pip install fastembed==0.4.2        # 고속 임베딩 라이브러리 (Sparse embedding, BM25)
 ```
 
 #### LLM 및 문서 처리 라이브러리
+
 ```bash
 pip install openai==1.10.0          # OpenAI API 클라이언트 (Whisper STT, Vision API)
 pip install pymupdf==1.24.14        # PDF 텍스트 추출
@@ -361,12 +438,10 @@ pip install httpx==0.27.0           # HTTP 클라이언트
 **증거 파일 자동 처리 (하이브리드 전략):**
 
 - **AUDIO**: OpenAI Whisper API로 음성을 텍스트로 변환 (ffmpeg 불필요)
-
 - **PDF**:
   1. PyMuPDF로 텍스트 추출 시도 (무료)
   2. 페이지당 20자 미만 → 이미지형 페이지로 판단
   3. 이미지형 페이지만 Vision API로 OCR → 최소 비용
-
 - **IMAGE**:
   1. **EasyOCR 로컬 처리** (무료, 한글/영어 동시 인식)
      - 20자 이상 추출 성공 → 완료 (비용 0원)
@@ -376,6 +451,7 @@ pip install httpx==0.27.0           # HTTP 클라이언트
      - 거절 감지 및 에러 처리
 
 **비용 최적화:**
+
 - 텍스트형 PDF: 100% 무료 (PyMuPDF)
 - 이미지: 80% 무료 (EasyOCR), 실패 시에만 Vision API
 - 이미지형 PDF: 텍스트 페이지는 무료, 이미지 페이지만 유료
@@ -400,6 +476,7 @@ pip install httpx==0.27.0           # HTTP 클라이언트
 - 로컬 OCR, PDF 텍스트 추출, 음성 STT의 경우 `doc_type`은 NULL (추후 필요 시 수동 분류 또는 추가 API 호출)
 
 #### 한 번에 설치
+
 ```bash
 pip install -r requirements.txt
 ```
@@ -407,12 +484,14 @@ pip install -r requirements.txt
 ### Frontend
 
 #### 핵심 라이브러리
+
 - **React 19** - UI 라이브러리
 - **TypeScript** - 타입 안전성
 - **Vite** - 빌드 도구 및 개발 서버
 - **React Router DOM** - 클라이언트 사이드 라우팅
 
 #### UI 컴포넌트 및 스타일
+
 - **Radix UI** - 접근성 높은 UI 컴포넌트
   - Avatar, Checkbox, Collapsible, Context Menu, Dialog, Dropdown Menu
   - Label, Progress, Scroll Area, Select, Separator, Slot, Tabs, Tooltip
@@ -421,19 +500,23 @@ pip install -r requirements.txt
 - **Lucide React** - 아이콘 라이브러리
 
 #### 유틸리티
+
 - **class-variance-authority** - CSS 클래스 변형 관리
 - **clsx** - 조건부 클래스명 유틸리티
 - **tailwind-merge** - Tailwind 클래스 병합
 
 #### Markdown 렌더링
+
 - **react-markdown** - React에서 Markdown 렌더링
 - **remark-gfm** - GitHub Flavored Markdown 지원
 
 #### 분석 및 기타
+
 - **@vercel/analytics** - Vercel 애널리틱스
 - **Next.js** - (일부 기능 활용)
 
 #### 설치 명령어
+
 ```bash
 # 전체 의존성 설치
 npm install
@@ -531,6 +614,7 @@ CREATE INDEX idx_case_evidence_mappings_evidence_date ON case_evidence_mappings(
   - 같은 증거가 여러 사건에 연결될 때 각 사건별로 다른 설명 가능
 
 **N:N 관계의 특성:**
+
 - 하나의 증거는 여러 사건에 연결 가능
 - 하나의 사건은 여러 증거를 포함 가능
 - `evidence_date`와 `description`은 **관계의 속성**으로, 같은 증거라도 사건마다 다른 값을 가질 수 있음
@@ -540,19 +624,45 @@ CREATE INDEX idx_case_evidence_mappings_evidence_date ON case_evidence_mappings(
 ```sql
 CREATE TABLE evidence_analyses (
     id SERIAL PRIMARY KEY,
-    evidence_id INTEGER,                    -- 증거 ID
-    summary TEXT,                           -- STT 결과 또는 요약문
-    legal_relevance TEXT,                   -- 법적 관련성 분석
+    evidence_id INTEGER REFERENCES evidences(id) ON DELETE CASCADE,  -- 증거 ID
+    case_id INTEGER REFERENCES cases(id) ON DELETE CASCADE,          -- 사건 ID (사건 맥락 분석)
+    summary TEXT,                           -- 증거 내용 요약
+    legal_relevance TEXT,                   -- 법적 관련성 분석 (사건 맥락 고려)
     risk_level VARCHAR(20),                 -- 위험 수준 (high, medium, low)
-    ai_model VARCHAR(50),                   -- 사용한 AI 모델 (예: openai-whisper)
+    ai_model VARCHAR(50),                   -- 사용한 AI 모델 (예: gpt-4o-mini)
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+-- 인덱스
+CREATE INDEX idx_evidence_analyses_evidence_id ON evidence_analyses(evidence_id);
+CREATE INDEX idx_evidence_analyses_case_id ON evidence_analyses(case_id);
+CREATE UNIQUE INDEX idx_evidence_analyses_unique ON evidence_analyses(evidence_id, case_id);
 ```
 
-- **summary**: 오디오 파일의 STT(Speech-to-Text) 변환 결과 또는 문서 요약
-- **legal_relevance**: AI가 분석한 법적 관련성 및 중요 포인트
-- **risk_level**: AI가 판단한 법적 위험 수준
-- **ai_model**: 분석에 사용된 AI 모델명
+- **evidence_id**: 분석 대상 증거 ID (외래키, CASCADE 삭제)
+- **case_id**: 사건 ID - **동일 증거도 사건별로 다른 분석 가능** (외래키, CASCADE 삭제)
+  - NULL: 일반적인 증거 분석 (사건 맥락 없음)
+  - 값 존재: 특정 사건 맥락에서의 분석
+- **summary**: 증거 내용 요약 (3-5문장)
+- **legal_relevance**: 법적 관련성 분석 - 사건 맥락을 고려한 법적 쟁점, 증거 가치, 활용 방안
+- **risk_level**: 상대방 입장에서의 위험도 (높을수록 우리에게 유리)
+  - `high`: 높음 - 상대방에게 매우 불리
+  - `medium`: 보통 - 중립적 또는 보통 수준
+  - `low`: 낮음 - 위험도 낮음
+- **ai_model**: 분석에 사용된 AI 모델명 (예: gpt-4o-mini)
+
+**사건별 맞춤 분석:**
+
+- 같은 증거가 여러 사건에 연결될 경우, 각 사건 맥락에 맞는 별도 분석 저장
+- 예: "협박 대화 증거"가 명예훼손 사건과 협박 사건 모두에 연결
+  - 명예훼손 사건에서는 명예훼손 요소 중심 분석
+  - 협박 사건에서는 협박 요소 중심 분석
+
+**자동 분석 트리거:**
+
+1. **증거-사건 연결 시**: `/api/v1/evidence/{evidence_id}/link-case/{case_id}` 호출 시 백그라운드에서 자동 분석
+2. **사건 재분석 시**: 사건 개요가 재분석되면 연관된 모든 증거도 백그라운드에서 자동 재분석
+3. **수동 분석**: `/api/v1/evidence/{evidence_id}/analyze?case_id={case_id}` 직접 호출
 
 ### Timelines 테이블 (사건 타임라인)
 
@@ -611,28 +721,33 @@ CREATE INDEX idx_timelines_order_index ON timelines(order_index);
 ## 🔐 보안
 
 ### 비밀번호 보안
+
 - bcrypt 알고리즘을 사용한 비밀번호 해싱
 - 72바이트 길이 제한 (bcrypt 스펙)
 - 이메일 중복 검증
 
 ### API 보안
+
 - JWT 토큰 기반 인증 (Bearer Token)
 - `@Depends(get_current_user)` 데코레이터로 보호된 엔드포인트
 - CORS 설정: 프로덕션에서는 특정 도메인으로 제한 필요
 - HTTPS 사용 권장
 
 ### 데이터 격리 (Multi-tenancy)
+
 - **Firm 기반 데이터 분리**: 각 법무법인(firm_id)별로 데이터 격리
 - **증거 파일 접근 제어**: 같은 법무법인 소속만 파일 조회 가능
 - **카테고리 격리**: 각 법무법인은 독립적인 카테고리 트리 관리
 
 ### Supabase Storage 보안
+
 - **Service Role Key 사용**: RLS 정책 우회하여 서버에서만 업로드 가능
 - **Signed URL**: 60초 제한 임시 URL로 파일 접근 제어
 - **파일 경로 관리**: `firm_id/YYYYMMDD/unique_filename` 구조로 파일 저장
 - **UUID 파일명**: 파일명 중복 방지 및 보안 강화
 
 ### 환경 변수 보안
+
 - `.env` 파일에 민감한 정보 저장
 - `.gitignore`에 `.env` 추가하여 Git 커밋 방지
 - 프로덕션 환경에서는 환경 변수 관리 시스템 사용 권장
@@ -641,19 +756,24 @@ CREATE INDEX idx_timelines_order_index ON timelines(order_index);
 ## 🔧 트러블슈팅
 
 ### bcrypt 버전 호환성 문제
+
 만약 bcrypt 관련 에러가 발생하면:
+
 ```bash
 # bcrypt 버전을 4.x로 다운그레이드
 pip install "bcrypt<5.0"
 ```
 
 ### 데이터베이스 연결 실패
+
 1. `.env` 파일의 `DATABASE_URL`이 올바른지 확인
 2. Supabase Project Settings > Database > Connection String 확인
 3. Transaction Pooler 사용 (포트 6543)
 
 ### Supabase Storage 업로드 실패
+
 파일 업로드 시 에러가 발생하면:
+
 1. **Bucket 생성 확인**
    - Supabase 대시보드 > Storage에서 "Evidences" 버킷이 생성되어 있는지 확인
    - Public bucket으로 생성하지 마세요 (보안상 Private 권장)
@@ -667,12 +787,16 @@ pip install "bcrypt<5.0"
    - 또는 업로드를 위한 적절한 RLS 정책 추가
 
 ### CORS 에러
+
 프론트엔드에서 백엔드 API 호출 시 CORS 에러가 발생하면:
+
 - 백엔드가 `http://localhost:8000`에서 실행 중인지 확인
 - `backend/app/main.py`의 CORS 설정 확인
 
 ### 포트 충돌
+
 포트가 이미 사용 중이면:
+
 ```bash
 # 백엔드: 다른 포트 사용
 uvicorn app.main:app --reload --port 8001
@@ -681,7 +805,9 @@ uvicorn app.main:app --reload --port 8001
 ```
 
 ### JWT 인증 실패
+
 API 호출 시 401 Unauthorized 에러가 발생하면:
+
 1. 로그인 후 받은 `access_token`을 확인
 2. API 요청 시 `Authorization: Bearer <token>` 헤더가 포함되어 있는지 확인
 3. 토큰이 만료되었는지 확인 (기본 만료 시간 확인)

@@ -1058,7 +1058,7 @@ export function NewCasePage({ }: NewCasePageProps) {
                   </SelectTrigger>
                   <SelectContent>
                     {folderStructure.map((folder) => (
-                      <SelectItem key={folder.path} value={folder.name}>
+                      <SelectItem key={folder.category_id} value={folder.name}>
                         {folder.name}
                       </SelectItem>
                     ))}
@@ -1085,7 +1085,7 @@ export function NewCasePage({ }: NewCasePageProps) {
                         </SelectTrigger>
                         <SelectContent>
                           {availableFolders.map((folder) => (
-                            <SelectItem key={folder.path} value={folder.name}>
+                            <SelectItem key={folder.category_id} value={folder.name}>
                               {folder.name}
                             </SelectItem>
                           ))}
