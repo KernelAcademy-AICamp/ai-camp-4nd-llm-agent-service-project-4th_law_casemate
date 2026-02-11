@@ -202,7 +202,7 @@ def check_needs_reanalysis(case_id: int, db: Session) -> dict:
 
     # 원문 변경 체크
     if case.description:
-        current_hash = hashlib.md5(case.description.encode()).hexdigest()
+        current_hash = hashlib.sha256(case.description.encode()).hexdigest()
         if analysis.description_hash and current_hash != analysis.description_hash:
             return {
                 "needs": True,

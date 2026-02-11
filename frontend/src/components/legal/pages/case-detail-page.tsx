@@ -617,8 +617,15 @@ export function CaseDetailPage({
   const checkReanalysisStatus = useCallback(async () => {
     if (!id) return;
 
+    const token = localStorage.getItem('access_token');
+    if (!token) return;
+
     try {
-      const response = await fetch(`http://localhost:8000/api/v1/cases/${id}/reanalysis-status`);
+      const response = await fetch(`http://localhost:8000/api/v1/cases/${id}/reanalysis-status`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
       if (response.ok) {
         const status = await response.json();
         setNeedsReanalysis(status);

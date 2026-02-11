@@ -14,6 +14,7 @@ import {
   Loader2,
   FileText,
   AlertCircle,
+  Download,
 } from "lucide-react";
 
 interface Evidence {
@@ -165,6 +166,20 @@ export function EvidenceDetailPage() {
         console.log('분석 정보:', data);
         setHasAnalysis(data.has_analysis);
         setAnalysisData(data.analysis);
+
+        // 자동 분석 트리거: 증거가 사건과 연결되어 있지만 분석이 없는 경우
+        if (!data.has_analysis && evidence) {
+          const isLinkedToCase = caseId || (evidence.linked_case_ids && evidence.linked_case_ids.length > 0);
+          const hasContent = evidence.content && evidence.content.trim().length > 20;
+
+          if (isLinkedToCase && hasContent) {
+            console.log('🤖 증거가 사건과 연결되어 있지만 분석이 없습니다. 자동 분석을 시작합니다...');
+            // 약간의 지연 후 자동 분석 시작 (UI 업데이트를 위해)
+            setTimeout(() => {
+              handleAnalyze();
+            }, 500);
+          }
+        }
       }
     } catch (error) {
       console.error('분석 정보 조회 실패:', error);
@@ -220,6 +235,55 @@ export function EvidenceDetailPage() {
       alert(`분석 실패: ${error.message}`);
     } finally {
       setIsAnalyzing(false);
+    }
+  };
+
+  // 파일 다운로드
+  const handleDownload = async () => {
+    const token = localStorage.getItem('access_token');
+    if (!token || !evidence) {
+      alert('로그인이 필요합니다.');
+      return;
+    }
+
+    try {
+      // Signed URL 가져오기
+      const response = await fetch(`http://localhost:8000/api/v1/evidence/${evidence.evidence_id}/url`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+
+      if (!response.ok) {
+        throw new Error('파일 URL 생성 실패');
+      }
+
+      const data = await response.json();
+      const signedUrl = data.signed_url;
+
+      // fetch로 파일 다운로드
+      const fileResponse = await fetch(signedUrl);
+      if (!fileResponse.ok) {
+        throw new Error('파일 다운로드 실패');
+      }
+
+      // Blob으로 변환
+      const blob = await fileResponse.blob();
+
+      // Blob URL 생성 및 다운로드
+      const blobUrl = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = blobUrl;
+      link.download = evidence.file_name;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+
+      // Blob URL 해제
+      window.URL.revokeObjectURL(blobUrl);
+    } catch (error) {
+      console.error('파일 다운로드 실패:', error);
+      alert(`파일 다운로드 실패: ${error}`);
     }
   };
 
@@ -314,6 +378,15 @@ export function EvidenceDetailPage() {
           )}
         </div>
         <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleDownload}
+            className="h-8"
+          >
+            <Download className="h-3.5 w-3.5 mr-2" />
+            다운로드
+          </Button>
           <Button
             variant="outline"
             size="sm"

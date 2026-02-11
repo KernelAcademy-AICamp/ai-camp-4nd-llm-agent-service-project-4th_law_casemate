@@ -86,6 +86,26 @@ async def process_evidence_in_background(evidence_id: int, file_content: bytes, 
                 print(f"   - 문서 유형: {doc_type}")
                 print(f"   - 추출 방법: {result.get('method')}")
                 print(f"   - 비용 추정: {result.get('cost_estimate')}\n")
+
+                # 5. 사건과 연결된 경우 자동 분석 트리거
+                case_mappings = db.query(models.CaseEvidenceMapping).filter(
+                    models.CaseEvidenceMapping.evidence_id == evidence_id
+                ).all()
+
+                if case_mappings:
+                    print(f"🔗 [백그라운드] 증거가 {len(case_mappings)}개 사건과 연결됨. 자동 분석 시작...")
+                    for mapping in case_mappings:
+                        # 기존 분석이 없는 경우만 분석 수행
+                        existing_analysis = db.query(models.EvidenceAnalysis).filter(
+                            models.EvidenceAnalysis.evidence_id == evidence_id,
+                            models.EvidenceAnalysis.case_id == mapping.case_id
+                        ).first()
+
+                        if not existing_analysis:
+                            print(f"   📊 사건 ID {mapping.case_id}에 대한 분석 시작...")
+                            await analyze_evidence_on_link_background(evidence_id, mapping.case_id)
+                        else:
+                            print(f"   ⏭️  사건 ID {mapping.case_id}는 이미 분석됨. 건너뜀.")
             else:
                 print(f"⚠️ [백그라운드] DB에서 증거를 찾을 수 없음: evidence_id={evidence_id}")
         else:
