@@ -1976,10 +1976,19 @@ export function CaseDetailPage({
                         </td>
                         <td className="px-3 py-2.5 text-muted-foreground hidden sm:table-cell">{evidence.type}</td>
                         <td className="px-3 py-2.5 text-muted-foreground hidden md:table-cell">{evidence.date} {evidence.time}</td>
-                        <td className="px-3 py-2.5">
-                          <Badge variant="outline" className="text-xs font-normal py-0 h-5">
-                            {evidence.status}
-                          </Badge>
+                        <td className="px-3 py-2.5 text-center">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (confirm('이 증거를 목록에서 제거하시겠습니까?')) {
+                                unlinkEvidence(evidence.id);
+                              }
+                            }}
+                            className="p-1 rounded hover:bg-destructive/10 hover:text-destructive transition-colors"
+                            title="증거 제거"
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </button>
                         </td>
                       </tr>
                     ))}
