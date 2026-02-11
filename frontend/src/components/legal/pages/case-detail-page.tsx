@@ -454,9 +454,11 @@ export function CaseDetailPage({
       return;
     }
 
-    // 2. 캐시에 없으면 API 호출 (요약 + 사실관계 + 청구내용)
-    const query = `${overviewData.summary} ${overviewData.facts} ${overviewData.claims}`;
-    if (!query.trim()) return;
+    // 2. 캐시에 없으면 API 호출 (case_id로 DB에서 직접 조회)
+    if (!caseData?.id) return;
+
+    // 이미 로딩 중이면 중복 호출 방지
+    if (similarCasesLoading) return;
 
     setSimilarCasesLoading(true);
     try {
@@ -466,7 +468,7 @@ export function CaseDetailPage({
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          query: query,
+          case_id: caseData.id,
           exclude_case_number: null  // 현재 사건은 판례가 아니므로 제외할 필요 없음
         }),
       });
@@ -486,7 +488,7 @@ export function CaseDetailPage({
     } finally {
       setSimilarCasesLoading(false);
     }
-  }, [caseData, overviewData.summary, overviewData.facts, overviewData.claims, getSimilarCases, cacheSimilarCases]);
+  }, [caseData, similarCasesLoading, getSimilarCases, cacheSimilarCases]);
 
   // 타임라인 데이터 가져오기
   const fetchTimeline = useCallback(async () => {
@@ -547,11 +549,21 @@ export function CaseDetailPage({
     }
   };
 
-  // 컴포넌트 마운트 시 유사 판례 검색 및 타임라인 데이터 가져오기
+  // 타임라인 데이터 가져오기 (caseData 설정 시)
   useEffect(() => {
-    fetchSimilarCases();
-    fetchTimeline();
-  }, [fetchSimilarCases, fetchTimeline]);
+    if (caseData) {
+      fetchTimeline();
+    }
+  }, [caseData, fetchTimeline]);
+
+  // 유사 판례 검색 (overviewData 설정 후에만 실행)
+  useEffect(() => {
+    const hasOverviewData = overviewData.summary || overviewData.facts || overviewData.claims;
+    if (caseData && hasOverviewData) {
+      fetchSimilarCases();
+    }
+  }, [caseData, overviewData.summary, overviewData.facts, overviewData.claims, fetchSimilarCases]);
+
   // 관련 법령 검색 (2단계 파이프라인: 법적 쟁점 추출 → 검색)
   const fetchRelatedLaws = async () => {
     if (!id) return;
@@ -585,12 +597,6 @@ export function CaseDetailPage({
       setRelatedLawsLoading(false);
     }
   };
-
-  // 컴포넌트 마운트 시 유사 판례 및 관련 법령 검색
-  useEffect(() => {
-    fetchSimilarCases();
-    fetchRelatedLaws();
-  }, []);
 
   // 날짜 포맷 (20200515 → 2020.05.15)
   const formatJudgmentDate = (dateStr: string) => {

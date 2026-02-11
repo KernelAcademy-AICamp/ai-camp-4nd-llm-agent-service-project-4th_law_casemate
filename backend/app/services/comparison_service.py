@@ -127,7 +127,7 @@ class ComparisonService:
                 "error": f"판례를 찾을 수 없습니다: {target_case_number}",
             }
 
-        # 2. 프롬프트 생성
+        # 2. 프롬프트 생성 (V2: 구체적 인용 강화)
         user_prompt = COMPARISON_USER_TEMPLATE.format(
             origin_facts=origin_facts,
             origin_claims=origin_claims,

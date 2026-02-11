@@ -6,6 +6,7 @@ v2.0: 2단계 파이프라인 (법적 쟁점 추출 → 법령 검색)
 v2.1: 추출된 법적 쟁점 DB 캐싱
 """
 
+import asyncio
 import json
 import hashlib
 from fastapi import APIRouter, HTTPException, Depends
@@ -30,6 +31,12 @@ class SearchLawsByCaseRequest(BaseModel):
     limit: Optional[int] = 8
 
 
+class GetArticleRequest(BaseModel):
+    """조문 조회 요청"""
+    law_name: str  # 법령명 (예: "형법")
+    article_number: str  # 조문번호 (예: "307" 또는 "제307조")
+
+
 router = APIRouter(prefix="/laws", tags=["laws"])
 
 # 서비스 인스턴스
@@ -50,7 +57,9 @@ async def search_laws(request: SearchLawsRequest):
     print(f"   쿼리: {request.query[:100]}..." if len(request.query) > 100 else f"   쿼리: {request.query}")
     print("=" * 50)
     try:
-        results = search_laws_service.search_laws(
+        # 동기 함수를 스레드 풀에서 실행 (이벤트 루프 블로킹 방지)
+        results = await asyncio.to_thread(
+            search_laws_service.search_laws,
             query=request.query,
             limit=request.limit,
             score_threshold=request.score_threshold,
@@ -194,3 +203,41 @@ async def search_laws_by_case(
         print(f"❌ 법령 검색 오류: {str(e)}")
         print(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"법령 검색 중 오류 발생: {str(e)}")
+
+
+@router.post("/article")
+async def get_article(request: GetArticleRequest):
+    """
+    특정 조문 조회 (하이브리드: DB 우선 → API Fallback → 캐싱)
+
+    - **law_name**: 법령명 (예: "형법")
+    - **article_number**: 조문번호 (예: "307" 또는 "제307조")
+
+    Returns:
+        조문 전체 내용 + 항별 분리 데이터
+    """
+    print(f"📜 조문 조회: {request.law_name} 제{request.article_number}조")
+
+    try:
+        # 하이브리드 조회: DB 우선, 없으면 API에서 가져와서 캐싱
+        result = await search_laws_service.get_article_with_fallback(
+            law_name=request.law_name,
+            article_number=request.article_number,
+        )
+
+        if not result:
+            raise HTTPException(
+                status_code=404,
+                detail=f"조문을 찾을 수 없습니다: {request.law_name} 제{request.article_number}조"
+            )
+
+        print(f"✅ 조문 조회 완료: {result.get('law_name')} 제{result.get('article_number')}조")
+        return result
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        print(f"❌ 조문 조회 오류: {str(e)}")
+        print(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"조문 조회 중 오류 발생: {str(e)}")
