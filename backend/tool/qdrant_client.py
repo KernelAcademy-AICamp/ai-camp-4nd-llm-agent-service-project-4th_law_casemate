@@ -35,7 +35,7 @@ class QdrantService:
     """Qdrant 벡터 DB 서비스"""
 
     # 컬렉션 이름 상수
-    LAWS_COLLECTION = "laws"
+    LAWS_COLLECTION = "laws_hybrid"
     CASES_COLLECTION = "precedents"
     SUMMARIES_COLLECTION = "precedent_summaries"
 

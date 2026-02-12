@@ -216,8 +216,8 @@ export function ComparisonAnalysisContent({
     return (
       <div className="py-8">
         <div className="flex flex-col items-center justify-center gap-2 text-muted-foreground">
-          <AlertTriangle className="h-6 w-6 text-red-500" />
-          <p className="text-sm text-red-600">{error}</p>
+          <AlertTriangle className="h-6 w-6 text-[#EF4444]" />
+          <p className="text-sm text-[#EF4444]">{error}</p>
         </div>
       </div>
     );

@@ -636,7 +636,7 @@ export function EvidenceDetailPage() {
                   <div className={`flex items-center gap-2 p-3 rounded-lg text-sm mb-4 ${
                     analysisMessage.type === 'success'
                       ? 'bg-green-50 dark:bg-green-950/20 text-green-800 dark:text-green-300 border border-green-200 dark:border-green-800'
-                      : 'bg-red-50 dark:bg-red-950/20 text-red-800 dark:text-red-300 border border-red-200 dark:border-red-800'
+                      : 'bg-[#EF4444]/5 dark:bg-[#EF4444]/10 text-[#EF4444] dark:text-[#EF4444] border border-[#EF4444]/20 dark:border-[#EF4444]/30'
                   }`}>
                     {analysisMessage.type === 'success' ? (
                       <CheckCircle className="h-4 w-4 shrink-0" />

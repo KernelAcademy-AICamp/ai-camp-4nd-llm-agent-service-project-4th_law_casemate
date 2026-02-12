@@ -9,6 +9,7 @@ v1.1: CRUD + Markdown 출력 지시 추가
 
 import os
 import json
+import hashlib
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from typing import Optional, List
@@ -20,7 +21,7 @@ from tool.database import get_db
 from tool.security import get_current_user
 from app.models.evidence import Case, CaseAnalysis, Evidence, CaseEvidenceMapping
 from app.models.timeline import TimeLine
-from app.models.case_document import CaseDocument
+from app.models.case_document import CaseDocument, CaseDocumentDraft
 from app.models.user import User
 
 router = APIRouter(tags=["Documents"])
@@ -32,7 +33,7 @@ openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 class GenerateDocumentRequest(BaseModel):
     case_id: int
-    document_type: str = "complaint"  # complaint | notice | civil_suit
+    document_type: str = "criminal_complaint"  # criminal_complaint | demand_letter | civil_complaint
 
 
 class GenerateDocumentResponse(BaseModel):
@@ -54,7 +55,7 @@ class GenerateSectionsResponse(BaseModel):
 class CreateDocumentRequest(BaseModel):
     case_id: int
     title: str
-    document_type: str = "complaint"
+    document_type: str = "criminal_complaint"
     content: str = ""
     access_level: str = "firm_readonly"  # private, firm_readonly, firm_editable
 
@@ -147,9 +148,9 @@ CIVIL_SUIT_SYSTEM_PROMPT = """너는 명예훼손 전문 법률 문서 작성 �
 - 증거방법은 증거 파일 목록을 갑 제N호증으로 번호 부여""" + MARKDOWN_OUTPUT_INSTRUCTION
 
 SYSTEM_PROMPTS = {
-    "complaint": COMPLAINT_SYSTEM_PROMPT,
-    "notice": NOTICE_SYSTEM_PROMPT,
-    "civil_suit": CIVIL_SUIT_SYSTEM_PROMPT,
+    "criminal_complaint": COMPLAINT_SYSTEM_PROMPT,
+    "demand_letter": NOTICE_SYSTEM_PROMPT,
+    "civil_complaint": CIVIL_SUIT_SYSTEM_PROMPT,
 }
 
 # 고소장 HTML 양식 (프론트엔드 Tiptap 에디터와 동일한 구조)
@@ -243,8 +244,8 @@ COMPLAINT_HTML_TEMPLATE = """<h1>고 \u00a0 소 \u00a0 장</h1>
 
 # 문서 유형별 출력 템플릿 구조
 DOCUMENT_TEMPLATES = {
-    "complaint": "",  # complaint는 COMPLAINT_HTML_TEMPLATE 사용
-    "notice": """
+    "criminal_complaint": "",  # criminal_complaint는 COMPLAINT_HTML_TEMPLATE 사용
+    "demand_letter": """
 아래 Markdown 구조를 반드시 따르세요:
 
 # 내 용 증 명
@@ -255,7 +256,7 @@ DOCUMENT_TEMPLATES = {
 ### 시정 요구
 ### 법적 조치 경고
 ## 날짜""",
-    "civil_suit": """
+    "civil_complaint": """
 아래 Markdown 구조를 반드시 따르세요:
 
 # 소    장
@@ -458,7 +459,7 @@ def build_user_prompt(context: dict, document_type: str) -> str:
     # 문서 유형별 작성 지시
     template_structure = DOCUMENT_TEMPLATES.get(document_type, "")
 
-    if document_type == "complaint":
+    if document_type == "criminal_complaint":
         sections.append(f"""[작성 지시]
 위 사건 데이터를 기반으로 아래 고소장 HTML 양식의 빈 칸을 채워주세요.
 - 양식의 HTML 구조를 절대 변경하지 말고, 빈 <td> 셀과 [범죄사실 기재], [고소이유 기재] 등 작성란만 채우세요.
@@ -468,12 +469,12 @@ def build_user_prompt(context: dict, document_type: str) -> str:
 
 [고소장 HTML 양식]
 {COMPLAINT_HTML_TEMPLATE}""")
-    elif document_type == "notice":
+    elif document_type == "demand_letter":
         sections.append(f"""[작성 지시]
 위 사건 데이터를 기반으로 내용증명 초안을 작성해주세요.
 형식: 발신인/수신인/제목/본문(피해사실+시정요구+법적조치경고)/날짜
 {template_structure}""")
-    elif document_type == "civil_suit":
+    elif document_type == "civil_complaint":
         sections.append(f"""[작성 지시]
 위 사건 데이터를 기반으로 손해배상 청구 소장 초안을 작성해주세요.
 형식: 원고/피고/청구취지/청구원인/입증방법/첨부서류
@@ -580,9 +581,34 @@ async def generate_sections(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """고소장 서술형 2개 섹션 생성 (GPT 1회 호출, JSON 응답)"""
-    context = retrieve_case_context(request.case_id, db)
+    """고소장 서술형 2개 섹션 생성 (캐시 우선, 캐시 미스 시 GPT 호출)"""
+    # 사건 원문 hash 계산
+    case = db.query(Case).filter(Case.id == request.case_id).first()
+    if not case:
+        raise HTTPException(status_code=404, detail="사건을 찾을 수 없습니다")
 
+    current_hash = hashlib.sha256((case.description or "").encode()).hexdigest()
+
+    # 캐시 확인: 같은 사건 + 같은 문서 유형 + hash 일치
+    cached = db.query(CaseDocumentDraft).filter(
+        CaseDocumentDraft.case_id == request.case_id,
+        CaseDocumentDraft.document_type == "criminal_complaint",
+    ).first()
+
+    if cached and cached.description_hash == current_hash and cached.content:
+        try:
+            sections = json.loads(cached.content)
+            print(f"✅ 초안 캐시 히트: case_id={request.case_id}")
+            return GenerateSectionsResponse(
+                crime_facts=sections.get("crime_facts", ""),
+                complaint_reason=sections.get("complaint_reason", ""),
+            )
+        except json.JSONDecodeError:
+            pass  # 캐시 파싱 실패 → 재생성
+
+    # 캐시 미스 → GPT 호출
+    print(f"📄 초안 생성 (GPT): case_id={request.case_id}")
+    context = retrieve_case_context(request.case_id, db)
     user_prompt = build_sections_prompt(context)
 
     try:
@@ -599,6 +625,21 @@ async def generate_sections(
 
         content = response.choices[0].message.content.strip()
         sections = json.loads(content)
+
+        # 캐시 저장 (upsert)
+        if cached:
+            cached.content = content
+            cached.description_hash = current_hash
+        else:
+            cached = CaseDocumentDraft(
+                case_id=request.case_id,
+                document_type="criminal_complaint",
+                content=content,
+                description_hash=current_hash,
+            )
+            db.add(cached)
+        db.commit()
+        print(f"💾 초안 캐시 저장: case_id={request.case_id}")
 
         return GenerateSectionsResponse(
             crime_facts=sections.get("crime_facts", ""),
@@ -851,7 +892,7 @@ async def generate_document(
     if request.document_type not in SYSTEM_PROMPTS:
         raise HTTPException(
             status_code=400,
-            detail=f"지원하지 않는 문서 유형: {request.document_type}. (complaint, notice, civil_suit)"
+            detail=f"지원하지 않는 문서 유형: {request.document_type}. (criminal_complaint, demand_letter, civil_complaint)"
         )
 
     try:
@@ -891,9 +932,9 @@ async def generate_document(
 
         # 문서 제목 생성
         type_names = {
-            "complaint": "고소장",
-            "notice": "내용증명",
-            "civil_suit": "소장",
+            "criminal_complaint": "고소장",
+            "demand_letter": "내용증명",
+            "civil_complaint": "소장",
         }
         title = f"{type_names[request.document_type]} - {context['case']['title']}"
 

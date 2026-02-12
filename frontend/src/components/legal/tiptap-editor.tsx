@@ -10,8 +10,9 @@ import { Table } from "@tiptap/extension-table";
 import { TableRow } from "@tiptap/extension-table-row";
 import { TableCell } from "@tiptap/extension-table-cell";
 import { TableHeader } from "@tiptap/extension-table-header";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import type { Editor } from "@tiptap/react";
+import { LawRefDecoration, type LawRefClickData } from "./law-ref-decoration";
 import "./tiptap-editor.css";
 
 // AI가 채운 텍스트 전용 인라인 마크
@@ -30,6 +31,7 @@ interface TiptapEditorProps {
   initialContent: string;
   onChange: (html: string) => void;
   onEditorReady?: (editor: Editor) => void;
+  onLawRefClick?: (data: LawRefClickData) => void;
   placeholder?: string;
   className?: string;
 }
@@ -38,9 +40,14 @@ export function TiptapEditor({
   initialContent,
   onChange,
   onEditorReady,
+  onLawRefClick,
   placeholder = "",
   className = "",
 }: TiptapEditorProps) {
+  // useRef로 콜백 안정화 (TipTap extensions는 초기화 시 한 번만 읽힘)
+  const lawRefCallbackRef = useRef(onLawRefClick);
+  lawRefCallbackRef.current = onLawRefClick;
+
   const editor = useEditor({
     extensions: [
       StarterKit.configure({
@@ -60,6 +67,11 @@ export function TiptapEditor({
       TableRow,
       TableCell,
       TableHeader,
+      LawRefDecoration.configure({
+        onLawRefClick: (data: LawRefClickData) => {
+          lawRefCallbackRef.current?.(data);
+        },
+      }),
     ],
     content: initialContent,
     onUpdate: ({ editor }) => {

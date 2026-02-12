@@ -133,3 +133,15 @@
   color: #6D5EF5;
 }
 
+/* 법조항 참조 링크 (Decoration) */
+.ProseMirror .law-ref-link {
+  color: #2563EB;
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.ProseMirror .law-ref-link:hover {
+  color: #1D4ED8;
+  text-decoration-style: solid;
+}
+

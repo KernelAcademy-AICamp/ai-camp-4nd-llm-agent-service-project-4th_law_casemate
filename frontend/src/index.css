@@ -150,7 +150,7 @@
   --muted-foreground: #94A3B8;
   --accent: #2D2640;
   --accent-foreground: #F8FAFC;
-  --destructive: #F87171;
+  --destructive: #EF4444;
   --destructive-foreground: #0F0D1A;
   --border: #3D3555;
   --input: #2D2640;
@@ -416,4 +416,16 @@ input[type="date"]::-webkit-calendar-picker-indicator {
   width: 2.5rem !important;
   height: 100% !important;
   cursor: pointer !important;
+}
+
+/* 분석 stale 알림 말풍선 애니메이션 */
+@keyframes stale-popup-in {
+  0% {
+    opacity: 0;
+    transform: translateX(-50%) translateY(6px) scale(0.96);
+  }
+  100% {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0) scale(1);
+  }
 }

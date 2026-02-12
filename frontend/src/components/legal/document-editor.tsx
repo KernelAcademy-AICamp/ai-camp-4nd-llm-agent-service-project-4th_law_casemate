@@ -39,6 +39,8 @@ import {
   FilePen,
   ChevronLeft,
   ChevronRight,
+  ChevronDown,
+  Gavel,
   FileType,
   Lock,
   Eye,
@@ -55,6 +57,8 @@ import {
 import type { ExportFormat } from "@/lib/document-export";
 import { TiptapEditor } from "./tiptap-editor";
 import type { Editor } from "@tiptap/react";
+import type { LawRefClickData } from "./law-ref-decoration";
+import { ArticlePanel, type ArticleRef } from "./article-panel";
 import { AgentLoadingOverlay, type AgentStep } from "@/components/ui/agent-loading-overlay";
 
 interface DocumentEditorProps {
@@ -62,7 +66,7 @@ interface DocumentEditorProps {
 }
 
 // AI 생성 가능한 문서 유형 (백엔드 document_api.py의 SYSTEM_PROMPTS 키와 일치해야 함)
-const AI_SUPPORTED_TYPES = ["complaint", "notice", "civil_suit"];
+const AI_SUPPORTED_TYPES = ["criminal_complaint", "demand_letter", "civil_complaint"];
 
 const API_BASE = "http://localhost:8000/api/v1/documents";
 
@@ -77,16 +81,16 @@ function getAuthHeaders(): Record<string, string> {
 }
 
 const templates = [
-  { id: "complaint", name: "고소장", category: "형사", icon: FileCheck },
-  { id: "civil_suit", name: "소장 (손해배상)", category: "민사", icon: FilePen },
-  { id: "notice", name: "내용증명", category: "통지", icon: Mail },
+  { id: "criminal_complaint", name: "고소장", category: "형사", icon: FileCheck },
+  { id: "civil_complaint", name: "소장 (손해배상)", category: "민사", icon: FilePen },
+  { id: "demand_letter", name: "내용증명", category: "통지", icon: Mail },
   { id: "brief", name: "준비서면", category: "소송", icon: ClipboardList },
-  { id: "opinion", name: "법률 의견서", category: "의견", icon: BookOpen },
-  { id: "settlement", name: "합의서", category: "합의", icon: Handshake },
+  { id: "legal_opinion", name: "법률 의견서", category: "의견", icon: BookOpen },
+  { id: "settlement_agreement", name: "합의서", category: "합의", icon: Handshake },
 ];
 
 const templateContents: Record<string, string> = {
-  complaint: `<h1>고 \u00a0 소 \u00a0 장</h1>
+  criminal_complaint: `<h1>고 \u00a0 소 \u00a0 장</h1>
 <p><em>(고소장 기재사항 중 <strong>*</strong> 표시된 항목은 반드시 기재하여야 합니다.)</em></p>
 <hr>
 <h2>1. 고소인*</h2>
@@ -192,7 +196,7 @@ const templateContents: Record<string, string> = {
 <h2>4. 기타 증거</h2>
 <p>[기타 증거 기재]</p>`,
 
-  civil_suit: `<h1>소    장</h1>
+  civil_complaint: `<h1>소    장</h1>
 <h2>원고 / 피고</h2>
 <table><tbody>
 <tr><th>원고</th><td>[원고명]</td><th>주소</th><td></td></tr>
@@ -229,7 +233,7 @@ const templateContents: Record<string, string> = {
 <h2>3. 결론</h2>
 <p>[내용 작성]</p>`,
 
-  opinion: `<h1>법 률 의 견 서</h1>
+  legal_opinion: `<h1>법 률 의 견 서</h1>
 <h2>1. 사안의 개요</h2>
 <p>[내용 작성]</p>
 <h2>2. 쟁점</h2>
@@ -239,7 +243,7 @@ const templateContents: Record<string, string> = {
 <h2>4. 결론</h2>
 <p>[내용 작성]</p>`,
 
-  settlement: `<h1>합 의 서</h1>
+  settlement_agreement: `<h1>합 의 서</h1>
 <p><strong>[갑]</strong>과 <strong>[을]</strong>은 다음과 같이 합의한다.</p>
 <h2>제 1조 (합의 내용)</h2>
 <p>[내용 작성]</p>
@@ -248,7 +252,7 @@ const templateContents: Record<string, string> = {
 <h2>제 3조 (기타)</h2>
 <p>[내용 작성]</p>`,
 
-  notice: `<h1>내 용 증 명</h1>
+  demand_letter: `<h1>내 용 증 명</h1>
 <h2>발신인 / 수신인</h2>
 <table><tbody>
 <tr><th>발신인</th><td>[발신인]</td></tr>
@@ -341,7 +345,7 @@ function insertNarrativeSections(html: string, sections: GeneratedSections): str
 const AI = (text: string) => `<span data-ai-filled="true">${text}</span>`;
 
 function buildFilledComplaint(context: CaseContext): string {
-  let html = templateContents.complaint;
+  let html = templateContents.criminal_complaint;
   const c = context.case;
   const evidences = context.evidences;
   const hasEvidence = evidences.length > 0;
@@ -547,6 +551,7 @@ export function DocumentEditor({ caseData }: DocumentEditorProps) {
   const [leftTab, setLeftTab] = useState<"docs" | "templates">("docs");
   const [leftCollapsed, setLeftCollapsed] = useState(false);
   const [rightCollapsed, setRightCollapsed] = useState(false);
+  const [caseInfoCollapsed, setCaseInfoCollapsed] = useState(false);
   const [editor, setEditor] = useState<Editor | null>(null);
   const [contentSource, setContentSource] = useState<"template" | "ai" | "user">("template");
   const [accessLevel, setAccessLevel] = useState<string>("firm_readonly");
@@ -556,6 +561,55 @@ export function DocumentEditor({ caseData }: DocumentEditorProps) {
   const [exportFormat, setExportFormat] = useState<ExportFormat | null>(null);
   const [isExporting, setIsExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
+  const [articleRefs, setArticleRefs] = useState<ArticleRef[]>([]);
+  const [crimeNames, setCrimeNames] = useState<string[]>(caseData.crimeNames || []);
+
+  // props 변경 시 (부모에서 analyze 후 crimeNames 주입) 동기화
+  useEffect(() => {
+    if (caseData.crimeNames?.length) {
+      setCrimeNames(caseData.crimeNames);
+    }
+  }, [caseData.crimeNames]);
+
+  // 마운트 시 + props에 crimeNames 없으면 /context API에서 직접 로드
+  useEffect(() => {
+    if (crimeNames.length > 0) return; // 이미 있으면 스킵
+    const fetchCrimeNames = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/context/${caseData.id}`, {
+          headers: getAuthHeaders(),
+        });
+        if (!res.ok) return;
+        const ctx = await res.json();
+        if (ctx.analysis?.crime_names?.length) {
+          setCrimeNames(ctx.analysis.crime_names);
+        }
+      } catch {
+        // 조용히 실패
+      }
+    };
+    fetchCrimeNames();
+  }, [caseData.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handleLawRefClick = useCallback((data: LawRefClickData) => {
+    setArticleRefs((prev) => {
+      // 중복 방지
+      const exists = prev.some((r) => {
+        if (data.searchTerm) return r.searchTerm === data.searchTerm;
+        return r.lawName === data.lawName && r.articleNumber === data.articleNumber && r.paragraph === data.paragraph;
+      });
+      if (exists) return prev;
+      // 최대 5개, 초과 시 오래된 것 제거
+      const ref: ArticleRef = data.searchTerm
+        ? { searchTerm: data.searchTerm }
+        : { lawName: data.lawName, articleNumber: data.articleNumber, paragraph: data.paragraph };
+      const next = [...prev, ref];
+      if (next.length > 5) next.shift();
+      return next;
+    });
+    // 패널 자동 펼침
+    setRightCollapsed(false);
+  }, []);
 
   // 양쪽 패널 리사이즈
   const [leftPanelWidth, setLeftPanelWidth] = useState(224);
@@ -669,7 +723,7 @@ export function DocumentEditor({ caseData }: DocumentEditorProps) {
       setIsSaved(false);
       setContentSource("template");
 
-      if (templateId === "complaint") {
+      if (templateId === "criminal_complaint") {
         setDocumentContent(templateContents[templateId] || "");
       } else {
         setDocumentContent(`<p style="text-align: center; color: #999; padding-top: 4rem; font-size: 1.1rem;">양식 준비 중</p>`);
@@ -678,7 +732,7 @@ export function DocumentEditor({ caseData }: DocumentEditorProps) {
   };
 
   const handleGenerateDraft = async () => {
-    if (selectedTemplate !== "complaint") return;
+    if (selectedTemplate !== "criminal_complaint") return;
 
     setIsGenerating(true);
     setDraftAgentSteps(advanceDraftStep([...DRAFT_STEPS], 0));
@@ -762,7 +816,7 @@ export function DocumentEditor({ caseData }: DocumentEditorProps) {
           body: JSON.stringify({
             case_id: Number(caseData.id),
             title: documentTitle,
-            document_type: selectedTemplate || "complaint",
+            document_type: selectedTemplate || "criminal_complaint",
             content: documentContent,
             access_level: accessLevel,
           }),
@@ -1069,9 +1123,9 @@ export function DocumentEditor({ caseData }: DocumentEditorProps) {
               variant="outline"
               size="sm"
               onClick={handleGenerateDraft}
-              disabled={isGenerating || selectedTemplate !== "complaint"}
+              disabled={isGenerating || selectedTemplate !== "criminal_complaint"}
               className="gap-1.5 h-8 text-xs"
-              style={!isGenerating && selectedTemplate === "complaint" ? {
+              style={!isGenerating && selectedTemplate === "criminal_complaint" ? {
                 background: "linear-gradient(135deg, #6D5EF5, #8B7AF7)",
                 color: "#fff",
                 borderColor: "transparent",
@@ -1198,6 +1252,7 @@ export function DocumentEditor({ caseData }: DocumentEditorProps) {
               if (contentSource === "ai") setContentSource("user");
             }}
             onEditorReady={setEditor}
+            onLawRefClick={handleLawRefClick}
             placeholder="왼쪽에서 템플릿을 선택하거나 AI 초안을 생성하세요."
             className={cn(
               "h-full w-full rounded-lg border border-border/50 bg-white focus-within:ring-1 focus-within:ring-primary/30 focus-within:border-primary/40 text-sm leading-relaxed",
@@ -1231,12 +1286,18 @@ export function DocumentEditor({ caseData }: DocumentEditorProps) {
       <div
         className={cn(
           "flex-shrink-0 flex flex-col relative transition-all duration-200",
-          rightCollapsed ? "w-9 items-center pt-1" : ""
+          rightCollapsed ? "w-9 items-center pt-1" : "min-w-0 overflow-hidden"
         )}
         style={rightCollapsed ? undefined : { width: rightPanelWidth }}
       >
         {rightCollapsed ? (
           <div className="flex flex-col items-center gap-1.5 pt-0.5">
+            {articleRefs.length > 0 && (
+              <button type="button" onClick={() => setRightCollapsed(false)} className="p-1.5 rounded-md hover:bg-muted/60 text-primary hover:text-primary transition-colors relative" title="참조 법조항">
+                <BookOpen className="h-3.5 w-3.5" />
+                <span className="absolute -top-0.5 -right-0.5 w-3.5 h-3.5 bg-primary text-white text-[9px] font-bold rounded-full flex items-center justify-center">{articleRefs.length}</span>
+              </button>
+            )}
             <button type="button" onClick={() => setRightCollapsed(false)} className="p-1.5 rounded-md hover:bg-muted/60 text-muted-foreground hover:text-foreground transition-colors" title="관계인">
               <Users className="h-3.5 w-3.5" />
             </button>
@@ -1249,65 +1310,117 @@ export function DocumentEditor({ caseData }: DocumentEditorProps) {
           </div>
         ) : (
           <>
-            <div className="flex-1 flex flex-col pl-2">
-              <p className="text-xs font-semibold text-muted-foreground mb-3">사건 참조</p>
-              <ScrollArea className="flex-1">
-                <div className="space-y-5">
+            <div className="flex-1 flex flex-col px-2 min-w-0 overflow-hidden">
+              <ScrollArea className="flex-1 w-full min-w-0 [&_[data-radix-scroll-area-viewport]>div]:!block [&_[data-radix-scroll-area-viewport]>div]:!w-full">
+                <div className="space-y-5 pr-3 min-w-0 w-full overflow-hidden">
+                  {articleRefs.length > 0 && (
+                    <ArticlePanel
+                      articles={articleRefs}
+                      onRemove={(i) => setArticleRefs((prev) => prev.filter((_, idx) => idx !== i))}
+                      onClear={() => setArticleRefs([])}
+                    />
+                  )}
+
+                  {/* 사건 정보 — 접기/펼치기 (가로선 디바이더) */}
                   <div>
-                    <h4 className="text-[11px] font-semibold text-muted-foreground mb-2 flex items-center gap-1.5">
-                      <Users className="h-3 w-3" />
-                      관계인
-                    </h4>
-                    <div className="space-y-1.5">
-                      {caseData.client && caseData.opponent ? (
-                        <>
-                          <div className="flex justify-between items-center text-xs">
-                            <span className="font-medium">{caseData.client}</span>
-                            <span className="text-muted-foreground">의뢰인</span>
+                    <button
+                      type="button"
+                      onClick={() => setCaseInfoCollapsed((v) => !v)}
+                      className="w-full flex items-center gap-2 group cursor-pointer mb-3"
+                    >
+                      <div className="flex-1 h-px bg-border" />
+                      <span className="flex items-center gap-1 text-[11px] font-medium text-muted-foreground group-hover:text-foreground transition-colors shrink-0">
+                        사건 정보
+                        <ChevronDown className={cn("h-3 w-3 transition-transform duration-200", !caseInfoCollapsed && "rotate-180")} />
+                      </span>
+                      <div className="flex-1 h-px bg-border" />
+                    </button>
+
+                    <div className={cn(
+                      "overflow-hidden transition-all duration-200 ease-in-out",
+                      caseInfoCollapsed ? "max-h-0 opacity-0" : "max-h-[600px] opacity-100"
+                    )}>
+                      <div className="space-y-4 rounded-lg border border-border/60 bg-muted/20 p-3 min-w-0">
+                        <div>
+                          <h4 className="text-[11px] font-semibold text-muted-foreground mb-2 flex items-center gap-1.5">
+                            <Users className="h-3 w-3" />
+                            관계인
+                          </h4>
+                          <div className="space-y-1.5">
+                            {caseData.client && caseData.opponent ? (
+                              <>
+                                <div className="flex justify-between items-center text-xs">
+                                  <span className="font-medium">{caseData.client}</span>
+                                  <span className="text-muted-foreground">의뢰인</span>
+                                </div>
+                                <div className="flex justify-between items-center text-xs">
+                                  <span className="font-medium">{caseData.opponent}</span>
+                                  <span className="text-muted-foreground">상대방</span>
+                                </div>
+                              </>
+                            ) : (
+                              <p className="text-xs text-muted-foreground">데이터 없음</p>
+                            )}
                           </div>
-                          <div className="flex justify-between items-center text-xs">
-                            <span className="font-medium">{caseData.opponent}</span>
-                            <span className="text-muted-foreground">상대방</span>
+                        </div>
+
+                        {crimeNames.length > 0 && (
+                          <>
+                            <div className="h-px bg-border/40" />
+                            <div>
+                              <h4 className="text-[11px] font-semibold text-muted-foreground mb-2 flex items-center gap-1.5">
+                                <Gavel className="h-3 w-3" />
+                                핵심 쟁점
+                              </h4>
+                              <div className="flex flex-wrap gap-1.5">
+                                {crimeNames.map((name, i) => (
+                                  <span key={i} className="inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-medium bg-[#EF4444]/10 text-[#EF4444] border border-[#EF4444]/20">
+                                    {name}
+                                  </span>
+                                ))}
+                              </div>
+                            </div>
+                          </>
+                        )}
+
+                        <div className="h-px bg-border/40" />
+
+                        <div>
+                          <h4 className="text-[11px] font-semibold text-muted-foreground mb-2 flex items-center gap-1.5">
+                            <Scale className="h-3 w-3" />
+                            사건 상세
+                          </h4>
+                          <div className="space-y-1.5">
+                            <div className="flex justify-between items-center text-xs">
+                              <span className="text-muted-foreground">유형</span>
+                              <span className="font-medium">{caseData.caseType || "미분류"}</span>
+                            </div>
+                            <div className="flex justify-between items-center text-xs">
+                              <span className="text-muted-foreground">상태</span>
+                              <span className="font-medium">{caseData.status || "-"}</span>
+                            </div>
+                            <div className="flex justify-between items-center text-xs">
+                              <span className="text-muted-foreground">증거</span>
+                              <span className="font-medium">{caseData.evidenceCount || 0}건</span>
+                            </div>
                           </div>
-                        </>
-                      ) : (
-                        <p className="text-xs text-muted-foreground">데이터 없음</p>
-                      )}
-                    </div>
-                  </div>
+                        </div>
 
+                        <div className="h-px bg-border/40" />
 
-                  <div>
-                    <h4 className="text-[11px] font-semibold text-muted-foreground mb-2 flex items-center gap-1.5">
-                      <Scale className="h-3 w-3" />
-                      사건 정보
-                    </h4>
-                    <div className="space-y-1.5">
-                      <div className="flex justify-between items-center text-xs">
-                        <span className="text-muted-foreground">유형</span>
-                        <span className="font-medium">{caseData.caseType || "미분류"}</span>
-                      </div>
-                      <div className="flex justify-between items-center text-xs">
-                        <span className="text-muted-foreground">상태</span>
-                        <span className="font-medium">{caseData.status || "-"}</span>
-                      </div>
-                      <div className="flex justify-between items-center text-xs">
-                        <span className="text-muted-foreground">증거</span>
-                        <span className="font-medium">{caseData.evidenceCount || 0}건</span>
+                        <div>
+                          <h4 className="text-[11px] font-semibold text-muted-foreground mb-2 flex items-center gap-1.5">
+                            <FileText className="h-3 w-3" />
+                            사건 개요
+                          </h4>
+                          <p className="text-xs text-muted-foreground leading-relaxed break-words">
+                            {caseData.description
+                              ? caseData.description.slice(0, 200) + (caseData.description.length > 200 ? "..." : "")
+                              : "사건 설명이 없습니다."}
+                          </p>
+                        </div>
                       </div>
                     </div>
-                  </div>
-
-                  <div>
-                    <h4 className="text-[11px] font-semibold text-muted-foreground mb-2 flex items-center gap-1.5">
-                      <FileText className="h-3 w-3" />
-                      사건 개요
-                    </h4>
-                    <p className="text-xs text-muted-foreground leading-relaxed">
-                      {caseData.description
-                        ? caseData.description.slice(0, 200) + (caseData.description.length > 200 ? "..." : "")
-                        : "사건 설명이 없습니다."}
-                    </p>
                   </div>
                 </div>
               </ScrollArea>
