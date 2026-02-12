@@ -150,6 +150,7 @@ export function CaseDetailPage({
   const [timelineEvents, setTimelineEvents] =
     useState<TimelineEvent[]>([]);
   const [timelineLoading, setTimelineLoading] = useState(false);
+  const [timelineSteps, setTimelineSteps] = useState<AgentStep[]>([]);
 
   // 관계도 상태
   const [relationshipData, setRelationshipData] = useState<{
@@ -157,6 +158,7 @@ export function CaseDetailPage({
     relationships: any[];
   }>({ persons: [], relationships: [] });
   const [relationshipLoading, setRelationshipLoading] = useState(false);
+  const [relationshipSteps, setRelationshipSteps] = useState<AgentStep[]>([]);
 
   const [timelineLayout, setTimelineLayout] = useState<"linear" | "zigzag">("linear");
   const [editingEvent, setEditingEvent] = useState<TimelineEvent | null>(null);
@@ -683,74 +685,132 @@ export function CaseDetailPage({
     }
   }, [caseData]);
 
-  // 관계도 재생성 (기존 데이터 삭제 후 LLM으로 생성)
+  // 관계도 재생성 (SSE 버전)
+  const RELATIONSHIP_STEPS: AgentStep[] = [
+    { label: "사건 정보 분석 중…", status: "pending" },
+    { label: "등장 인물 추출 중…", status: "pending" },
+    { label: "관계 분석 및 저장 중…", status: "pending" },
+  ];
+
   const regenerateRelationships = useCallback(async () => {
     if (!caseData) return;
 
-    console.log("[Relationship Regenerate] 시작 - 기존 데이터 삭제 후 재생성");
+    console.log("[Relationship Regenerate] 시작 - SSE 버전");
 
     setRelationshipLoading(true);
-    try {
-      const url = `http://localhost:8000/api/v1/relationships/${caseData.id}/generate?force=true`;
-      console.log("[Relationship Regenerate] 요청 URL:", url);
+    setRelationshipSteps(RELATIONSHIP_STEPS);
 
-      const response = await fetch(url, {
-        method: 'POST',
-      });
+    const token = localStorage.getItem("access_token");
+    const url = `http://localhost:8000/api/v1/relationships/${caseData.id}/generate-stream?force=true`;
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error("[Relationship Regenerate] Error Response:", errorText);
-        throw new Error(`관계도 재생성 중 오류가 발생했습니다. Status: ${response.status}`);
+    const eventSource = new EventSource(
+      `${url}&token=${encodeURIComponent(token || '')}`
+    );
+
+    eventSource.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+
+        if (data.type === "step") {
+          // 단계 진행 업데이트
+          setRelationshipSteps(prev =>
+            prev.map((step, idx) => {
+              if (idx < data.step) return { ...step, status: "done" };
+              if (idx === data.step) return { ...step, status: "in_progress", label: data.message || step.label };
+              return step;
+            })
+          );
+        } else if (data.type === "complete") {
+          // 완료 - 데이터 업데이트
+          console.log("[Relationship] 생성 완료:", data.relationships);
+          const relationshipData = data.relationships || { persons: [], relationships: [] };
+          setRelationshipData(relationshipData);
+          setRelationshipSteps(prev => prev.map(s => ({ ...s, status: "done" })));
+          eventSource.close();
+          setRelationshipLoading(false);
+        } else if (data.type === "error") {
+          console.error("[Relationship] 에러:", data.message);
+          alert(data.message || "관계도 생성 중 오류가 발생했습니다.");
+          eventSource.close();
+          setRelationshipLoading(false);
+          setRelationshipSteps([]);
+        }
+      } catch (err) {
+        console.error("[Relationship] 메시지 파싱 실패:", err);
       }
+    };
 
-      const result = await response.json();
-      console.log("[Relationship Regenerate] 생성 완료:", result);
-
-      // API 응답 구조가 { message: "...", data: { persons: [...], relationships: [...] } } 형태일 수 있음
-      const data = result.data || result;
-      setRelationshipData(data);
-    } catch (err) {
-      console.error("[Relationship Regenerate] 실패:", err);
+    eventSource.onerror = (error) => {
+      console.error("[Relationship] SSE 연결 오류:", error);
       alert("관계도 재생성에 실패했습니다.");
-    } finally {
+      eventSource.close();
       setRelationshipLoading(false);
-    }
+      setRelationshipSteps([]);
+    };
   }, [caseData]);
 
 
-  // 재분석 필요 여부 확인
-  // 타임라인 재생성 (기존 데이터 삭제 후 LLM으로 생성)
+  // 타임라인 재생성 (SSE 버전)
+  const TIMELINE_STEPS: AgentStep[] = [
+    { label: "사건 정보 분석 중…", status: "pending" },
+    { label: "타임라인 이벤트 추출 중…", status: "pending" },
+    { label: "시간순 정렬 및 저장 중…", status: "pending" },
+  ];
+
   const regenerateTimeline = async () => {
     if (!caseData) return;
 
-    console.log("[Timeline Regenerate] 시작 - 기존 데이터 삭제 후 재생성");
+    console.log("[Timeline Regenerate] 시작 - SSE 버전");
 
     setTimelineLoading(true);
-    try {
-      const url = `http://localhost:8000/api/v1/timeline/${caseData.id}/generate?force=true`;
-      console.log("[Timeline Regenerate] 요청 URL:", url);
+    setTimelineSteps(TIMELINE_STEPS);
 
-      const response = await fetch(url, {
-        method: 'POST',
-      });
+    const token = localStorage.getItem("access_token");
+    const url = `http://localhost:8000/api/v1/timeline/${caseData.id}/generate-stream?force=true`;
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error("[Timeline Regenerate] Error Response:", errorText);
-        throw new Error(`타임라인 재생성 중 오류가 발생했습니다. Status: ${response.status}`);
+    const eventSource = new EventSource(
+      `${url}&token=${encodeURIComponent(token || '')}`
+    );
+
+    eventSource.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+
+        if (data.type === "step") {
+          // 단계 진행 업데이트
+          setTimelineSteps(prev =>
+            prev.map((step, idx) => {
+              if (idx < data.step) return { ...step, status: "done" };
+              if (idx === data.step) return { ...step, status: "in_progress", label: data.message || step.label };
+              return step;
+            })
+          );
+        } else if (data.type === "complete") {
+          // 완료 - 데이터 업데이트
+          console.log("[Timeline] 생성 완료:", data.timelines);
+          setTimelineEvents(data.timelines || []);
+          setTimelineSteps(prev => prev.map(s => ({ ...s, status: "done" })));
+          eventSource.close();
+          setTimelineLoading(false);
+        } else if (data.type === "error") {
+          console.error("[Timeline] 에러:", data.message);
+          alert(data.message || "타임라인 생성 중 오류가 발생했습니다.");
+          eventSource.close();
+          setTimelineLoading(false);
+          setTimelineSteps([]);
+        }
+      } catch (err) {
+        console.error("[Timeline] 메시지 파싱 실패:", err);
       }
+    };
 
-      const data = await response.json();
-      console.log("[Timeline Regenerate] 생성된 타임라인 개수:", data.length);
-
-      setTimelineEvents(data);
-    } catch (err) {
-      console.error("[Timeline Regenerate] 실패:", err);
+    eventSource.onerror = (error) => {
+      console.error("[Timeline] SSE 연결 오류:", error);
       alert("타임라인 재생성에 실패했습니다.");
-    } finally {
+      eventSource.close();
       setTimelineLoading(false);
-    }
+      setTimelineSteps([]);
+    };
   };
 
   // 타임라인 데이터 가져오기 (caseData 설정 시)
@@ -2117,12 +2177,20 @@ export function CaseDetailPage({
               </div>
             </CardHeader>
             <CardContent>
-              {timelineLoading ? (
-                <div className="flex flex-col items-center justify-center py-12 text-muted-foreground">
-                  <video src="/assets/loading-card.mp4" autoPlay loop muted playsInline className="h-20 w-20 mb-2" style={{ mixBlendMode: 'multiply', opacity: 0.3 }} />
-                  타임라인 데이터 로딩 중...
-                </div>
-              ) : timelineEvents.length === 0 ? (
+              <div
+                className="relative"
+                style={timelineLoading && timelineSteps.length > 0 ? { maxHeight: "70vh", overflow: "hidden" } : undefined}
+              >
+                {/* 타임라인 생성 에이전트 로딩 오버레이 */}
+                {timelineLoading && timelineSteps.length > 0 && (
+                  <AgentLoadingOverlay steps={timelineSteps} />
+                )}
+                {timelineLoading ? (
+                  <div className="flex flex-col items-center justify-center py-12 text-muted-foreground">
+                    <video src="/assets/loading-card.mp4" autoPlay loop muted playsInline className="h-20 w-20 mb-2" style={{ mixBlendMode: 'multiply', opacity: 0.3 }} />
+                    타임라인 데이터 로딩 중...
+                  </div>
+                ) : timelineEvents.length === 0 ? (
                 <div className="text-center py-12">
                   <p className="text-muted-foreground text-sm mb-4">타임라인 이벤트가 없습니다.</p>
                   <Button onClick={regenerateTimeline} variant="outline">
@@ -2367,6 +2435,7 @@ export function CaseDetailPage({
                   })()}
                 </div>
               )}
+              </div>
             </CardContent>
           </Card>
         </TabsContent>
@@ -2386,19 +2455,28 @@ export function CaseDetailPage({
               </div>
             </CardHeader>
             <CardContent className="p-0">
-              {caseData?.id ? (
-                <RelationshipEditor
-                  caseId={String(caseData.id)}
-                  data={relationshipData}
-                  loading={relationshipLoading}
-                  onRefresh={regenerateRelationships}
-                />
-              ) : (
-                <div className="flex flex-col items-center justify-center h-[600px] text-muted-foreground">
-                  <video src="/assets/loading-card.mp4" autoPlay loop muted playsInline className="h-20 w-20 mb-3" style={{ mixBlendMode: 'multiply', opacity: 0.3 }} />
-                  <p className="text-sm">사건 정보를 불러오는 중...</p>
-                </div>
-              )}
+              <div
+                className="relative"
+                style={relationshipLoading && relationshipSteps.length > 0 ? { maxHeight: "70vh", overflow: "hidden" } : undefined}
+              >
+                {/* 관계도 생성 에이전트 로딩 오버레이 */}
+                {relationshipLoading && relationshipSteps.length > 0 && (
+                  <AgentLoadingOverlay steps={relationshipSteps} />
+                )}
+                {caseData?.id ? (
+                  <RelationshipEditor
+                    caseId={String(caseData.id)}
+                    data={relationshipData}
+                    loading={relationshipLoading}
+                    onRefresh={regenerateRelationships}
+                  />
+                ) : (
+                  <div className="flex flex-col items-center justify-center h-[600px] text-muted-foreground">
+                    <video src="/assets/loading-card.mp4" autoPlay loop muted playsInline className="h-20 w-20 mb-3" style={{ mixBlendMode: 'multiply', opacity: 0.3 }} />
+                    <p className="text-sm">사건 정보를 불러오는 중...</p>
+                  </div>
+                )}
+              </div>
             </CardContent>
           </Card>
         </TabsContent>
