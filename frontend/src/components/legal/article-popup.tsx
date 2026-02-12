@@ -15,6 +15,7 @@ interface ArticleLinkProps {
   lawName: string;
   articleNumber: string;
   paragraph?: string;
+  highlights?: string[];
   children: React.ReactNode;
 }
 
@@ -22,6 +23,7 @@ export function ArticleLink({
   lawName,
   articleNumber,
   paragraph,
+  highlights,
   children,
 }: ArticleLinkProps) {
   const [open, setOpen] = useState(false);
@@ -125,6 +127,33 @@ export function ArticleLink({
     return `제${num}조`;
   };
 
+  // 키워드 하이라이트: 텍스트 내 매칭 키워드에 마크 처리
+  const highlightText = (text: string): React.ReactNode => {
+    if (!highlights || highlights.length === 0) return text;
+
+    const validKeywords = highlights.filter((k) => k.trim().length >= 2);
+    if (validKeywords.length === 0) return text;
+
+    const escaped = validKeywords.map((k) =>
+      k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+    );
+    const pattern = new RegExp(`(${escaped.join("|")})`, "gi");
+    const parts = text.split(pattern);
+
+    return parts.map((part, i) =>
+      pattern.test(part) ? (
+        <mark
+          key={i}
+          className="bg-amber-100 text-amber-900 dark:bg-amber-400/20 dark:text-amber-200 rounded-sm px-0.5"
+        >
+          {part}
+        </mark>
+      ) : (
+        part
+      )
+    );
+  };
+
   return (
     <span className="relative inline">
       <button
@@ -138,57 +167,62 @@ export function ArticleLink({
       {open && (
         <div
           ref={popupRef}
-          className="absolute z-50 left-0 top-full mt-1 overflow-hidden rounded-2xl shadow-lg bg-gray-50"
-          style={{ minWidth: "320px", maxWidth: "400px" }}
+          className="absolute z-50 left-0 top-full mt-2 overflow-hidden rounded-xl ring-1 ring-black/10 shadow-[0_8px_30px_rgba(0,0,0,0.12)] bg-white dark:bg-zinc-900 dark:ring-white/10"
+          style={{ minWidth: "480px", maxWidth: "560px" }}
         >
           {/* 헤더 */}
-          <div className="px-5 pt-4 pb-3 flex items-start justify-between">
-            <span className="text-base font-semibold text-gray-800">
-              {lawName} {formatArticleNumber(articleNumber)}
-              {article?.article_title && ` (${article.article_title})`}
-            </span>
+          <div className="px-5 py-3.5 flex items-center justify-between border-b border-zinc-100 dark:border-zinc-800">
+            <div className="flex items-center gap-2.5">
+              <div className="w-1 h-5 rounded-full bg-blue-500 shrink-0" />
+              <span className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+                {lawName} {formatArticleNumber(articleNumber)}
+                {article?.article_title && (
+                  <span className="font-normal text-zinc-500 dark:text-zinc-400"> ({article.article_title})</span>
+                )}
+              </span>
+            </div>
             <button
               onClick={() => setOpen(false)}
-              className="text-gray-400 hover:text-gray-600 ml-3"
+              className="p-1 rounded-md text-zinc-400 hover:text-zinc-700 hover:bg-zinc-100 dark:hover:text-zinc-200 dark:hover:bg-zinc-800 transition-colors"
             >
-              <X className="h-5 w-5" />
+              <X className="h-4 w-4" />
             </button>
           </div>
 
           {/* 내용 */}
-          <div className="px-5 pb-5 overflow-y-auto max-h-60">
+          <div className="px-5 py-4 overflow-y-auto max-h-80">
             {loading ? (
-              <div className="flex items-center justify-center py-6">
-                <Loader2 className="h-5 w-5 animate-spin text-gray-400" />
+              <div className="flex items-center justify-center py-8">
+                <Loader2 className="h-5 w-5 animate-spin text-zinc-400" />
               </div>
             ) : error ? (
-              <div className="text-center py-4 text-gray-500 text-sm">
+              <div className="text-center py-6 text-zinc-500 text-sm">
                 {error}
               </div>
             ) : article ? (
-              <div>
+              <div className="space-y-2.5">
                 {article.paragraphs.length > 0 ? (
                   paragraph ? (
                     (() => {
                       const targetPara = article.paragraphs.find(p => p.number === paragraph);
                       return targetPara ? (
-                        <p className="text-gray-700 text-sm leading-relaxed">
-                          {targetPara.content}
+                        <p className="text-zinc-700 dark:text-zinc-300 text-[13px] leading-[1.8]">
+                          {highlightText(targetPara.content)}
                         </p>
                       ) : (
-                        <p className="text-sm text-gray-500">해당 항을 찾을 수 없습니다.</p>
+                        <p className="text-sm text-zinc-500">해당 항을 찾을 수 없습니다.</p>
                       );
                     })()
                   ) : (
                     article.paragraphs.map((para) => (
-                      <p key={para.number} className="text-gray-700 text-sm leading-relaxed mb-2">
-                        {para.content}
+                      <p key={para.number} className="text-zinc-700 dark:text-zinc-300 text-[13px] leading-[1.8]">
+                        {highlightText(para.content)}
                       </p>
                     ))
                   )
                 ) : (
-                  <p className="text-sm leading-relaxed whitespace-pre-wrap text-gray-700">
-                    {article.content}
+                  <p className="text-[13px] leading-[1.8] whitespace-pre-wrap text-zinc-700 dark:text-zinc-300">
+                    {highlightText(article.content)}
                   </p>
                 )}
               </div>

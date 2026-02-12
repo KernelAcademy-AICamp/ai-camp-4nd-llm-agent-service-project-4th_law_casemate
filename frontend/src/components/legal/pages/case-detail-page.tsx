@@ -8,9 +8,10 @@ import {
   type PrecedentData,
 } from "@/lib/sample-data";
 import { useSearch, type SimilarCaseResult } from "@/contexts/search-context";
-import { Loader2 } from "lucide-react";
+import { Loader2, AlertTriangle } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { ArticleLink } from "@/components/legal/article-popup";
 
 // API 응답 타입
 interface CaseApiResponse {
@@ -31,6 +32,7 @@ interface CaseApiResponse {
   deadline_at_end: string | null;
   description: string | null;
   analyzed_at: string | null;
+  analysis_stale: boolean;
 }
 
 // 유사 판례 API 응답 타입
@@ -280,6 +282,8 @@ export function CaseDetailPage({
 
         setCaseData(mappedCase);
         setOriginalDescription(data.description || "");
+        setAnalysisStale(data.analysis_stale || false);
+        setAnalyzedAt(data.analyzed_at || null);
         setIsLoadingCase(false); // 사건 데이터 로딩 완료 → 페이지 즉시 표시
 
         // AI 분석: analyzed_at 유무로 분기
@@ -302,6 +306,10 @@ export function CaseDetailPage({
                 claims: analyzed.claims || "",
                 legalBasis: "",
               });
+              // crime_names를 caseData에 주입
+              if (analyzed.crime_names?.length) {
+                setCaseData(prev => prev ? { ...prev, crimeNames: analyzed.crime_names } : prev);
+              }
               // 분석된 summary + facts로 관련 법령 검색
               const searchQuery = `${analyzed.summary} ${analyzed.facts}`;
               if (searchQuery.trim()) {
@@ -462,6 +470,10 @@ export function CaseDetailPage({
     }
   };
 
+  // 원문 변경 감지 (재분석 필요 알림)
+  const [analysisStale, setAnalysisStale] = useState(false);
+  const [analyzedAt, setAnalyzedAt] = useState<string | null>(null);
+
   // AI 분석 새로고침 (강제 재분석)
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [agentSteps, setAgentSteps] = useState<AgentStep[]>([]);
@@ -518,9 +530,15 @@ export function CaseDetailPage({
         claims: analyzed.claims || "",
         legalBasis: "",
       });
+      // crime_names를 caseData에 주입
+      if (analyzed.crime_names?.length) {
+        setCaseData(prev => prev ? { ...prev, crimeNames: analyzed.crime_names } : prev);
+      }
 
       // step 4: 법령 검색
       setAgentSteps(prev => advanceStep(prev, 4));
+      setAnalysisStale(false); // 재분석 완료 → stale 해제
+      setAnalyzedAt(new Date().toISOString());
       console.log("✅ AI 분석 새로고침 완료");
       fetchRelatedLaws();
     } catch (err) {
@@ -586,7 +604,12 @@ export function CaseDetailPage({
           ? `${updatedData.incident_date} ~ ${updatedData.incident_date_end}`
           : updatedData.incident_date || "",
       } : null);
-      setOriginalDescription(updatedData.description || "");
+      // 원문이 실제로 바뀌었고, 기존 분석이 있으면 stale 표시
+      const newDesc = updatedData.description || "";
+      if (newDesc !== originalDescription && overviewData.summary) {
+        setAnalysisStale(true);
+      }
+      setOriginalDescription(newDesc);
     } catch (err) {
       console.error("사건 정보 저장 실패:", err);
       alert("저장에 실패했습니다.");
@@ -1376,17 +1399,45 @@ export function CaseDetailPage({
                 </CardTitle>
                 {/* 서브 탭에 따라 다른 버튼 표시 */}
                 {detailSubTab === "analysis" ? (
+                  <div className="flex flex-col items-end gap-1">
                   <div className="flex items-center gap-2">
-                    {/* AI 분석 새로고침 버튼 */}
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      disabled={isRefreshing || isSaving}
-                      onClick={refreshAnalysis}
-                    >
-                      <RefreshCw className={`h-4 w-4 mr-2 ${isRefreshing ? 'animate-spin' : ''}`} />
-                      새로고침
-                    </Button>
+                    {/* AI 분석 갱신 버튼 + 말풍선 래퍼 */}
+                    <div className="relative">
+                      {analysisStale && (
+                        <div
+                          className="absolute bottom-full left-1/2 -translate-x-1/2 mb-3 z-10"
+                          style={{ animation: "stale-popup-in 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards" }}
+                        >
+                          <div className="relative backdrop-blur-sm bg-white/95 border border-[#EF4444]/20 rounded-xl shadow-[0_4px_24px_rgba(239,68,68,0.1)] px-4 py-2.5 whitespace-nowrap">
+                            <div className="flex items-center gap-2.5">
+                              <div className="w-1.5 h-1.5 rounded-full bg-[#EF4444] animate-pulse" />
+                              <p className="text-[12px] font-medium text-zinc-700">원문이 수정되었습니다</p>
+                              <button
+                                onClick={() => setAnalysisStale(false)}
+                                className="p-0.5 rounded-full text-zinc-300 hover:text-[#EF4444] hover:bg-[#EF4444]/5 transition-all"
+                              >
+                                <svg className="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M18 6L6 18M6 6l12 12" /></svg>
+                              </button>
+                            </div>
+                            {/* 말풍선 꼬리 */}
+                            <div className="absolute -bottom-[5px] left-1/2 -translate-x-1/2 w-2.5 h-2.5 bg-white/95 border-r border-b border-[#EF4444]/20 rotate-45" />
+                          </div>
+                        </div>
+                      )}
+                      <Button
+                        size="sm"
+                        variant={analysisStale ? "default" : "outline"}
+                        disabled={isRefreshing || isSaving}
+                        onClick={refreshAnalysis}
+                        className={analysisStale
+                          ? "bg-[#EF4444] hover:bg-[#DC2626] text-white shadow-sm transition-all duration-200"
+                          : "transition-all duration-200"
+                        }
+                      >
+                        <RefreshCw className={`h-4 w-4 mr-2 ${isRefreshing ? 'animate-spin' : ''}`} />
+                        AI 분석 갱신
+                      </Button>
+                    </div>
                     {/* 편집/저장 버튼 */}
                     <Button
                       size="sm"
@@ -1414,6 +1465,12 @@ export function CaseDetailPage({
                         </>
                       )}
                     </Button>
+                  </div>
+                  {analyzedAt && (
+                    <p className="text-xs italic text-zinc-400 pr-2 mt-1">
+                      마지막 분석: {new Date(analyzedAt).toLocaleDateString("ko-KR", { year: "numeric", month: "long", day: "numeric" })}
+                    </p>
+                  )}
                   </div>
                 ) : (
                   <Button
@@ -1737,7 +1794,7 @@ export function CaseDetailPage({
                           className="text-sm"
                         />
                       ) : (
-                        <div className="text-sm text-muted-foreground leading-[1.8] prose prose-sm max-w-none">
+                        <div className="text-sm text-muted-foreground leading-relaxed prose prose-sm max-w-none">
                           <ReactMarkdown remarkPlugins={[remarkGfm]}>
                             {overviewData.summary}
                           </ReactMarkdown>
@@ -1779,7 +1836,7 @@ export function CaseDetailPage({
                           <Badge
                             key={`crime-${index}`}
                             variant="default"
-                            className="font-normal text-xs bg-transparent text-red-600 dark:text-red-400"
+                            className="font-normal text-xs bg-transparent text-[#EF4444]"
                           >
                             {name}
                           </Badge>
@@ -1894,15 +1951,24 @@ export function CaseDetailPage({
                                   {tag}
                                 </Badge>
                               ))}
-                              {/* API 검색 결과 태그 */}
+                              {/* API 검색 결과 태그 - 클릭 시 법조항 팝업 */}
                               {relatedLaws.map((law, index) => (
-                                <Badge
+                                <ArticleLink
                                   key={`${law.law_name}-${law.article_number}-${index}`}
-                                  variant="outline"
-                                  className="font-normal text-xs"
+                                  lawName={law.law_name}
+                                  articleNumber={law.article_number}
+                                  highlights={[
+                                    ...(extractedIssues?.crime_names || []),
+                                    ...(extractedIssues?.keywords || []),
+                                  ]}
                                 >
-                                  {law.law_name} 제{law.article_number}조({law.article_title})
-                                </Badge>
+                                  <Badge
+                                    variant="outline"
+                                    className="font-normal text-xs cursor-pointer hover:bg-accent"
+                                  >
+                                    {law.law_name} 제{law.article_number}조({law.article_title})
+                                  </Badge>
+                                </ArticleLink>
                               ))}
                               {manualLawTags.length === 0 && relatedLaws.length === 0 && (
                                 <span className="text-sm text-muted-foreground">관련 법령이 없습니다.</span>

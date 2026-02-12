@@ -236,7 +236,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
                   {pwMessage && (
                     <p className={cn(
                       "text-sm",
-                      pwMessage.type === "success" ? "text-green-600" : "text-red-500"
+                      pwMessage.type === "success" ? "text-green-600" : "text-[#EF4444]"
                     )}>
                       {pwMessage.text}
                     </p>

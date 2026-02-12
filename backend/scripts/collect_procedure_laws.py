@@ -30,7 +30,7 @@ load_dotenv()
 # 설정
 QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
 QDRANT_PORT = int(os.getenv("QDRANT_PORT", "6333"))
-COLLECTION_NAME = "laws"
+COLLECTION_NAME = "laws_hybrid"
 
 # 수집 대상 절차법
 TARGET_LAWS = ["민사소송법"]  # 형사소송법은 이미 완료

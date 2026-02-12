@@ -135,55 +135,42 @@ function cloneEditorDom(editor: Editor): HTMLElement {
 }
 
 /**
- * HTML → PDF 내보내기 (html2pdf.js)
- * editor가 있으면 DOM 클론 방식, 없으면 content fallback
+ * HTML → PDF 내보내기 (브라우저 인쇄 → PDF 저장)
+ * html2canvas는 화면 밖 요소를 캡처하지 못해 빈 PDF가 생기는 문제가 있어
+ * 새 창에서 문서만 렌더링 후 브라우저 인쇄 기능을 사용
  */
 export async function exportToPdf(title: string, content: string, editor?: Editor | null): Promise<void> {
-  const html2pdf = (await import("html2pdf.js")).default;
-
-  const style = document.createElement("style");
-  style.textContent = EDITOR_CSS_FOR_EXPORT;
-  document.head.appendChild(style);
-
-  const container = document.createElement("div");
-  container.style.position = "absolute";
-  container.style.left = "-9999px";
-  container.style.top = "0";
-  container.style.width = "210mm";
-  container.style.padding = "15mm 20mm";
-  container.style.background = "#fff";
-
+  let htmlBody: string;
   if (editor) {
     const clone = cloneEditorDom(editor);
-    container.appendChild(clone);
+    htmlBody = clone.outerHTML;
   } else {
-    // fallback: content HTML을 ProseMirror 클래스 안에 삽입
-    const wrapper = document.createElement("div");
-    wrapper.className = "ProseMirror";
-    wrapper.innerHTML = content;
-    container.appendChild(wrapper);
+    htmlBody = `<div class="ProseMirror">${content}</div>`;
   }
 
-  document.body.appendChild(container);
-
-  // 폰트 로딩 대기
-  await document.fonts.ready;
-
-  try {
-    await html2pdf()
-      .set({
-        margin: [15, 20, 15, 20],
-        filename: `${title || "document"}.pdf`,
-        image: { type: "jpeg", quality: 0.98 },
-        html2canvas: { scale: 2, useCORS: true, logging: false },
-        jsPDF: { unit: "mm", format: "a4", orientation: "portrait" },
-      })
-      .from(container)
-      .save();
-  } finally {
-    document.body.removeChild(container);
-    document.head.removeChild(style);
+  const printWindow = window.open("", "_blank");
+  if (!printWindow) {
+    throw new Error("팝업이 차단되었습니다. 팝업 허용 후 다시 시도해주세요.");
   }
+
+  printWindow.document.write(`<!DOCTYPE html>
+<html lang="ko"><head><meta charset="UTF-8">
+<title>${title || "문서"}</title>
+<style>
+@page { size: A4; margin: 20mm; }
+body { margin: 0; padding: 20mm; font-family: 'Malgun Gothic', '맑은 고딕', sans-serif; background: #fff; }
+@media print { body { padding: 0; } }
+${EDITOR_CSS_FOR_EXPORT}
+</style>
+</head><body>${htmlBody}</body></html>`);
+  printWindow.document.close();
+
+  printWindow.onload = () => {
+    setTimeout(() => {
+      printWindow.focus();
+      printWindow.print();
+    }, 300);
+  };
 }
 
 /**

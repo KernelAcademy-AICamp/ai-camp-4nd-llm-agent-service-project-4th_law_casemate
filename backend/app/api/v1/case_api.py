@@ -3,12 +3,14 @@
 - POST /api/v1/cases: 사건 생성
 - GET /api/v1/cases: 사건 목록 조회 (law_firm_id 기준)
 - GET /api/v1/cases/{case_id}: 사건 상세 조회
-- POST /api/v1/cases/{case_id}/analyze: 사건 내용 분석 (summary, facts, claims 추출)
+- POST /api/v1/cases/{case_id}/analyze: 사건 분석 (summary, facts, claims + crime_names, legal_keywords, legal_laws 통합 추출)
 """
 
 import os
+import re
 import json
 import hashlib
+import traceback
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
@@ -68,6 +70,7 @@ class CaseResponse(BaseModel):
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     analyzed_at: Optional[datetime] = None
+    analysis_stale: Optional[bool] = False
 
     class Config:
         from_attributes = True
@@ -211,15 +214,24 @@ async def get_case_detail(
         if case.law_firm_id != current_user.firm_id:
             raise HTTPException(status_code=403, detail="해당 사건에 접근할 권한이 없습니다")
 
-        # 분석 캐시 존재 여부 확인
+        # 분석 캐시 존재 여부 + 원문 변경 감지
         cached = db.query(CaseAnalysis).filter(CaseAnalysis.case_id == case_id).first()
         analyzed_at = cached.analyzed_at if cached else None
 
-        print(f"✅ 사건 상세 조회 완료: {case.title}, analyzed_at={analyzed_at}")
+        # 원문이 분석 이후 변경되었는지 확인 (description_hash 비교)
+        analysis_stale = False
+        if cached and cached.description_hash and case.description:
+            current_hash = hashlib.sha256(case.description.encode()).hexdigest()
+            analysis_stale = cached.description_hash != current_hash
 
-        # ORM → CaseResponse dict에 analyzed_at 주입
+        print(f"✅ 사건 상세 조회 완료: {case.title}, analyzed_at={analyzed_at}, analysis_stale={analysis_stale}")
+
+        # ORM → CaseResponse dict에 분석 상태 주입
         response = CaseResponse.model_validate(case)
-        return response.model_dump() | {"analyzed_at": analyzed_at.isoformat() if analyzed_at else None}
+        return response.model_dump() | {
+            "analyzed_at": analyzed_at.isoformat() if analyzed_at else None,
+            "analysis_stale": analysis_stale,
+        }
 
     except HTTPException:
         raise
@@ -235,6 +247,8 @@ class CaseAnalyzeResponse(BaseModel):
     summary: str
     facts: str
     claims: str
+    crime_names: list[str] = []
+    legal_keywords: list[str] = []
 
 
 async def reanalyze_case_evidences(db: Session, case_id: int) -> int:
@@ -341,7 +355,6 @@ async def reanalyze_case_evidences(db: Session, case_id: int) -> int:
                 content = response.choices[0].message.content or ""
 
                 # JSON 파싱
-                import re
                 try:
                     json_match = re.search(r'```json\s*(.*?)\s*```', content, re.DOTALL)
                     if json_match:
@@ -395,7 +408,6 @@ async def reanalyze_case_evidences(db: Session, case_id: int) -> int:
 
     except Exception as e:
         print(f"❌ [Evidence Reanalysis] 전체 실패: {str(e)}")
-        import traceback
         print(traceback.format_exc())
         return 0
 
@@ -451,7 +463,6 @@ async def generate_timeline_and_relationships_background(case_id: int):
 
     except Exception as e:
         print(f"[Background Task] 에러 발생: {type(e).__name__} - {str(e)}")
-        import traceback
         print(f"[Background Task] 트레이스백:\n{traceback.format_exc()}")
         db.rollback()
     finally:
@@ -492,12 +503,16 @@ async def analyze_case(
 
         # 캐시 조회: case_analyses 테이블에서 먼저 확인 (force=true면 스킵)
         cached_summary = db.query(CaseAnalysis).filter(CaseAnalysis.case_id == case_id).first()
-        if cached_summary and not force:
+        if cached_summary and cached_summary.summary and not force:
             print(f"✅ 캐시 히트: case_id={case_id}")
+            cached_crime = json.loads(cached_summary.crime_names) if cached_summary.crime_names else []
+            cached_keywords = json.loads(cached_summary.legal_keywords) if cached_summary.legal_keywords else []
             return CaseAnalyzeResponse(
                 summary=cached_summary.summary or "",
                 facts=cached_summary.facts or "",
-                claims=cached_summary.claims or ""
+                claims=cached_summary.claims or "",
+                crime_names=cached_crime,
+                legal_keywords=cached_keywords,
             )
 
         if force:
@@ -524,8 +539,8 @@ async def analyze_case(
 
         # 시스템 프롬프트 (역할/페르소나/금지 규칙)
         system_prompt = """역할:
-너는 법률 사건 관리 시스템의 "사건 개요 요약 생성기"다.
-변호사가 작성한 상담 원문을 기반으로 사건 개요를 정리한다.
+너는 법률 사건 관리 시스템의 "사건 분석기"다.
+변호사가 작성한 상담 원문을 기반으로 사건 개요를 정리하고, 적용 가능한 죄명·법적 쟁점·관련 법조문을 추출한다.
 
 [JSON 출력 규칙] ★필수★
 - facts 필드: 반드시 문자열 배열 ["사실1", "사실2", ...] 형태로 출력
@@ -539,6 +554,15 @@ async def analyze_case(
 - 인물명은 강조 표시 (예: **김OO**, **박OO**)
 - 날짜는 `YYYY-MM-DD` 형식으로 표시
 - 금액은 **굵게** 표시 (예: **5,000만원**)
+
+[법적 분석 규칙]
+- crime_names: 사건의 핵심 법적 근거 (1~5개). 사건 유형에 따라 다름:
+  - 형사 사건 → 정식 죄명 (예: "명예훼손죄", "주거침입죄", "사기죄")
+  - 민사 사건 → 청구원인/소인 (예: "손해배상청구", "부당이득반환청구", "소유권이전등기청구")
+  - 형사·민사 혼합이면 둘 다 포함
+- legal_keywords: 위 핵심 근거 외 부수적 법적 쟁점/개념 (3~7개) (예: "인격권 침해", "불법행위", "위자료", "과실상계")
+- legal_laws: 관련 법조문 (3~7개). "법령명 제N조" 형식 (예: "형법 제307조", "민법 제750조")
+  - 확실하지 않은 것은 제외, 명확히 관련된 것만 포함
 
 [금지 규칙]
 - 원문에 없는 사실, 날짜, 인물, 금액, 죄명 추가 금지
@@ -606,11 +630,15 @@ async def analyze_case(
   "claims": {{
     "형사": ["의뢰인 **A**가 상대방 **B**를 **~혐의**로 고소 검토함"],
     "민사": ["의뢰인 **A**가 상대방 **B**에게 **손해배상** 청구함"]
-  }}
+  }},
+  "crime_names": ["명예훼손죄", "모욕죄"],
+  "legal_keywords": ["인격권 침해", "불법행위", "위자료"],
+  "legal_laws": ["형법 제307조", "민법 제750조"]
 }}
 ★ facts는 반드시 JSON 배열(Array)로 출력. 문자열 금지.
 ★ 형사/민사 양쪽 모두 검토하여 해당되면 출력.
-★ 모든 텍스트는 마크다운 형식으로 작성 (중요 단어는 **굵게**)."""
+★ 모든 텍스트는 마크다운 형식으로 작성 (중요 단어는 **굵게**).
+★ crime_names, legal_keywords, legal_laws는 반드시 문자열 배열로 출력."""
 
         # OpenAI API 호출
         response = openai_client.chat.completions.create(
@@ -620,7 +648,7 @@ async def analyze_case(
                 {"role": "user", "content": user_prompt}
             ],
             temperature=0.2,
-            max_tokens=2500
+            max_tokens=3000
         )
 
         result_text = response.choices[0].message.content.strip()
@@ -640,12 +668,17 @@ async def analyze_case(
         facts_raw = parsed.get("facts", "")
         claims_raw = parsed.get("claims", "")
 
+        # 법적 분석 결과 추출
+        crime_names = parsed.get("crime_names", [])
+        legal_keywords = parsed.get("legal_keywords", [])
+        legal_laws = parsed.get("legal_laws", [])
+        print(f"🔍 법적 분석: crime_names={crime_names}, keywords={legal_keywords}, laws={legal_laws}")
+
         print(f"🔍 파싱된 타입: summary={type(summary_raw).__name__}, facts={type(facts_raw).__name__}, claims={type(claims_raw).__name__}")
         print(f"🔍 facts_raw 내용: {facts_raw}")
         print(f"🔍 claims_raw 내용: {claims_raw}")
 
         # facts가 문자열이면 배열로 변환
-        import re
         if isinstance(facts_raw, str) and facts_raw.strip():
             # 문장 단위로 분리 (마침표, 함, 됨, 음, 임 등으로 끝나는 부분)
             sentences = re.split(r'(?<=[.함됨음임])\s+', facts_raw.strip())
@@ -697,6 +730,11 @@ async def analyze_case(
         # description_hash 계산
         description_hash = hashlib.sha256(case.description.encode()).hexdigest()
 
+        # 법적 분석 결과 JSON 직렬화
+        crime_names_json = json.dumps(crime_names, ensure_ascii=False) if crime_names else None
+        legal_keywords_json = json.dumps(legal_keywords, ensure_ascii=False) if legal_keywords else None
+        legal_laws_json = json.dumps(legal_laws, ensure_ascii=False) if legal_laws else None
+
         # 분석 결과를 case_analyses 테이블에 저장 (기존 레코드 있으면 업데이트)
         if cached_summary:
             cached_summary.summary = summary
@@ -704,6 +742,10 @@ async def analyze_case(
             cached_summary.claims = claims
             cached_summary.description_hash = description_hash
             cached_summary.analyzed_at = datetime.now()
+            cached_summary.crime_names = crime_names_json
+            cached_summary.legal_keywords = legal_keywords_json
+            cached_summary.legal_laws = legal_laws_json
+            cached_summary.legal_search_results = None  # 법령 검색 결과는 별도 호출 시 재생성
             print(f"💾 캐시 업데이트 완료: case_id={case_id}")
         else:
             new_summary = CaseAnalysis(
@@ -713,6 +755,9 @@ async def analyze_case(
                 claims=claims,
                 description_hash=description_hash,
                 analyzed_at=datetime.now(),
+                crime_names=crime_names_json,
+                legal_keywords=legal_keywords_json,
+                legal_laws=legal_laws_json,
             )
             db.add(new_summary)
             print(f"💾 캐시 신규 저장 완료: case_id={case_id}")
@@ -725,7 +770,9 @@ async def analyze_case(
         return CaseAnalyzeResponse(
             summary=summary,
             facts=facts,
-            claims=claims
+            claims=claims,
+            crime_names=crime_names,
+            legal_keywords=legal_keywords,
         )
 
     except json.JSONDecodeError as e:
@@ -791,32 +838,26 @@ async def update_case(
 
         # 전달된 필드만 업데이트
         update_data = request.model_dump(exclude_none=True)
-        description_changed = "description" in update_data and update_data["description"] != case.description
-
         for field, value in update_data.items():
             setattr(case, field, value)
-
-        # 원문(description) 변경 시에만 분석 캐시 무효화
-        if description_changed:
-            case_analysis = db.query(CaseAnalysis).filter(CaseAnalysis.case_id == case_id).first()
-            if case_analysis:
-                case_analysis.summary = None
-                case_analysis.facts = None
-                case_analysis.claims = None
-                case_analysis.legal_keywords = None
-                case_analysis.legal_laws = None
-                case_analysis.crime_names = None
-                case_analysis.legal_search_results = None
-                case_analysis.description_hash = None
-                case_analysis.analyzed_at = None
-                print(f"🗑️ 분석 캐시 무효화 완료: case_id={case_id}")
 
         db.commit()
         db.refresh(case)
 
-        print(f"✅ 사건 정보 수정 완료: case_id={case_id}, 수정 필드: {list(update_data.keys())}")
+        # 분석 stale 여부 계산
+        cached = db.query(CaseAnalysis).filter(CaseAnalysis.case_id == case_id).first()
+        analysis_stale = False
+        if cached and cached.description_hash and case.description:
+            current_hash = hashlib.sha256(case.description.encode()).hexdigest()
+            analysis_stale = cached.description_hash != current_hash
 
-        return case
+        print(f"✅ 사건 정보 수정 완료: case_id={case_id}, 수정 필드: {list(update_data.keys())}, analysis_stale={analysis_stale}")
+
+        response_data = CaseResponse.model_validate(case).model_dump()
+        analyzed_at = cached.analyzed_at if cached else None
+        response_data["analyzed_at"] = analyzed_at.isoformat() if analyzed_at else None
+        response_data["analysis_stale"] = analysis_stale
+        return response_data
 
     except HTTPException:
         raise

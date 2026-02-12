@@ -133,7 +133,7 @@ export function ProfileDialog({ open, onOpenChange, userInfo, onProfileUpdated }
           {message && (
             <p className={cn(
               "text-sm",
-              message.type === "success" ? "text-green-600" : "text-red-500"
+              message.type === "success" ? "text-green-600" : "text-[#EF4444]"
             )}>
               {message.text}
             </p>

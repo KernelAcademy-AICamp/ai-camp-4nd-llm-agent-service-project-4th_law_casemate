@@ -1053,9 +1053,9 @@ export function EvidenceUploadPage({}: EvidenceUploadPageProps) {
 
   const getDocumentTypeName = (type: string) => {
     const typeMap: Record<string, string> = {
-      complaint: "고소장",
-      notice: "내용증명",
-      civil_suit: "소장",
+      criminal_complaint: "고소장",
+      demand_letter: "내용증명",
+      civil_complaint: "소장",
     };
     return typeMap[type] || type;
   };

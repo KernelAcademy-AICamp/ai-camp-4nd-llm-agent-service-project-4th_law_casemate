@@ -20,7 +20,7 @@ class CollectionConfig:
     """Qdrant 컬렉션 설정"""
 
     # 컬렉션 이름
-    LAWS = "laws"
+    LAWS = "laws_hybrid"
     PRECEDENTS = "precedents"
     SUMMARIES = "precedent_summaries"
 

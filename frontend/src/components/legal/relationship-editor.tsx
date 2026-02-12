@@ -88,9 +88,9 @@ const roleConfig: Record<
   },
   가해자: {
     color: "text-[#EF4444]",
-    bgColor: "bg-red-50",
+    bgColor: "bg-[#EF4444]/5",
     borderColor: "border-[#EF4444]/30",
-    iconBg: "bg-gradient-to-br from-[#EF4444] to-[#F87171]",
+    iconBg: "bg-gradient-to-br from-[#EF4444] to-[#EF4444]/70",
     icon: <AlertCircle className="h-5 w-5 text-white" />,
   },
   증인: {

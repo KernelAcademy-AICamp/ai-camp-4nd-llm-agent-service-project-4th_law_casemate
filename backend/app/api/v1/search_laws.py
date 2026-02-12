@@ -9,6 +9,7 @@ v2.1: 추출된 법적 쟁점 DB 캐싱
 import asyncio
 import json
 import hashlib
+import traceback
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from typing import Optional
@@ -29,6 +30,12 @@ class SearchLawsRequest(BaseModel):
 class SearchLawsByCaseRequest(BaseModel):
     """사건 ID 기반 법령 검색 요청"""
     limit: Optional[int] = 8
+
+
+class SearchTermRequest(BaseModel):
+    """법률 용어 기반 조문 검색 요청 (BM25 로컬 검색, API 호출 없음)"""
+    term: str  # 법률 용어 (예: "주거침입죄", "손해배상청구")
+    limit: Optional[int] = 3
 
 
 class GetArticleRequest(BaseModel):
@@ -67,7 +74,6 @@ async def search_laws(request: SearchLawsRequest):
         print(f"✅ 법령 검색 완료: {results.get('total', 0)}건")
         return results
     except Exception as e:
-        import traceback
         print(f"❌ 법령 검색 오류: {str(e)}")
         print(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"법령 검색 중 오류 발생: {str(e)}")
@@ -203,10 +209,47 @@ async def search_laws_by_case(
     except HTTPException:
         raise
     except Exception as e:
-        import traceback
         print(f"❌ 법령 검색 오류: {str(e)}")
         print(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"법령 검색 중 오류 발생: {str(e)}")
+
+
+@router.post("/search-term")
+async def search_term(request: SearchTermRequest):
+    """
+    법률 용어 기반 관련 조문 검색 (BM25 로컬 검색 — 외부 API 호출 없음)
+
+    죄명("주거침입죄"), 청구유형("손해배상청구") 등 법률 용어를
+    BM25 키워드 매칭으로 관련 조문을 검색합니다.
+    FastEmbed 로컬 실행이므로 과금이 발생하지 않습니다.
+
+    - **term**: 법률 용어 (예: "주거침입죄", "손해배상청구")
+    - **limit**: 반환할 최대 결과 수 (기본 3)
+    """
+    print(f"📜 법률 용어 검색 (BM25): {request.term}")
+
+    try:
+        results = await asyncio.to_thread(
+            search_laws_service.search_by_term,
+            term=request.term,
+            limit=request.limit,
+        )
+
+        if results["total"] == 0:
+            raise HTTPException(
+                status_code=404,
+                detail=f"관련 법조항을 찾을 수 없습니다: {request.term}",
+            )
+
+        print(f"✅ 법률 용어 검색 완료: {results['total']}건")
+        return results
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ 법률 용어 검색 오류: {str(e)}")
+        print(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"법률 용어 검색 중 오류 발생: {str(e)}")
 
 
 @router.post("/article")
@@ -241,7 +284,6 @@ async def get_article(request: GetArticleRequest):
     except HTTPException:
         raise
     except Exception as e:
-        import traceback
         print(f"❌ 조문 조회 오류: {str(e)}")
         print(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"조문 조회 중 오류 발생: {str(e)}")

@@ -56,6 +56,7 @@ export interface CaseData {
   period?: string;
   parties?: Party[];
   timeline?: TimelineEvent[];
+  crimeNames?: string[];
 }
 
 export const sampleCases: CaseData[] = [
