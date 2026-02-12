@@ -4,7 +4,8 @@ import { useNavigate } from "react-router-dom";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Plus, Search, ArrowUpRight, Loader2 } from "lucide-react";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Plus, Search, ArrowUpRight, Loader2, Edit, Trash2, X } from "lucide-react";
 import { useState, useEffect } from "react";
 
 // API 응답 타입
@@ -56,6 +57,9 @@ export function CasesPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
+  const [isEditMode, setIsEditMode] = useState(false);
+  const [selectedCases, setSelectedCases] = useState<Set<string>>(new Set());
+  const [isDeleting, setIsDeleting] = useState(false);
 
   // API에서 사건 목록 조회
   useEffect(() => {
@@ -120,6 +124,91 @@ export function CasesPage() {
       c.clientName.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
+  // 편집 모드 토글
+  const toggleEditMode = () => {
+    setIsEditMode(!isEditMode);
+    if (isEditMode) {
+      // 편집 모드 종료 시 선택 초기화
+      setSelectedCases(new Set());
+    }
+  };
+
+  // 사건 선택 토글
+  const toggleCaseSelection = (caseId: string) => {
+    const newSelected = new Set(selectedCases);
+    if (newSelected.has(caseId)) {
+      newSelected.delete(caseId);
+    } else {
+      newSelected.add(caseId);
+    }
+    setSelectedCases(newSelected);
+  };
+
+  // 전체 선택/해제
+  const toggleSelectAll = () => {
+    if (selectedCases.size === filteredCases.length) {
+      setSelectedCases(new Set());
+    } else {
+      setSelectedCases(new Set(filteredCases.map((c) => c.id)));
+    }
+  };
+
+  // 일괄 삭제
+  const handleBulkDelete = async () => {
+    if (selectedCases.size === 0) {
+      alert("삭제할 사건을 선택해주세요.");
+      return;
+    }
+
+    const confirmed = confirm(
+      `선택한 ${selectedCases.size}개의 사건을 삭제하시겠습니까?\n\n이 작업은 되돌릴 수 없으며, 관련된 모든 데이터가 함께 삭제됩니다.`
+    );
+
+    if (!confirmed) return;
+
+    setIsDeleting(true);
+    try {
+      const token = localStorage.getItem("access_token");
+      if (!token) {
+        alert("로그인이 필요합니다.");
+        return;
+      }
+
+      // 선택된 사건들을 순차적으로 삭제
+      const deletePromises = Array.from(selectedCases).map((caseId) =>
+        fetch(`http://localhost:8000/api/v1/cases/${caseId}`, {
+          method: "DELETE",
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        })
+      );
+
+      const results = await Promise.all(deletePromises);
+      const failedCount = results.filter((r) => !r.ok).length;
+
+      if (failedCount > 0) {
+        alert(
+          `${selectedCases.size - failedCount}개 삭제 완료, ${failedCount}개 실패`
+        );
+      } else {
+        alert(`${selectedCases.size}개의 사건이 삭제되었습니다.`);
+      }
+
+      // 삭제된 사건들을 목록에서 제거
+      setCases((prev) =>
+        prev.filter((c) => !selectedCases.has(c.id))
+      );
+      setSelectedCases(new Set());
+      setIsEditMode(false);
+    } catch (err) {
+      console.error("일괄 삭제 실패:", err);
+      alert("사건 삭제에 실패했습니다.");
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
   // 로딩 상태
   if (isLoading) {
     return (
@@ -153,51 +242,130 @@ export function CasesPage() {
           <h2 className="text-lg font-semibold text-foreground">사건 목록</h2>
           <p className="text-xs text-muted-foreground mt-0.5">
             총 {filteredCases.length}건
+            {isEditMode && selectedCases.size > 0 && ` · ${selectedCases.size}개 선택됨`}
           </p>
         </div>
-        <Button onClick={() => navigate("/new-case")} className="gap-2 h-9 text-sm">
-          <Plus className="h-4 w-4" />
-          새 사건 등록
-        </Button>
+        <div className="flex items-center gap-2">
+          {isEditMode ? (
+            <>
+              {selectedCases.size > 0 && (
+                <Button
+                  onClick={handleBulkDelete}
+                  variant="destructive"
+                  className="gap-2 h-9 text-sm"
+                  disabled={isDeleting}
+                >
+                  {isDeleting ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      삭제 중...
+                    </>
+                  ) : (
+                    <>
+                      <Trash2 className="h-4 w-4" />
+                      삭제 ({selectedCases.size})
+                    </>
+                  )}
+                </Button>
+              )}
+              <Button
+                onClick={toggleEditMode}
+                variant="outline"
+                className="gap-2 h-9 text-sm"
+                disabled={isDeleting}
+              >
+                <X className="h-4 w-4" />
+                취소
+              </Button>
+            </>
+          ) : (
+            <>
+              <Button
+                onClick={toggleEditMode}
+                variant="outline"
+                className="gap-2 h-9 text-sm"
+              >
+                <Edit className="h-4 w-4" />
+                편집
+              </Button>
+              <Button onClick={() => navigate("/new-case")} className="gap-2 h-9 text-sm">
+                <Plus className="h-4 w-4" />
+                새 사건 등록
+              </Button>
+            </>
+          )}
+        </div>
       </div>
 
       {/* Search */}
-      <div className="relative max-w-sm">
-        <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground/50" />
-        <Input
-          placeholder="사건명 또는 의뢰인 검색..."
-          value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
-          className="pl-10 h-9 text-sm"
-        />
+      <div className="flex items-center justify-between gap-4">
+        <div className="relative max-w-sm flex-1">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground/50" />
+          <Input
+            placeholder="사건명 또는 의뢰인 검색..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="pl-10 h-9 text-sm"
+          />
+        </div>
+        {isEditMode && filteredCases.length > 0 && (
+          <Button
+            onClick={toggleSelectAll}
+            variant="outline"
+            className="h-9 text-sm"
+            disabled={isDeleting}
+          >
+            {selectedCases.size === filteredCases.length ? "전체 해제" : "전체 선택"}
+          </Button>
+        )}
       </div>
 
       {/* Cases Grid */}
       <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-        {filteredCases.map((caseItem) => (
-          <Card
-            key={caseItem.id}
-            className="border-border/40 cursor-pointer group hover:border-border/70 transition-all duration-200 hover:shadow-md"
-            onClick={() => navigate(`/cases/${caseItem.id}`)}
-          >
-            <CardContent className="p-5">
-              {/* Row 1: 사건 유형 태그 + 화살표 */}
-              <div className="flex items-center justify-between mb-3">
-                {caseItem.caseType ? (
-                  <span
-                    className="text-[11px] font-normal px-2.5 py-0.5 rounded-full"
-                    style={{
-                      backgroundColor: caseTypeStyle(caseItem.caseType).bg,
-                      color: caseTypeStyle(caseItem.caseType).text,
-                    }}
-                  >
-                    {caseItem.caseType}
-                  </span>
-                ) : (
-                  <span />
-                )}
-                <ArrowUpRight className="h-3.5 w-3.5 text-muted-foreground/30 group-hover:text-muted-foreground group-hover:translate-x-0.5 group-hover:-translate-y-0.5 transition-all duration-200" />
-              </div>
+        {filteredCases.map((caseItem) => {
+          const isSelected = selectedCases.has(caseItem.id);
+
+          return (
+            <Card
+              key={caseItem.id}
+              className={`border-border/40 cursor-pointer group hover:border-border/70 transition-all duration-200 hover:shadow-md ${
+                isEditMode && isSelected ? "ring-2 ring-primary bg-primary/5" : ""
+              } ${isDeleting ? "opacity-50 pointer-events-none" : ""}`}
+              onClick={() => {
+                if (isDeleting) return;
+                if (isEditMode) {
+                  toggleCaseSelection(caseItem.id);
+                } else {
+                  navigate(`/cases/${caseItem.id}`);
+                }
+              }}
+            >
+              <CardContent className="p-5">
+                {/* Row 1: 사건 유형 태그 + 화살표/체크박스 */}
+                <div className="flex items-center justify-between mb-3">
+                  {caseItem.caseType ? (
+                    <span
+                      className="text-[11px] font-normal px-2.5 py-0.5 rounded-full"
+                      style={{
+                        backgroundColor: caseTypeStyle(caseItem.caseType).bg,
+                        color: caseTypeStyle(caseItem.caseType).text,
+                      }}
+                    >
+                      {caseItem.caseType}
+                    </span>
+                  ) : (
+                    <span />
+                  )}
+                  {isEditMode ? (
+                    <Checkbox
+                      checked={isSelected}
+                      onCheckedChange={() => toggleCaseSelection(caseItem.id)}
+                      onClick={(e) => e.stopPropagation()}
+                    />
+                  ) : (
+                    <ArrowUpRight className="h-3.5 w-3.5 text-muted-foreground/30 group-hover:text-muted-foreground group-hover:translate-x-0.5 group-hover:-translate-y-0.5 transition-all duration-200" />
+                  )}
+                </div>
 
               {/* Row 2: 사건명 (주요 정보) */}
               <h3 className="font-semibold text-[15px] leading-snug line-clamp-2 text-foreground mb-1.5">
@@ -221,7 +389,8 @@ export function CasesPage() {
               </div>
             </CardContent>
           </Card>
-        ))}
+          );
+        })}
       </div>
 
       {/* Empty State */}

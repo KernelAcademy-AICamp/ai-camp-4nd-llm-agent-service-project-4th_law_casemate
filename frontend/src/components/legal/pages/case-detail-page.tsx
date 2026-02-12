@@ -718,32 +718,6 @@ export function CaseDetailPage({
     }
   }, [caseData]);
 
-  // 사건 삭제
-  const handleDeleteCase = useCallback(async () => {
-    if (!caseData || !id) return;
-
-    const confirmed = confirm(
-      `정말로 "${caseData.name}" 사건을 삭제하시겠습니까?\n\n이 작업은 되돌릴 수 없으며, 관련된 모든 데이터(타임라인, 관계도, 분석 결과 등)가 함께 삭제됩니다.`
-    );
-
-    if (!confirmed) return;
-
-    try {
-      const response = await fetch(`http://localhost:8000/api/v1/cases/${id}`, {
-        method: 'DELETE',
-      });
-
-      if (!response.ok) {
-        throw new Error('사건 삭제에 실패했습니다.');
-      }
-
-      alert('사건이 삭제되었습니다.');
-      navigate('/cases');
-    } catch (err) {
-      console.error('[Case Delete] 실패:', err);
-      alert('사건 삭제에 실패했습니다.');
-    }
-  }, [caseData, id, navigate]);
 
   // 재분석 필요 여부 확인
   // 타임라인 재생성 (기존 데이터 삭제 후 LLM으로 생성)
@@ -1316,15 +1290,6 @@ export function CaseDetailPage({
             >
               {caseData.status}
             </Badge>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-8 text-destructive hover:text-destructive hover:bg-destructive/10"
-              onClick={handleDeleteCase}
-            >
-              <Trash2 className="h-4 w-4 mr-2" />
-              사건 삭제
-            </Button>
           </div>
         </div>
 
