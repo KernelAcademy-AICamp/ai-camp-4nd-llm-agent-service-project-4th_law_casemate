@@ -764,7 +764,7 @@ export function CaseDetailPage({
   useEffect(() => {
     const hasOverviewData = overviewData.summary || overviewData.facts || overviewData.claims;
     if (caseData && hasOverviewData) {
-      fetchSimilarCases();
+      // fetchSimilarCases(); // TODO: Qdrant 설정 후 활성화
     }
   }, [caseData, overviewData.summary, overviewData.facts, overviewData.claims, fetchSimilarCases]);
 
