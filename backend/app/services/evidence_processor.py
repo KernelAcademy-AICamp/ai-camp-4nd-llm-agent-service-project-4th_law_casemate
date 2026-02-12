@@ -223,9 +223,42 @@ class EvidenceProcessor:
         for page_num in page_numbers:
             page = pdf_document[page_num]
 
-            # 페이지를 이미지로 변환
-            pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))  # 2배 해상도
+            # 페이지를 이미지로 변환 (3배 해상도)
+            pix = page.get_pixmap(matrix=fitz.Matrix(3, 3))  # 3배 해상도
             img_bytes = pix.tobytes("png")
+
+            # 이미지 전처리 (흑백 + 대비 + 선명도 + 이진화)
+            try:
+                from PIL import Image, ImageEnhance
+                from io import BytesIO
+                import numpy as np
+
+                # 1. 이미지 로드
+                image = Image.open(BytesIO(img_bytes))
+
+                # 2. 흑백(Grayscale) 변환
+                image = image.convert("L")
+
+                # 3. 대비(Contrast) 강화 (2.0배)
+                enhancer = ImageEnhance.Contrast(image)
+                image = enhancer.enhance(2.0)
+
+                # 4. 선명도(Sharpness) 증가 (1.5배)
+                enhancer = ImageEnhance.Sharpness(image)
+                image = enhancer.enhance(1.5)
+
+                # 5. 이진화(Binarization)
+                img_array = np.array(image)
+                threshold = 128
+                img_array = np.where(img_array > threshold, 255, 0).astype(np.uint8)
+                image = Image.fromarray(img_array)
+
+                # 6. 다시 bytes로 변환
+                buffer = BytesIO()
+                image.save(buffer, format="PNG")
+                img_bytes = buffer.getvalue()
+            except Exception as e:
+                logger.warning(f"⚠️ PDF 페이지 {page_num} 전처리 실패, 원본 사용: {e}")
 
             # Base64 인코딩
             img_base64 = base64.b64encode(img_bytes).decode("utf-8")
@@ -233,14 +266,26 @@ class EvidenceProcessor:
             # Vision API 호출
             try:
                 response = await self.client.chat.completions.create(
-                    model="gpt-4o-mini",
+                    model="gpt-4o",
                     messages=[
                         {
                             "role": "user",
                             "content": [
                                 {
                                     "type": "text",
-                                    "text": "이 이미지에서 모든 텍스트를 정확하게 추출해주세요. 법률 문서이므로 번호, 기호, 서명 등도 정확히 인식해주세요."
+                                    "text": """당신은 법률 문서 OCR 전문가입니다.
+
+**중요: 이 문서는 법원 제출용이므로 100% 정확한 텍스트 추출이 필수입니다.**
+
+작업 지침:
+1. 모든 텍스트를 한 글자도 빠뜨리지 않고 정확하게 추출하세요
+2. 숫자, 날짜, 시간, 금액, 이름, 주소 등은 특히 신중하게 확인하세요
+3. 오타나 추측이 있으면 안 됩니다 - 확실한 글자만 입력하세요
+4. 번호, 기호, 특수문자도 정확히 인식하세요
+5. 원본 문서의 줄바꿈과 단락 구조를 유지하세요
+6. 불명확한 글자는 [?]로 표시하세요
+
+추출된 텍스트만 출력하세요 (설명이나 주석 없이):"""
                                 },
                                 {
                                     "type": "image_url",
@@ -286,8 +331,8 @@ class EvidenceProcessor:
             await file.seek(0)
             file_content = await file.read()
 
-            # 1단계: low quality로 시도
-            result = await self._extract_with_vision(file_content, "low")
+            # 1단계: high quality로 시도 (원복: "low"로 변경)
+            result = await self._extract_with_vision(file_content, "high")
 
             if result["success"] and not result.get("quality_high", False):
                 # 품질이 낮다고 판단되면 high quality로 재시도
@@ -325,15 +370,52 @@ class EvidenceProcessor:
         import base64
         import json
         import re
+        from PIL import Image, ImageEnhance
+        from io import BytesIO
 
         logger.info(f"🌐 Vision API 호출 (detail={detail})")
+
+        # 이미지 전처리 (흑백 + 대비 + 선명도 + 이진화)
+        try:
+            # 1. 이미지 로드
+            image = Image.open(BytesIO(file_content))
+
+            # 2. 흑백(Grayscale) 변환
+            image = image.convert("L")
+            logger.info("✅ 이미지 흑백 변환 완료")
+
+            # 3. 대비(Contrast) 강화 (2.0배)
+            enhancer = ImageEnhance.Contrast(image)
+            image = enhancer.enhance(2.0)
+            logger.info("✅ 이미지 대비 증가 완료 (2.0배)")
+
+            # 4. 선명도(Sharpness) 증가 (1.5배)
+            enhancer = ImageEnhance.Sharpness(image)
+            image = enhancer.enhance(1.5)
+            logger.info("✅ 이미지 선명도 증가 완료 (1.5배)")
+
+            # 5. 이진화(Binarization) - 임계값 기반 흑백 처리
+            import numpy as np
+            img_array = np.array(image)
+            threshold = 128  # 중간값
+            img_array = np.where(img_array > threshold, 255, 0).astype(np.uint8)
+            image = Image.fromarray(img_array)
+            logger.info("✅ 이미지 이진화 완료 (threshold=128)")
+
+            # 6. 다시 bytes로 변환
+            buffer = BytesIO()
+            image.save(buffer, format="PNG")
+            file_content = buffer.getvalue()
+            logger.info("✅ 전처리된 이미지 준비 완료")
+        except Exception as e:
+            logger.warning(f"⚠️ 이미지 전처리 실패, 원본 사용: {e}")
 
         # Base64 인코딩
         img_base64 = base64.b64encode(file_content).decode("utf-8")
 
         # Vision API 호출 (텍스트 추출 + 문서 유형 분류 + 품질 평가)
         response = await self.client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="gpt-4o",
             messages=[
                 {
                     "role": "user",
@@ -343,8 +425,11 @@ class EvidenceProcessor:
                             "text": """당신은 법원 제출용 증거 자료 분석 전문가입니다.
 이 이미지는 법적 소송 증거로 사용될 문서로, **매우 높은 정확도**가 요구됩니다.
 
-**작업 1: 텍스트 추출**
-이미지 내 모든 텍스트, 대화 내용, 시간, 발신자 정보를 빠짐없이 정확하게 추출하세요.
+**작업 1: 텍스트 추출 (오타 절대 금지)**
+이미지 내 모든 텍스트를 **한 글자도 틀리지 않고** 정확하게 추출하세요.
+- 숫자, 날짜, 시간, 금액, 이름 등은 특히 주의깊게 확인하세요
+- 추측이나 유추는 금지 - 확실한 글자만 입력하세요
+- 불명확한 글자는 [?]로 표시하세요
 - 문서/대화의 경우: [발신자/작성자] [시간] 내용
 - 일반 문서의 경우: 텍스트를 원본 구조 그대로 추출
 
