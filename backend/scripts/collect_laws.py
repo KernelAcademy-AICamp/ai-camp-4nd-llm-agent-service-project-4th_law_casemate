@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from dotenv import load_dotenv
+import openai
 from openai import OpenAI
 
 # 프로젝트 루트를 path에 추가
@@ -275,18 +276,27 @@ class LawCollector:
                         f"{chunk['law_name']} 제{chunk['article_number']}조 {chunk['article_title']}\n{chunk['content']}"
                     )
 
-            response = self.openai_client.embeddings.create(
-                model="text-embedding-3-small",
-                input=texts
-            )
+            for attempt in range(3):
+                try:
+                    response = self.openai_client.embeddings.create(
+                        model="text-embedding-3-small",
+                        input=texts
+                    )
 
-            for j, chunk in enumerate(batch):
-                chunk_with_vector = chunk.copy()
-                chunk_with_vector["vector"] = response.data[j].embedding
-                results.append(chunk_with_vector)
+                    for j, chunk in enumerate(batch):
+                        chunk_with_vector = chunk.copy()
+                        chunk_with_vector["vector"] = response.data[j].embedding
+                        results.append(chunk_with_vector)
+                    break  # 성공 시 루프 탈출
+
+                except openai.RateLimitError:
+                    print(f"  - Rate limit 도달, 5초 대기 후 재시도 ({attempt + 1}/3)")
+                    time.sleep(5)
+                except Exception as e:
+                    print(f"  - 임베딩 생성 실패: {e}")
+                    break
 
             print(f"  - {label} 진행: {min(i + batch_size, len(chunks))}/{len(chunks)}")
-            time.sleep(1)
 
         print(f"  - {label} 임베딩 완료: {len(results)}개")
         return results

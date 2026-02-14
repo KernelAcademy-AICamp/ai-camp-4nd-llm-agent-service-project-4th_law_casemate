@@ -847,7 +847,7 @@ export function CaseDetailPage({
   useEffect(() => {
     const hasOverviewData = overviewData.summary || overviewData.facts || overviewData.claims;
     if (caseData && hasOverviewData) {
-      // fetchSimilarCases(); // TODO: Qdrant 설정 후 활성화
+      fetchSimilarCases();
     }
   }, [caseData, overviewData.summary, overviewData.facts, overviewData.claims, fetchSimilarCases]);
 
@@ -1425,77 +1425,77 @@ export function CaseDetailPage({
                 {/* 서브 탭에 따라 다른 버튼 표시 */}
                 {detailSubTab === "analysis" ? (
                   <div className="flex flex-col items-end gap-1">
-                  <div className="flex items-center gap-2">
-                    {/* AI 분석 갱신 버튼 + 말풍선 래퍼 */}
-                    <div className="relative">
-                      {analysisStale && (
-                        <div
-                          className="absolute bottom-full left-1/2 -translate-x-1/2 mb-3 z-10"
-                          style={{ animation: "stale-popup-in 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards" }}
-                        >
-                          <div className="relative backdrop-blur-sm bg-white/95 border border-[#EF4444]/20 rounded-xl shadow-[0_4px_24px_rgba(239,68,68,0.1)] px-4 py-2.5 whitespace-nowrap">
-                            <div className="flex items-center gap-2.5">
-                              <div className="w-1.5 h-1.5 rounded-full bg-[#EF4444] animate-pulse" />
-                              <p className="text-[12px] font-medium text-zinc-700">원문이 수정되었습니다</p>
-                              <button
-                                onClick={() => setAnalysisStale(false)}
-                                className="p-0.5 rounded-full text-zinc-300 hover:text-[#EF4444] hover:bg-[#EF4444]/5 transition-all"
-                              >
-                                <svg className="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M18 6L6 18M6 6l12 12" /></svg>
-                              </button>
+                    <div className="flex items-center gap-2">
+                      {/* AI 분석 갱신 버튼 + 말풍선 래퍼 */}
+                      <div className="relative">
+                        {analysisStale && (
+                          <div
+                            className="absolute bottom-full left-1/2 -translate-x-1/2 mb-3 z-10"
+                            style={{ animation: "stale-popup-in 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards" }}
+                          >
+                            <div className="relative backdrop-blur-sm bg-white/95 border border-[#EF4444]/20 rounded-xl shadow-[0_4px_24px_rgba(239,68,68,0.1)] px-4 py-2.5 whitespace-nowrap">
+                              <div className="flex items-center gap-2.5">
+                                <div className="w-1.5 h-1.5 rounded-full bg-[#EF4444] animate-pulse" />
+                                <p className="text-[12px] font-medium text-zinc-700">원문이 수정되었습니다</p>
+                                <button
+                                  onClick={() => setAnalysisStale(false)}
+                                  className="p-0.5 rounded-full text-zinc-300 hover:text-[#EF4444] hover:bg-[#EF4444]/5 transition-all"
+                                >
+                                  <svg className="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M18 6L6 18M6 6l12 12" /></svg>
+                                </button>
+                              </div>
+                              {/* 말풍선 꼬리 */}
+                              <div className="absolute -bottom-[5px] left-1/2 -translate-x-1/2 w-2.5 h-2.5 bg-white/95 border-r border-b border-[#EF4444]/20 rotate-45" />
                             </div>
-                            {/* 말풍선 꼬리 */}
-                            <div className="absolute -bottom-[5px] left-1/2 -translate-x-1/2 w-2.5 h-2.5 bg-white/95 border-r border-b border-[#EF4444]/20 rotate-45" />
                           </div>
-                        </div>
-                      )}
+                        )}
+                        <Button
+                          size="sm"
+                          variant={analysisStale ? "default" : "outline"}
+                          disabled={isRefreshing || isSaving}
+                          onClick={refreshAnalysis}
+                          className={analysisStale
+                            ? "bg-[#EF4444] hover:bg-[#DC2626] text-white shadow-sm transition-all duration-200"
+                            : "transition-all duration-200"
+                          }
+                        >
+                          <RefreshCw className={`h-4 w-4 mr-2 ${isRefreshing ? 'animate-spin' : ''}`} />
+                          AI 분석 갱신
+                        </Button>
+                      </div>
+                      {/* 편집/저장 버튼 */}
                       <Button
                         size="sm"
-                        variant={analysisStale ? "default" : "outline"}
-                        disabled={isRefreshing || isSaving}
-                        onClick={refreshAnalysis}
-                        className={analysisStale
-                          ? "bg-[#EF4444] hover:bg-[#DC2626] text-white shadow-sm transition-all duration-200"
-                          : "transition-all duration-200"
-                        }
+                        variant="outline"
+                        disabled={isSaving || isRefreshing}
+                        onClick={() => {
+                          if (isEditingOverview) {
+                            saveSummary();
+                          } else {
+                            setIsEditingOverview(true);
+                          }
+                        }}
                       >
-                        <RefreshCw className={`h-4 w-4 mr-2 ${isRefreshing ? 'animate-spin' : ''}`} />
-                        AI 분석 갱신
+                        {isSaving ? (
+                          <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                        ) : isEditingOverview ? (
+                          <>
+                            <Save className="h-4 w-4 mr-2" />
+                            저장
+                          </>
+                        ) : (
+                          <>
+                            <Edit2 className="h-4 w-4 mr-2" />
+                            편집
+                          </>
+                        )}
                       </Button>
                     </div>
-                    {/* 편집/저장 버튼 */}
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      disabled={isSaving || isRefreshing}
-                      onClick={() => {
-                        if (isEditingOverview) {
-                          saveSummary();
-                        } else {
-                          setIsEditingOverview(true);
-                        }
-                      }}
-                    >
-                      {isSaving ? (
-                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                      ) : isEditingOverview ? (
-                        <>
-                          <Save className="h-4 w-4 mr-2" />
-                          저장
-                        </>
-                      ) : (
-                        <>
-                          <Edit2 className="h-4 w-4 mr-2" />
-                          편집
-                        </>
-                      )}
-                    </Button>
-                  </div>
-                  {analyzedAt && (
-                    <p className="text-xs italic text-zinc-400 pr-2 mt-1">
-                      마지막 분석: {new Date(analyzedAt).toLocaleDateString("ko-KR", { year: "numeric", month: "long", day: "numeric" })}
-                    </p>
-                  )}
+                    {analyzedAt && (
+                      <p className="text-xs italic text-zinc-400 pr-2 mt-1">
+                        마지막 분석: {new Date(analyzedAt).toLocaleDateString("ko-KR", { year: "numeric", month: "long", day: "numeric" })}
+                      </p>
+                    )}
                   </div>
                 ) : (
                   <Button
@@ -1555,8 +1555,8 @@ export function CaseDetailPage({
                     setIsEditingOriginal(false);
                   }}
                   className={`px-3 py-1.5 text-sm rounded-md transition-colors ${detailSubTab === "analysis"
-                      ? "bg-primary text-primary-foreground"
-                      : "text-muted-foreground hover:bg-secondary"
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:bg-secondary"
                     }`}
                 >
                   AI 분석
@@ -1568,8 +1568,8 @@ export function CaseDetailPage({
                     setIsEditingOverview(false);
                   }}
                   className={`px-3 py-1.5 text-sm rounded-md transition-colors ${detailSubTab === "original"
-                      ? "bg-primary text-primary-foreground"
-                      : "text-muted-foreground hover:bg-secondary"
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:bg-secondary"
                     }`}
                 >
                   원문 보기
@@ -2092,13 +2092,12 @@ export function CaseDetailPage({
 
               {/* 드래그&드롭 / 클릭 업로드 영역 */}
               <div
-                className={`flex items-center justify-center gap-2 rounded-lg border-2 border-dashed py-4 text-sm transition-colors ${
-                  isUploading
-                    ? 'border-primary/30 bg-primary/5 text-primary cursor-wait'
-                    : isDragOver
-                      ? 'border-primary bg-primary/5 text-primary cursor-copy'
-                      : 'border-border/60 text-muted-foreground hover:border-primary/40 hover:bg-primary/5 cursor-pointer'
-                }`}
+                className={`flex items-center justify-center gap-2 rounded-lg border-2 border-dashed py-4 text-sm transition-colors ${isUploading
+                  ? 'border-primary/30 bg-primary/5 text-primary cursor-wait'
+                  : isDragOver
+                    ? 'border-primary bg-primary/5 text-primary cursor-copy'
+                    : 'border-border/60 text-muted-foreground hover:border-primary/40 hover:bg-primary/5 cursor-pointer'
+                  }`}
                 onClick={() => !isUploading && evidenceFileInputRef.current?.click()}
               >
                 {isUploading ? (
@@ -2257,250 +2256,250 @@ export function CaseDetailPage({
                     타임라인 데이터 로딩 중...
                   </div>
                 ) : timelineEvents.length === 0 ? (
-                <div className="text-center py-12">
-                  <p className="text-muted-foreground text-sm mb-4">타임라인 이벤트가 없습니다.</p>
-                  <Button onClick={regenerateTimeline} variant="outline">
-                    타임라인 생성
-                  </Button>
-                </div>
-              ) : timelineLayout === "linear" ? (
-                /* ===== A. 좌측 날짜 목록형 (max-w 적용) ===== */
-                <div className="relative py-4 max-w-2xl mx-auto">
-                  {(() => {
-                    const dateGroups = groupEventsByDate(timelineEvents);
+                  <div className="text-center py-12">
+                    <p className="text-muted-foreground text-sm mb-4">타임라인 이벤트가 없습니다.</p>
+                    <Button onClick={regenerateTimeline} variant="outline">
+                      타임라인 생성
+                    </Button>
+                  </div>
+                ) : timelineLayout === "linear" ? (
+                  /* ===== A. 좌측 날짜 목록형 (max-w 적용) ===== */
+                  <div className="relative py-4 max-w-2xl mx-auto">
+                    {(() => {
+                      const dateGroups = groupEventsByDate(timelineEvents);
 
-                    return dateGroups.map((group, groupIdx) => {
-                      const prevDate = groupIdx > 0 ? dateGroups[groupIdx - 1].date : null;
-                      const showMonthHeader = isNewMonth(group.date, prevDate);
-                      const dateParts = parseDateParts(group.date);
-                      return (
-                        <div key={group.date + groupIdx}>
-                          {showMonthHeader && (
-                            <div className="flex items-center gap-3 mb-6 mt-2">
-                              <div className="flex-1 h-px bg-gradient-to-r from-transparent to-[#6D5EF5]/20" />
-                              <span className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-[#6D5EF5]/10 text-[#6D5EF5] text-xs font-semibold">
-                                <Calendar className="h-3 w-3" />
-                                {formatMonthYear(group.date)}
-                              </span>
-                              <div className="flex-1 h-px bg-gradient-to-l from-transparent to-[#6D5EF5]/20" />
-                            </div>
-                          )}
+                      return dateGroups.map((group, groupIdx) => {
+                        const prevDate = groupIdx > 0 ? dateGroups[groupIdx - 1].date : null;
+                        const showMonthHeader = isNewMonth(group.date, prevDate);
+                        const dateParts = parseDateParts(group.date);
+                        return (
+                          <div key={group.date + groupIdx}>
+                            {showMonthHeader && (
+                              <div className="flex items-center gap-3 mb-6 mt-2">
+                                <div className="flex-1 h-px bg-gradient-to-r from-transparent to-[#6D5EF5]/20" />
+                                <span className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-[#6D5EF5]/10 text-[#6D5EF5] text-xs font-semibold">
+                                  <Calendar className="h-3 w-3" />
+                                  {formatMonthYear(group.date)}
+                                </span>
+                                <div className="flex-1 h-px bg-gradient-to-l from-transparent to-[#6D5EF5]/20" />
+                              </div>
+                            )}
 
-                          {group.events.map((event, eventIdx) => {
-                            const isFirstInGroup = eventIdx === 0;
-                            const isLastEvent = groupIdx === dateGroups.length - 1 && eventIdx === group.events.length - 1;
+                            {group.events.map((event, eventIdx) => {
+                              const isFirstInGroup = eventIdx === 0;
+                              const isLastEvent = groupIdx === dateGroups.length - 1 && eventIdx === group.events.length - 1;
 
-                            return (
-                              <div key={event.id} className="flex group relative">
-                                {/* Date Column */}
-                                <div className="w-16 sm:w-20 shrink-0 hidden sm:flex flex-col items-center pt-1">
-                                  {isFirstInGroup && (
-                                    <>
-                                      <span className="text-2xl font-bold text-foreground leading-none">
-                                        {dateParts.day}
-                                      </span>
-                                      <span className="text-[11px] text-muted-foreground mt-0.5">
-                                        {dateParts.month}월 {dateParts.dayOfWeek}
-                                      </span>
-                                    </>
-                                  )}
-                                </div>
-
-                                {/* Dot + Line */}
-                                <div className="w-8 sm:w-10 shrink-0 flex flex-col items-center relative">
-                                  {!(groupIdx === 0 && eventIdx === 0) ? (
-                                    <div className="w-px flex-1 bg-[#6D5EF5]/15 min-h-[8px]" />
-                                  ) : (
-                                    <div className="flex-1 min-h-[8px]" />
-                                  )}
-                                  <div className={`w-8 h-8 rounded-full flex items-center justify-center ${getTimelineDotColor(event.type)} text-white ring-[3px] ring-background shadow-sm shrink-0 z-10`}>
-                                    {getTypeIcon(event.type)}
-                                  </div>
-                                  {!isLastEvent ? (
-                                    <div className="w-px flex-1 bg-[#6D5EF5]/15 min-h-[8px]" />
-                                  ) : (
-                                    <div className="flex-1 min-h-[8px]" />
-                                  )}
-                                </div>
-
-                                {/* Card */}
-                                <div className="flex-1 pb-5 pl-3 sm:pl-4">
-                                  {/* Mobile date */}
-                                  <div className="sm:hidden flex items-center gap-1.5 text-xs text-muted-foreground mb-1">
-                                    <span className="font-semibold text-foreground">{dateParts.month}/{dateParts.day}</span>
-                                    <span className="text-muted-foreground/50">{dateParts.dayOfWeek}</span>
-                                  </div>
-
-                                  <div className={`px-4 py-3 rounded-xl border shadow-sm hover:shadow-md transition-all duration-200 ${getTypeColor(event.type)}`}>
-                                    <div className="flex items-center gap-2 mb-1.5 flex-wrap">
-                                      <Badge
-                                        variant="outline"
-                                        className={`text-[11px] font-medium px-2 py-0 rounded-full border ${event.type === "의뢰인"
-                                          ? "border-[#6D5EF5]/30 bg-[#6D5EF5]/10 text-[#6D5EF5]"
-                                          : event.type === "상대방"
-                                            ? "border-[#F59E0B]/30 bg-[#F59E0B]/10 text-[#B45309]"
-                                            : event.type === "증거"
-                                              ? "border-[#38BDF8]/30 bg-[#38BDF8]/10 text-[#0284C7]"
-                                              : "border-[#94A3B8]/30 bg-[#94A3B8]/10 text-[#64748B]"
-                                          }`}
-                                      >
-                                        {getTypeLabel(event.type)}
-                                      </Badge>
-                                      {event.time && (
-                                        <span className="hidden sm:inline-flex items-center gap-1 text-[11px] text-muted-foreground">
-                                          <Clock className="h-3 w-3" />
-                                          {event.time}
+                              return (
+                                <div key={event.id} className="flex group relative">
+                                  {/* Date Column */}
+                                  <div className="w-16 sm:w-20 shrink-0 hidden sm:flex flex-col items-center pt-1">
+                                    {isFirstInGroup && (
+                                      <>
+                                        <span className="text-2xl font-bold text-foreground leading-none">
+                                          {dateParts.day}
                                         </span>
-                                      )}
-                                      {event.actor && (
-                                        <span className="text-[11px] text-muted-foreground">· {event.actor}</span>
-                                      )}
-                                    </div>
-                                    <h4 className="text-sm font-semibold text-foreground">
-                                      {event.title}
-                                    </h4>
-                                    {event.description && (
-                                      <p className="text-xs text-muted-foreground leading-relaxed mt-1">
-                                        {event.description}
-                                      </p>
+                                        <span className="text-[11px] text-muted-foreground mt-0.5">
+                                          {dateParts.month}월 {dateParts.dayOfWeek}
+                                        </span>
+                                      </>
                                     )}
-                                    <div className="mt-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                                      <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => setEditingEvent(event)}>
-                                        <Edit2 className="h-3 w-3" />
-                                      </Button>
-                                      <Button variant="ghost" size="icon" className="h-6 w-6 text-destructive" onClick={() => handleDeleteEvent(event.id)}>
-                                        <Trash2 className="h-3 w-3" />
-                                      </Button>
+                                  </div>
+
+                                  {/* Dot + Line */}
+                                  <div className="w-8 sm:w-10 shrink-0 flex flex-col items-center relative">
+                                    {!(groupIdx === 0 && eventIdx === 0) ? (
+                                      <div className="w-px flex-1 bg-[#6D5EF5]/15 min-h-[8px]" />
+                                    ) : (
+                                      <div className="flex-1 min-h-[8px]" />
+                                    )}
+                                    <div className={`w-8 h-8 rounded-full flex items-center justify-center ${getTimelineDotColor(event.type)} text-white ring-[3px] ring-background shadow-sm shrink-0 z-10`}>
+                                      {getTypeIcon(event.type)}
+                                    </div>
+                                    {!isLastEvent ? (
+                                      <div className="w-px flex-1 bg-[#6D5EF5]/15 min-h-[8px]" />
+                                    ) : (
+                                      <div className="flex-1 min-h-[8px]" />
+                                    )}
+                                  </div>
+
+                                  {/* Card */}
+                                  <div className="flex-1 pb-5 pl-3 sm:pl-4">
+                                    {/* Mobile date */}
+                                    <div className="sm:hidden flex items-center gap-1.5 text-xs text-muted-foreground mb-1">
+                                      <span className="font-semibold text-foreground">{dateParts.month}/{dateParts.day}</span>
+                                      <span className="text-muted-foreground/50">{dateParts.dayOfWeek}</span>
+                                    </div>
+
+                                    <div className={`px-4 py-3 rounded-xl border shadow-sm hover:shadow-md transition-all duration-200 ${getTypeColor(event.type)}`}>
+                                      <div className="flex items-center gap-2 mb-1.5 flex-wrap">
+                                        <Badge
+                                          variant="outline"
+                                          className={`text-[11px] font-medium px-2 py-0 rounded-full border ${event.type === "의뢰인"
+                                            ? "border-[#6D5EF5]/30 bg-[#6D5EF5]/10 text-[#6D5EF5]"
+                                            : event.type === "상대방"
+                                              ? "border-[#F59E0B]/30 bg-[#F59E0B]/10 text-[#B45309]"
+                                              : event.type === "증거"
+                                                ? "border-[#38BDF8]/30 bg-[#38BDF8]/10 text-[#0284C7]"
+                                                : "border-[#94A3B8]/30 bg-[#94A3B8]/10 text-[#64748B]"
+                                            }`}
+                                        >
+                                          {getTypeLabel(event.type)}
+                                        </Badge>
+                                        {event.time && (
+                                          <span className="hidden sm:inline-flex items-center gap-1 text-[11px] text-muted-foreground">
+                                            <Clock className="h-3 w-3" />
+                                            {event.time}
+                                          </span>
+                                        )}
+                                        {event.actor && (
+                                          <span className="text-[11px] text-muted-foreground">· {event.actor}</span>
+                                        )}
+                                      </div>
+                                      <h4 className="text-sm font-semibold text-foreground">
+                                        {event.title}
+                                      </h4>
+                                      {event.description && (
+                                        <p className="text-xs text-muted-foreground leading-relaxed mt-1">
+                                          {event.description}
+                                        </p>
+                                      )}
+                                      <div className="mt-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                        <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => setEditingEvent(event)}>
+                                          <Edit2 className="h-3 w-3" />
+                                        </Button>
+                                        <Button variant="ghost" size="icon" className="h-6 w-6 text-destructive" onClick={() => handleDeleteEvent(event.id)}>
+                                          <Trash2 className="h-3 w-3" />
+                                        </Button>
+                                      </div>
                                     </div>
                                   </div>
                                 </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      );
-                    });
-                  })()}
-                </div>
-              ) : (
-                /* ===== B. 지그재그 + 큰 날짜 ===== */
-                <div className="relative py-8 max-w-3xl mx-auto">
-                  {(() => {
-                    // 월 헤더를 위해 flat list + 메타 생성
-                    const flatEvents: { event: TimelineEvent; showMonth: boolean; showDate: boolean }[] = [];
-                    for (let i = 0; i < timelineEvents.length; i++) {
-                      const event = timelineEvents[i];
-                      const prev = i > 0 ? timelineEvents[i - 1] : null;
-                      flatEvents.push({
-                        event,
-                        showMonth: isNewMonth(event.date, prev?.date || null),
-                        showDate: !prev || prev.date !== event.date,
+                              );
+                            })}
+                          </div>
+                        );
                       });
-                    }
+                    })()}
+                  </div>
+                ) : (
+                  /* ===== B. 지그재그 + 큰 날짜 ===== */
+                  <div className="relative py-8 max-w-3xl mx-auto">
+                    {(() => {
+                      // 월 헤더를 위해 flat list + 메타 생성
+                      const flatEvents: { event: TimelineEvent; showMonth: boolean; showDate: boolean }[] = [];
+                      for (let i = 0; i < timelineEvents.length; i++) {
+                        const event = timelineEvents[i];
+                        const prev = i > 0 ? timelineEvents[i - 1] : null;
+                        flatEvents.push({
+                          event,
+                          showMonth: isNewMonth(event.date, prev?.date || null),
+                          showDate: !prev || prev.date !== event.date,
+                        });
+                      }
 
-                    return flatEvents.map(({ event, showMonth, showDate }, index) => {
-                      const isLeft = index % 2 === 0;
-                      const dateParts = parseDateParts(event.date);
-                      const isFirst = index === 0;
-                      const isLast = index === flatEvents.length - 1;
+                      return flatEvents.map(({ event, showMonth, showDate }, index) => {
+                        const isLeft = index % 2 === 0;
+                        const dateParts = parseDateParts(event.date);
+                        const isFirst = index === 0;
+                        const isLast = index === flatEvents.length - 1;
 
-                      return (
-                        <div key={event.id}>
-                          {/* Month header */}
-                          {showMonth && (
-                            <div className="flex items-center gap-3 mb-8 mt-4 relative z-10">
-                              <div className="flex-1 h-px bg-gradient-to-r from-transparent to-[#6D5EF5]/20" />
-                              <span className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-[#6D5EF5]/10 text-[#6D5EF5] text-xs font-semibold">
-                                <Calendar className="h-3 w-3" />
-                                {formatMonthYear(event.date)}
-                              </span>
-                              <div className="flex-1 h-px bg-gradient-to-l from-transparent to-[#6D5EF5]/20" />
-                            </div>
-                          )}
-
-                          <div className={`relative flex items-start mb-10 ${isLeft ? "justify-start" : "justify-end"}`}>
-                            {/* Center dot + 세로선 세그먼트 */}
-                            <div className="absolute left-1/2 -translate-x-1/2 z-10 flex flex-col items-center">
-                              {/* 윗쪽 세로선 (첫 이벤트 제외) */}
-                              {!isFirst && (
-                                <div className="w-px bg-[#6D5EF5]/15" style={{ height: showMonth ? 52 : 40, marginBottom: -1 }} />
-                              )}
-                              <div className={`w-9 h-9 rounded-full flex items-center justify-center ${getTimelineDotColor(event.type)} text-white ring-4 ring-background shadow-md shrink-0`}>
-                                {getTypeIcon(event.type)}
+                        return (
+                          <div key={event.id}>
+                            {/* Month header */}
+                            {showMonth && (
+                              <div className="flex items-center gap-3 mb-8 mt-4 relative z-10">
+                                <div className="flex-1 h-px bg-gradient-to-r from-transparent to-[#6D5EF5]/20" />
+                                <span className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-[#6D5EF5]/10 text-[#6D5EF5] text-xs font-semibold">
+                                  <Calendar className="h-3 w-3" />
+                                  {formatMonthYear(event.date)}
+                                </span>
+                                <div className="flex-1 h-px bg-gradient-to-l from-transparent to-[#6D5EF5]/20" />
                               </div>
-                              {/* 아랫쪽 세로선 (마지막 이벤트 제외) */}
-                              {!isLast && (
-                                <div className="w-px bg-[#6D5EF5]/15 flex-1" style={{ minHeight: 40, marginTop: -1 }} />
-                              )}
-                            </div>
+                            )}
 
-                            {/* Card area (한쪽에만) */}
-                            <div className={`w-[calc(50%-2.5rem)] group ${isLeft ? "pr-2" : "pl-2"}`}>
-                              {/* 날짜 — 카드 위에 크게 */}
-                              {showDate && (
-                                <div className={`flex items-baseline gap-1.5 mb-2 ${isLeft ? "justify-end" : "justify-start"}`}>
-                                  <span className="text-xl font-bold text-foreground leading-none tracking-tight">
-                                    {dateParts.day}일
-                                  </span>
-                                  <span className="text-xs text-muted-foreground">
-                                    {dateParts.dayOfWeek}
-                                  </span>
-                                  {event.time && (
-                                    <span className="text-xs text-muted-foreground/60 ml-1">
-                                      {event.time}
+                            <div className={`relative flex items-start mb-10 ${isLeft ? "justify-start" : "justify-end"}`}>
+                              {/* Center dot + 세로선 세그먼트 */}
+                              <div className="absolute left-1/2 -translate-x-1/2 z-10 flex flex-col items-center">
+                                {/* 윗쪽 세로선 (첫 이벤트 제외) */}
+                                {!isFirst && (
+                                  <div className="w-px bg-[#6D5EF5]/15" style={{ height: showMonth ? 52 : 40, marginBottom: -1 }} />
+                                )}
+                                <div className={`w-9 h-9 rounded-full flex items-center justify-center ${getTimelineDotColor(event.type)} text-white ring-4 ring-background shadow-md shrink-0`}>
+                                  {getTypeIcon(event.type)}
+                                </div>
+                                {/* 아랫쪽 세로선 (마지막 이벤트 제외) */}
+                                {!isLast && (
+                                  <div className="w-px bg-[#6D5EF5]/15 flex-1" style={{ minHeight: 40, marginTop: -1 }} />
+                                )}
+                              </div>
+
+                              {/* Card area (한쪽에만) */}
+                              <div className={`w-[calc(50%-2.5rem)] group ${isLeft ? "pr-2" : "pl-2"}`}>
+                                {/* 날짜 — 카드 위에 크게 */}
+                                {showDate && (
+                                  <div className={`flex items-baseline gap-1.5 mb-2 ${isLeft ? "justify-end" : "justify-start"}`}>
+                                    <span className="text-xl font-bold text-foreground leading-none tracking-tight">
+                                      {dateParts.day}일
                                     </span>
-                                  )}
-                                </div>
-                              )}
-
-                              {/* Card */}
-                              <div className={`p-4 rounded-xl border shadow-sm hover:shadow-md transition-all duration-200 ${getTypeColor(event.type)} ${isLeft ? "text-right" : "text-left"}`}>
-                                <div className={`flex items-center gap-2 mb-1.5 ${isLeft ? "justify-end" : "justify-start"}`}>
-                                  <Badge
-                                    variant="outline"
-                                    className={`text-[11px] font-medium px-2 py-0 rounded-full border ${event.type === "의뢰인"
-                                      ? "border-[#6D5EF5]/30 bg-[#6D5EF5]/10 text-[#6D5EF5]"
-                                      : event.type === "상대방"
-                                        ? "border-[#F59E0B]/30 bg-[#F59E0B]/10 text-[#B45309]"
-                                        : event.type === "증거"
-                                          ? "border-[#38BDF8]/30 bg-[#38BDF8]/10 text-[#0284C7]"
-                                          : "border-[#94A3B8]/30 bg-[#94A3B8]/10 text-[#64748B]"
-                                      }`}
-                                  >
-                                    {getTypeLabel(event.type)}
-                                  </Badge>
-                                  {event.actor && (
-                                    <span className="text-[11px] text-muted-foreground">{event.actor}</span>
-                                  )}
-                                </div>
-
-                                <h4 className="text-sm font-semibold mb-0.5 text-foreground">
-                                  {event.title}
-                                </h4>
-
-                                {event.description && (
-                                  <p className="text-xs text-muted-foreground leading-relaxed">
-                                    {event.description}
-                                  </p>
+                                    <span className="text-xs text-muted-foreground">
+                                      {dateParts.dayOfWeek}
+                                    </span>
+                                    {event.time && (
+                                      <span className="text-xs text-muted-foreground/60 ml-1">
+                                        {event.time}
+                                      </span>
+                                    )}
+                                  </div>
                                 )}
 
-                                <div className={`mt-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity ${isLeft ? "justify-end" : "justify-start"}`}>
-                                  <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => setEditingEvent(event)}>
-                                    <Edit2 className="h-3 w-3" />
-                                  </Button>
-                                  <Button variant="ghost" size="icon" className="h-6 w-6 text-destructive" onClick={() => handleDeleteEvent(event.id)}>
-                                    <Trash2 className="h-3 w-3" />
-                                  </Button>
+                                {/* Card */}
+                                <div className={`p-4 rounded-xl border shadow-sm hover:shadow-md transition-all duration-200 ${getTypeColor(event.type)} ${isLeft ? "text-right" : "text-left"}`}>
+                                  <div className={`flex items-center gap-2 mb-1.5 ${isLeft ? "justify-end" : "justify-start"}`}>
+                                    <Badge
+                                      variant="outline"
+                                      className={`text-[11px] font-medium px-2 py-0 rounded-full border ${event.type === "의뢰인"
+                                        ? "border-[#6D5EF5]/30 bg-[#6D5EF5]/10 text-[#6D5EF5]"
+                                        : event.type === "상대방"
+                                          ? "border-[#F59E0B]/30 bg-[#F59E0B]/10 text-[#B45309]"
+                                          : event.type === "증거"
+                                            ? "border-[#38BDF8]/30 bg-[#38BDF8]/10 text-[#0284C7]"
+                                            : "border-[#94A3B8]/30 bg-[#94A3B8]/10 text-[#64748B]"
+                                        }`}
+                                    >
+                                      {getTypeLabel(event.type)}
+                                    </Badge>
+                                    {event.actor && (
+                                      <span className="text-[11px] text-muted-foreground">{event.actor}</span>
+                                    )}
+                                  </div>
+
+                                  <h4 className="text-sm font-semibold mb-0.5 text-foreground">
+                                    {event.title}
+                                  </h4>
+
+                                  {event.description && (
+                                    <p className="text-xs text-muted-foreground leading-relaxed">
+                                      {event.description}
+                                    </p>
+                                  )}
+
+                                  <div className={`mt-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity ${isLeft ? "justify-end" : "justify-start"}`}>
+                                    <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => setEditingEvent(event)}>
+                                      <Edit2 className="h-3 w-3" />
+                                    </Button>
+                                    <Button variant="ghost" size="icon" className="h-6 w-6 text-destructive" onClick={() => handleDeleteEvent(event.id)}>
+                                      <Trash2 className="h-3 w-3" />
+                                    </Button>
+                                  </div>
                                 </div>
                               </div>
                             </div>
                           </div>
-                        </div>
-                      );
-                    });
-                  })()}
-                </div>
-              )}
+                        );
+                      });
+                    })()}
+                  </div>
+                )}
               </div>
             </CardContent>
           </Card>

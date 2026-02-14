@@ -228,24 +228,12 @@ class QdrantService:
         Returns:
             성공 여부
         """
-        import uuid
+        import hashlib
         import time
 
         try:
-            # 기존 요약이 있으면 삭제
-            self.client.delete(
-                collection_name=self.SUMMARIES_COLLECTION,
-                points_selector=models.FilterSelector(
-                    filter=models.Filter(
-                        must=[
-                            models.FieldCondition(
-                                key="case_number",
-                                match=models.MatchValue(value=case_number),
-                            )
-                        ]
-                    )
-                ),
-            )
+            # case_number 기반 결정론적 ID 생성 (동일 case_number면 동일 ID → upsert로 덮어쓰기)
+            point_id = hashlib.md5(f"summary_{case_number}".encode()).hexdigest()
 
             # 벡터 구성
             vector = {}
@@ -257,9 +245,9 @@ class QdrantService:
                     values=sparse_vector["values"],
                 )
 
-            # 새 요약 저장
+            # 요약 저장 (동일 ID면 덮어쓰기)
             point = PointStruct(
-                id=str(uuid.uuid4()),
+                id=point_id,
                 vector=vector,
                 payload={
                     "case_number": case_number,

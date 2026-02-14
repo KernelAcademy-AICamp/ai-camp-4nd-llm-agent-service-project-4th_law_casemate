@@ -1,6 +1,6 @@
 """
 판례 검색 서비스
-4단계 검색: 전체 문구 일치 → AND → OR → 하이브리드
+Prefetch + RRF 1회 호출 + Python 우선순위 부스팅
 """
 
 import re
@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 class PrecedentSearchService:
-    """판례 4단계 검색 서비스"""
+    """판례 검색 서비스 (Prefetch + RRF + Python 부스팅)"""
 
     CASES_COLLECTION = "precedents"
 
@@ -129,6 +129,47 @@ class PrecedentSearchService:
     def __init__(self):
         self.embedding_service = PrecedentEmbeddingService()
         self.repository = PrecedentRepository()
+        # 양방향 동의어 사전 구축
+        self.bidirectional_synonyms = self._build_bidirectional_synonyms()
+
+    def _build_bidirectional_synonyms(self) -> Dict[str, List[str]]:
+        """단방향 SYNONYM_MAP을 양방향으로 확장"""
+        result = {}
+
+        # 1. 기존 매핑 복사 (일상어 → 법률용어)
+        for key, values in self.SYNONYM_MAP.items():
+            if key not in result:
+                result[key] = []
+            result[key].extend(v for v in values if v not in result[key])
+
+        # 2. 역방향 매핑 추가 (법률용어 → 일상어)
+        for key, values in self.SYNONYM_MAP.items():
+            for value in values:
+                if value not in result:
+                    result[value] = []
+                if key not in result[value]:
+                    result[value].append(key)
+
+        # 3. 같은 그룹 내 상호 연결 (카카오톡 ↔ 카톡)
+        # 같은 values를 공유하는 키들을 서로 연결
+        value_to_keys: Dict[str, List[str]] = {}
+        for key, values in self.SYNONYM_MAP.items():
+            for value in values:
+                if value not in value_to_keys:
+                    value_to_keys[value] = []
+                if key not in value_to_keys[value]:
+                    value_to_keys[value].append(key)
+
+        for keys_group in value_to_keys.values():
+            if len(keys_group) > 1:
+                for key in keys_group:
+                    for other_key in keys_group:
+                        if key != other_key and other_key not in result.get(key, []):
+                            if key not in result:
+                                result[key] = []
+                            result[key].append(other_key)
+
+        return result
 
     # ==================== 유틸리티 ====================
 
@@ -137,12 +178,12 @@ class PrecedentSearchService:
         return [w for w in query.split() if len(w) >= 2 and w not in self.STOPWORDS]
 
     def _expand_query(self, query: str) -> str:
-        """동의어 사전으로 쿼리 확장"""
+        """양방향 동의어 사전으로 쿼리 확장"""
         words = query.split()
         expanded = list(words)
         for word in words:
-            if word in self.SYNONYM_MAP:
-                expanded.extend(s for s in self.SYNONYM_MAP[word] if s not in expanded)
+            if word in self.bidirectional_synonyms:
+                expanded.extend(s for s in self.bidirectional_synonyms[word] if s not in expanded)
         return " ".join(expanded)
 
     def _is_case_number(self, query: str) -> bool:
@@ -572,12 +613,13 @@ class PrecedentSearchService:
         filters: Optional[Dict[str, str]] = None
     ) -> Dict[str, Any]:
         """
-        판례 4단계 검색 (페이지네이션 지원)
+        판례 검색 (Prefetch + RRF 1회 호출 + Python 우선순위 부스팅)
 
-        1순위: 전체 문구 일치 ("직장 내 괴롭힘")
-        2순위: 키워드 AND ("직장" AND "괴롭힘")
-        3순위: 키워드 OR ("직장" OR "괴롭힘")
-        4순위: 동의어 확장 + 하이브리드 검색
+        우선순위 부스팅:
+        - 전체 문구 일치 → 3배 부스트
+        - 키워드 전부 포함 → 2배 부스트
+        - 키워드 일부 포함 → 1.5배 부스트
+        - 섹션 가중치 적용 (판시사항, 판결요지 등)
 
         Args:
             limit: 반환할 결과 수
@@ -592,38 +634,73 @@ class PrecedentSearchService:
             return self._search_by_case_number(query, limit)
 
         keywords = self._extract_keywords(query)
-        logger.info(f"검색어: '{query}' → 키워드: {keywords}, 필터: {filters}, offset: {offset}, sort: {sort}")
+        expanded_query = self._expand_query(query)
+        logger.info(f"검색어: '{query}' → 키워드: {keywords}, 확장: '{expanded_query}', 필터: {filters}")
 
+        # 임베딩 생성 (확장된 쿼리 사용)
+        dense_vec, sparse_vec = self.embedding_service.create_both_parallel(expanded_query)
+        query_filter = self._build_filter(filters)
+
+        # offset + limit + 1 만큼 검색 (has_more 판단용, 중복 제거 고려해 여유있게)
+        internal_limit = (offset + limit + 1) * 3
+
+        # ★ Qdrant API 1회: Prefetch + RRF Fusion
+        results = self.repository.qdrant_client.query_points(
+            collection_name=self.CASES_COLLECTION,
+            prefetch=[
+                models.Prefetch(query=dense_vec, using="dense", limit=internal_limit),
+                models.Prefetch(query=sparse_vec, using="sparse", limit=internal_limit),
+            ],
+            query=models.FusionQuery(fusion=models.Fusion.RRF),
+            query_filter=query_filter,
+            limit=internal_limit,
+            with_payload=True,
+        )
+
+        # ★ Python 우선순위 부스팅
+        boosted_results: List[tuple] = []  # (point, boosted_score)
+        for point in results.points:
+            payload = point.payload
+            content = payload.get("content", "")
+            score = point.score
+
+            # 우선순위 부스팅
+            if query in content:
+                score *= 3.0  # 전체 문구 일치
+            elif keywords and all(kw in content for kw in keywords):
+                score *= 2.0  # 키워드 전부 포함
+            elif keywords and any(kw in content for kw in keywords):
+                score *= 1.5  # 키워드 일부 포함
+
+            # 섹션 가중치
+            section = payload.get("section", "")
+            score *= self.SECTION_WEIGHTS.get(section, self.DEFAULT_SECTION_WEIGHT)
+
+            boosted_results.append((point, score))
+
+        # 부스팅 점수로 재정렬
+        boosted_results.sort(key=lambda x: x[1], reverse=True)
+
+        # 사건번호별 중복 제거 + SearchResult 변환
         found: Set[str] = set()
         all_results: List[SearchResult] = []
 
-        # offset + limit + 1 만큼 검색 (has_more 판단용)
-        internal_limit = offset + limit + 1
+        for point, boosted_score in boosted_results:
+            payload = point.payload
+            case_num = payload.get("case_number", "")
+            if case_num and case_num not in found:
+                found.add(case_num)
+                all_results.append(SearchResult(
+                    case_number=case_num,
+                    case_name=payload.get("case_name", ""),
+                    court_name=payload.get("court_name", ""),
+                    judgment_date=payload.get("judgment_date", ""),
+                    content=payload.get("content", ""),
+                    section=payload.get("section", ""),
+                    score=boosted_score,
+                ))
 
-        def add_results(results: List[SearchResult]):
-            for r in results:
-                if r.case_number not in found:
-                    found.add(r.case_number)
-                    all_results.append(r)
-
-        # 1순위: 전체 문구 일치
-        add_results(self._search_exact_phrase(query, internal_limit, found, filters))
-
-        # 2순위: 키워드 AND
-        if len(keywords) >= 2 and len(all_results) < internal_limit:
-            add_results(self._search_keywords_and(keywords, internal_limit, found, filters))
-
-        # 3순위: 키워드 OR
-        if keywords and len(all_results) < internal_limit:
-            add_results(self._search_keywords_or(keywords, internal_limit, found, filters))
-
-        # 4순위: 하이브리드 (결과 부족 시)
-        expanded_query = None
-        if len(all_results) < internal_limit:
-            expanded_query = self._expand_query(query)
-            add_results(self._search_hybrid(query, internal_limit, found, merge_chunks, filters))
-
-        # 최신순 정렬 (judgment_date 기준 내림차순)
+        # 최신순 정렬 (요청 시)
         if sort == "latest":
             all_results.sort(key=lambda r: r.judgment_date or "", reverse=True)
 
@@ -635,7 +712,7 @@ class PrecedentSearchService:
         return {
             "query": query,
             "keywords": keywords,
-            "expanded_query": expanded_query if expanded_query and expanded_query != query else None,
+            "expanded_query": expanded_query if expanded_query != query else None,
             "filters": filters,
             "sort": sort,
             "total": len(paginated_results),

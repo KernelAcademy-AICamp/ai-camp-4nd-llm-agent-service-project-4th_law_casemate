@@ -275,7 +275,7 @@ class PrecedentSimilarService:
                             cases[case_number]["matched_keywords"].add(kw)
 
                 cases[case_number]["top_chunks"].append({
-                    "content": content[:500],
+                    "content": content[:1500],
                     "dense_score": dense_score,
                 })
 
@@ -309,26 +309,19 @@ class PrecedentSimilarService:
     ) -> List[Dict[str, Any]]:
         """
         Cross-encoder를 사용한 리랭킹
-        - 상위 N개 청크를 concat하여 더 풍부한 맥락으로 판단
+        - best_chunk 1개를 온전히 사용 (문맥 유지)
         """
         if not candidates:
             return []
 
         reranker = get_reranker_model()
 
-        # (쿼리, 상위 N개 청크 concat) 쌍 생성
+        # (쿼리, best_chunk) 쌍 생성
         pairs = []
         for c in candidates:
-            top_chunks = c.get("top_chunks", [])[:self.RERANK_CHUNKS]
-            if top_chunks:
-                # 상위 N개 청크 내용을 concat
-                combined_text = " ".join([chunk["content"] for chunk in top_chunks])
-                # 리랭커 max_length(1024) 고려하여 truncate
-                combined_text = combined_text[:1500]
-            else:
-                combined_text = c.get("best_chunk", "")[:500]
-
-            pairs.append((query[:500], combined_text))
+            # best_chunk 1개를 온전히 사용 (최대 1500자)
+            best_chunk = c.get("best_chunk", "")[:1500]
+            pairs.append((query[:500], best_chunk))
 
         # Cross-encoder로 점수 계산
         scores = reranker.predict(pairs)

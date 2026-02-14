@@ -10,9 +10,9 @@ from qdrant_client.http import models
 
 from tool.qdrant_client import get_qdrant_client
 from app.prompts.comparison_prompt import (
-    COMPARISON_SYSTEM_PROMPT,
-    COMPARISON_USER_TEMPLATE,
-    COMPARISON_PROMPT_VERSION,
+    COMPARISON_SYSTEM_PROMPT_V2,
+    COMPARISON_USER_TEMPLATE_V2,
+    COMPARISON_PROMPT_VERSION_V2,
 )
 from app.services.precedent_embedding_service import get_openai_client
 
@@ -127,8 +127,8 @@ class ComparisonService:
                 "error": f"판례를 찾을 수 없습니다: {target_case_number}",
             }
 
-        # 2. 프롬프트 생성 (V2: 구체적 인용 강화)
-        user_prompt = COMPARISON_USER_TEMPLATE.format(
+        # 2. 프롬프트 생성 (V2: 핵심 쟁점 키워드 중심 분석)
+        user_prompt = COMPARISON_USER_TEMPLATE_V2.format(
             origin_facts=origin_facts,
             origin_claims=origin_claims,
             precedent_case_number=precedent["case_number"],
@@ -143,7 +143,7 @@ class ComparisonService:
             response = self.openai_client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
-                    {"role": "system", "content": COMPARISON_SYSTEM_PROMPT},
+                    {"role": "system", "content": COMPARISON_SYSTEM_PROMPT_V2},
                     {"role": "user", "content": user_prompt},
                 ],
                 temperature=0.3,
@@ -168,7 +168,7 @@ class ComparisonService:
                     "court_name": precedent["court_name"],
                     "judgment_date": precedent["judgment_date"],
                 },
-                "prompt_version": COMPARISON_PROMPT_VERSION,
+                "prompt_version": COMPARISON_PROMPT_VERSION_V2,
                 "elapsed_time": round(elapsed_time, 2),
             }
 
@@ -197,11 +197,11 @@ class ComparisonService:
             "strategy_points": "",
         }
 
-        # 섹션 구분자 패턴
+        # 섹션 구분자 패턴 (V2: 핵심 쟁점별 유사점 추가)
         sections = {
             "case_overview": ["# 현재 사건 개요", "## 현재 사건 개요", "현재 사건 개요"],
             "precedent_summary": ["# 유사 판례 요약", "## 유사 판례 요약", "유사 판례 요약"],
-            "similarities": ["# 유사점", "## 유사점", "유사점"],
+            "similarities": ["# 핵심 쟁점별 유사점", "## 핵심 쟁점별 유사점", "핵심 쟁점별 유사점", "# 유사점", "## 유사점", "유사점"],
             "differences": ["# 차이점", "## 차이점", "차이점"],
             "strategy_points": ["# 전략 포인트", "## 전략 포인트", "전략 포인트"],
         }

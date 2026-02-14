@@ -1,4 +1,5 @@
 import logging
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from tool.database import SessionLocal, init_db
@@ -14,10 +15,31 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 
+logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """서버 시작/종료 시 실행되는 lifespan 이벤트"""
+    # Startup: 리랭커 모델 warm-up
+    logger.info("서버 시작: 리랭커 모델 warm-up 중...")
+    try:
+        from app.services.precedent_similar_service import get_reranker_model
+        get_reranker_model()
+        logger.info("리랭커 모델 warm-up 완료")
+    except Exception as e:
+        logger.warning(f"리랭커 warm-up 실패 (첫 요청 시 로드됨): {e}")
+
+    yield
+
+    logger.info("서버 종료")
+
+
 app = FastAPI(
     title="CaseMate LLM API",
     description="FastAPI 기반 LLM 서비스",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan,
 )
 
 # CORS 설정

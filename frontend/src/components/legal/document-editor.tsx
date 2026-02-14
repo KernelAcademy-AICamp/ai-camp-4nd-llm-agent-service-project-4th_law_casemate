@@ -2,6 +2,7 @@
 
 import { useState, useRef, useCallback, useEffect } from "react";
 import type { CaseData } from "@/lib/sample-data";
+import type { SimilarCaseResult } from "@/contexts/search-context";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -63,6 +64,7 @@ import { AgentLoadingOverlay, type AgentStep } from "@/components/ui/agent-loadi
 
 interface DocumentEditorProps {
   caseData: CaseData;
+  similarCases?: SimilarCaseResult[];
 }
 
 // AI 생성 가능한 문서 유형 (백엔드 document_api.py의 SYSTEM_PROMPTS 키와 일치해야 함)
@@ -540,7 +542,7 @@ function advanceDraftStep(steps: AgentStep[], idx: number): AgentStep[] {
   }));
 }
 
-export function DocumentEditor({ caseData }: DocumentEditorProps) {
+export function DocumentEditor({ caseData, similarCases }: DocumentEditorProps) {
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
   const [activeDocId, setActiveDocId] = useState<string | null>(null);
   const [documentTitle, setDocumentTitle] = useState("새 문서");
