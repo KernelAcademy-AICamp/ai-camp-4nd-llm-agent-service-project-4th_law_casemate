@@ -8,6 +8,7 @@ from app.models.user import User  # User 모델 import
 from app.models.law_firm import LawFirm  # LawFirm 모델 import
 from app.models import evidence  # Evidence 관련 모델들 import
 from app.models import case_document  # CaseDocument 모델 import
+from app.models.precedent import Precedent, PrecedentSummary  # 판례 원문 모델 import
 
 # 로깅 설정
 logging.basicConfig(

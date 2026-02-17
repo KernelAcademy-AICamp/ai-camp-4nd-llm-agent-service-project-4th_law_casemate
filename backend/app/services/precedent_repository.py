@@ -1,15 +1,17 @@
 """
 판례 데이터 저장소
-Qdrant 조회, 청크 병합, 법령 API 연동
+Qdrant 벡터 검색 + PostgreSQL 원문 조회
 """
 
 import re
 import logging
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
 from qdrant_client.http import models
 
 from tool.qdrant_client import get_qdrant_client
+from tool.database import SessionLocal
+from app.models.precedent import Precedent
 
 logger = logging.getLogger(__name__)
 
@@ -244,41 +246,27 @@ class PrecedentRepository:
         # 【헤더】를 독립된 줄로 변환
         return self._format_headers(text)
 
-    # ==================== 판례 전문 조회 ====================
+    # ==================== 판례 전문 조회 (PostgreSQL) ====================
 
     def get_full_case_content(self, case_number: str) -> str:
         """
-        특정 판례의 모든 청크를 조회하여 전체 내용 반환
+        PostgreSQL에서 판례 전문 조회
         """
-        results = self.qdrant_client.scroll(
-            collection_name=self.CASES_COLLECTION,
-            scroll_filter=models.Filter(
-                must=[
-                    models.FieldCondition(
-                        key="case_number",
-                        match=models.MatchValue(value=case_number)
-                    )
-                ]
-            ),
-            limit=1000,  # 긴 판례 대응 (최대 약 1000개 청크)
-            with_payload=True,
-            with_vectors=False,
-        )
+        db = SessionLocal()
+        try:
+            precedent = db.query(Precedent).filter(
+                Precedent.case_number == case_number
+            ).first()
 
-        chunks = [
-            {
-                "section": point.payload.get("section", ""),
-                "chunk_index": point.payload.get("chunk_index", 0),
-                "content": point.payload.get("content", ""),
-            }
-            for point in results[0]
-        ]
-
-        return self._merge_chunks_to_text(chunks)
+            if precedent and precedent.full_content:
+                return precedent.full_content
+            return ""
+        finally:
+            db.close()
 
     def get_full_case_contents_batch(self, case_numbers: List[str]) -> Dict[str, str]:
         """
-        여러 판례의 전체 내용을 배치로 나눠서 조회
+        PostgreSQL에서 여러 판례의 전문을 일괄 조회
 
         Args:
             case_numbers: 조회할 사건번호 리스트
@@ -289,51 +277,24 @@ class PrecedentRepository:
         if not case_numbers:
             return {}
 
-        BATCH_SIZE = 50
-        case_chunks: Dict[str, List[Dict]] = {cn: [] for cn in case_numbers}
+        db = SessionLocal()
+        try:
+            precedents = db.query(Precedent).filter(
+                Precedent.case_number.in_(case_numbers)
+            ).all()
 
-        for i in range(0, len(case_numbers), BATCH_SIZE):
-            batch = case_numbers[i:i + BATCH_SIZE]
+            return {
+                p.case_number: p.full_content or ""
+                for p in precedents
+            }
+        finally:
+            db.close()
 
-            results = self.qdrant_client.scroll(
-                collection_name=self.CASES_COLLECTION,
-                scroll_filter=models.Filter(
-                    should=[
-                        models.FieldCondition(
-                            key="case_number",
-                            match=models.MatchValue(value=case_num)
-                        )
-                        for case_num in batch
-                    ]
-                ),
-                limit=len(batch) * 50,
-                with_payload=True,
-                with_vectors=False,
-            )
+    # ==================== 판례 상세 조회 (PostgreSQL) ====================
 
-            for point in results[0]:
-                payload = point.payload
-                case_num = payload.get("case_number", "")
-                if case_num in case_chunks:
-                    case_chunks[case_num].append({
-                        "section": payload.get("section", ""),
-                        "chunk_index": payload.get("chunk_index", 0),
-                        "content": payload.get("content", ""),
-                    })
-
-        # 각 판례의 청크를 병합
-        all_contents = {
-            case_num: self._merge_chunks_to_text(chunks)
-            for case_num, chunks in case_chunks.items()
-        }
-
-        return all_contents
-
-    # ==================== 판례 상세 조회 ====================
-
-    def get_case_detail(self, case_number: str) -> Dict[str, Any]:
+    def get_case_detail(self, case_number: str) -> Optional[Dict[str, Any]]:
         """
-        판례 상세 정보 조회
+        PostgreSQL에서 판례 상세 정보 조회
 
         Args:
             case_number: 사건번호 (예: "대법원 2020다12345")
@@ -341,70 +302,210 @@ class PrecedentRepository:
         Returns:
             판례 상세 정보 딕셔너리
         """
-        results = self.qdrant_client.scroll(
-            collection_name=self.CASES_COLLECTION,
-            scroll_filter=models.Filter(
-                must=[
-                    models.FieldCondition(
-                        key="case_number",
-                        match=models.MatchValue(value=case_number)
-                    )
-                ]
-            ),
-            limit=1000,  # 긴 판례 대응 (최대 약 1000개 청크)
-            with_payload=True,
-            with_vectors=False,
-        )
+        db = SessionLocal()
+        try:
+            precedent = db.query(Precedent).filter(
+                Precedent.case_number == case_number
+            ).first()
 
-        chunks = results[0]
-        if not chunks:
-            return None
+            if not precedent:
+                return None
 
-        # 메타데이터 추출 (첫 번째 청크에서)
-        first_payload = chunks[0].payload
-        metadata = {
-            "case_number": first_payload.get("case_number", ""),
-            "case_name": first_payload.get("case_name", ""),
-            "court_name": first_payload.get("court_name", ""),
-            "judgment_date": first_payload.get("judgment_date", ""),
-            "case_type": first_payload.get("case_type", ""),
-        }
+            # 전문 텍스트 후처리
+            full_text = precedent.full_content or ""
 
-        # 청크들을 리스트로 변환
-        chunk_list = [
-            {
-                "section": point.payload.get("section", ""),
-                "chunk_index": point.payload.get("chunk_index", 0),
-                "content": point.payload.get("content", ""),
+            # 【헤더】를 독립 줄로 변환 (프론트 섹션 파싱용)
+            full_text = self._format_headers(full_text)
+
+            # 【사건명】 섹션 제거 (상단 메타데이터로 이미 표시됨)
+            full_text = self._remove_section(full_text, "사건명")
+
+            # 섹션 순서 재배열: 참조조문, 참조판례를 전문 앞으로
+            full_text = self._reorder_sections(full_text)
+
+            # 문단 마커({{PARA}})를 줄바꿈으로 복원
+            full_text = self._restore_paragraphs(full_text)
+
+            return {
+                "case_number": precedent.case_number,
+                "case_name": precedent.case_name or "",
+                "court_name": precedent.court_name or "",
+                "judgment_date": precedent.judgment_date or "",
+                "case_type": precedent.case_type or "",
+                "full_text": full_text,
             }
-            for point in chunks
-        ]
+        finally:
+            db.close()
 
-        # 청크 병합 (섹션 헤더 제외 - content 안에 이미 【섹션명】이 포함됨)
-        full_text = self._merge_chunks_to_text(chunk_list, include_section_header=False)
+    # ==================== 메타데이터 조회 (PostgreSQL) ====================
 
-        # 【헤더】를 독립 줄로 변환 (프론트 섹션 파싱용)
-        full_text = self._format_headers(full_text)
+    def get_metadata_batch(self, case_numbers: List[str]) -> Dict[str, Dict[str, Any]]:
+        """
+        PostgreSQL에서 여러 판례의 메타데이터를 일괄 조회
 
-        # 【사건명】 섹션 제거 (상단 메타데이터로 이미 표시됨)
-        full_text = self._remove_section(full_text, "사건명")
+        Args:
+            case_numbers: 조회할 사건번호 리스트
 
-        # 섹션 순서 재배열: 참조조문, 참조판례를 전문 앞으로
-        full_text = self._reorder_sections(full_text)
+        Returns:
+            {case_number: {case_name, court_name, judgment_date, case_type}} 딕셔너리
+        """
+        if not case_numbers:
+            return {}
 
-        # 문단 마커({{PARA}})를 줄바꿈으로 복원
-        full_text = self._restore_paragraphs(full_text)
+        db = SessionLocal()
+        try:
+            precedents = db.query(Precedent).filter(
+                Precedent.case_number.in_(case_numbers)
+            ).all()
 
-        return {
-            **metadata,
-            "full_text": full_text,
-        }
+            return {
+                p.case_number: {
+                    "case_name": p.case_name or "",
+                    "court_name": p.court_name or "",
+                    "judgment_date": p.judgment_date or "",
+                    "case_type": p.case_type or "",
+                    "full_content": p.full_content or "",
+                }
+                for p in precedents
+            }
+        finally:
+            db.close()
 
-    # ==================== 최신 판례 조회 ====================
+    def extract_preview(self, full_content: str, query: str, context_chars: int = 100) -> str:
+        """
+        전문에서 검색어 주변 텍스트 추출 (미리보기용)
+
+        Args:
+            full_content: 전체 텍스트
+            query: 검색어
+            context_chars: 검색어 앞뒤로 포함할 문자 수
+
+        Returns:
+            검색어 주변 텍스트
+        """
+        if not full_content:
+            return ""
+
+        idx = full_content.find(query)
+        if idx == -1:
+            # 검색어 못 찾으면 앞부분 반환
+            return full_content[:200] + "..." if len(full_content) > 200 else full_content
+
+        start = max(0, idx - context_chars)
+        end = min(len(full_content), idx + len(query) + context_chars)
+
+        preview = full_content[start:end]
+        if start > 0:
+            preview = "..." + preview
+        if end < len(full_content):
+            preview = preview + "..."
+
+        return preview
+
+    # ==================== 키워드 검색 (PostgreSQL) ====================
+
+    def search_by_keywords(
+        self,
+        keywords: List[str],
+        match_all: bool = False,
+        limit: int = 200
+    ) -> List[str]:
+        """
+        PostgreSQL에서 키워드가 포함된 판례의 case_number 검색
+
+        Args:
+            keywords: 검색할 키워드 리스트
+            match_all: True면 모든 키워드 포함, False면 하나라도 포함
+            limit: 최대 결과 수
+
+        Returns:
+            case_number 리스트
+        """
+        if not keywords:
+            return []
+
+        db = SessionLocal()
+        try:
+            from sqlalchemy import or_, and_
+
+            # 키워드별 LIKE 조건 생성
+            conditions = [
+                Precedent.full_content.ilike(f"%{kw}%")
+                for kw in keywords
+            ]
+
+            if match_all:
+                # 모든 키워드 포함 (AND)
+                query = db.query(Precedent.case_number).filter(and_(*conditions))
+            else:
+                # 하나라도 포함 (OR)
+                query = db.query(Precedent.case_number).filter(or_(*conditions))
+
+            results = query.limit(limit).all()
+            return [r[0] for r in results]
+
+        finally:
+            db.close()
+
+    def search_by_keywords_with_count(
+        self,
+        keywords: List[str],
+        limit: int = 200
+    ) -> List[tuple]:
+        """
+        PostgreSQL에서 키워드가 포함된 판례 검색 (매칭 키워드 수 포함)
+
+        Args:
+            keywords: 검색할 키워드 리스트
+            limit: 최대 결과 수
+
+        Returns:
+            [(case_number, matched_keyword_count), ...] 매칭 수 내림차순
+        """
+        if not keywords:
+            return []
+
+        db = SessionLocal()
+        try:
+            from sqlalchemy import or_, case, func
+
+            # 각 키워드별 매칭 여부를 카운트
+            match_cases = [
+                case(
+                    (Precedent.full_content.ilike(f"%{kw}%"), 1),
+                    else_=0
+                )
+                for kw in keywords
+            ]
+
+            # 매칭 키워드 수 합계
+            match_count = sum(match_cases)
+
+            # 하나라도 매칭되는 것만 필터
+            conditions = [
+                Precedent.full_content.ilike(f"%{kw}%")
+                for kw in keywords
+            ]
+
+            results = db.query(
+                Precedent.case_number,
+                match_count.label("match_count")
+            ).filter(
+                or_(*conditions)
+            ).order_by(
+                match_count.desc()
+            ).limit(limit).all()
+
+            return [(r[0], r[1]) for r in results]
+
+        finally:
+            db.close()
+
+    # ==================== 최신 판례 조회 (PostgreSQL) ====================
 
     def get_recent_cases(self, limit: int = 50) -> Dict[str, Any]:
         """
-        최신 판례 목록 조회 (judgment_date 내림차순)
+        PostgreSQL에서 최신 판례 목록 조회 (judgment_date 내림차순)
 
         Args:
             limit: 반환할 최대 결과 수
@@ -412,41 +513,30 @@ class PrecedentRepository:
         Returns:
             최신 판례 목록
         """
-        results = self.qdrant_client.scroll(
-            collection_name=self.CASES_COLLECTION,
-            scroll_filter=models.Filter(
-                must=[
-                    models.FieldCondition(
-                        key="chunk_index",
-                        match=models.MatchValue(value=0)
-                    )
-                ]
-            ),
-            limit=1000,
-            with_payload=True,
-            with_vectors=False,
-        )
+        db = SessionLocal()
+        try:
+            precedents = db.query(Precedent).order_by(
+                Precedent.judgment_date.desc()
+            ).limit(limit).all()
 
-        cases = []
-        for point in results[0]:
-            payload = point.payload
-            cases.append({
-                "case_number": payload.get("case_number", ""),
-                "case_name": payload.get("case_name", ""),
-                "court_name": payload.get("court_name", ""),
-                "judgment_date": payload.get("judgment_date", ""),
-                "content": payload.get("content", ""),
-                "score": 0,
-            })
+            cases = [
+                {
+                    "case_number": p.case_number,
+                    "case_name": p.case_name or "",
+                    "court_name": p.court_name or "",
+                    "judgment_date": p.judgment_date or "",
+                    "content": (p.full_content or "")[:200] + "...",
+                    "score": 0,
+                }
+                for p in precedents
+            ]
 
-        # 최신순 정렬
-        cases.sort(key=lambda x: x["judgment_date"], reverse=True)
-        cases = cases[:limit]
-
-        return {
-            "total": len(cases),
-            "results": cases,
-        }
+            return {
+                "total": len(cases),
+                "results": cases,
+            }
+        finally:
+            db.close()
 
     # ==================== 응답 포맷팅 ====================
 

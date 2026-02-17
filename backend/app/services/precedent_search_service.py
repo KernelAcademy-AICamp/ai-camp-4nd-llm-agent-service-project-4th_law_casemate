@@ -271,6 +271,7 @@ class PrecedentSearchService:
     ) -> Dict[str, Dict[str, Any]]:
         """
         필터 조건으로 scroll 검색 후 사건번호별 중복 제거
+        메타데이터는 PostgreSQL에서 조회
 
         Returns:
             {case_number: {case_name, court_name, judgment_date, content}}
@@ -285,17 +286,26 @@ class PrecedentSearchService:
             with_vectors=False,
         )
 
-        case_data = {}
+        # Qdrant에서 case_number만 추출
+        case_numbers = []
         for point in results[0]:
             payload = point.payload
             case_num = payload.get("case_number", "")
-            if case_num and case_num not in case_data and case_num not in exclude:
-                case_data[case_num] = {
-                    "case_name": payload.get("case_name", ""),
-                    "court_name": payload.get("court_name", ""),
-                    "judgment_date": payload.get("judgment_date", ""),
-                    "content": payload.get("content", ""),
-                }
+            if case_num and case_num not in case_numbers and case_num not in exclude:
+                case_numbers.append(case_num)
+
+        # PostgreSQL에서 메타데이터 일괄 조회
+        metadata_batch = self.repository.get_metadata_batch(case_numbers) if case_numbers else {}
+
+        case_data = {}
+        for case_num in case_numbers:
+            meta = metadata_batch.get(case_num, {})
+            case_data[case_num] = {
+                "case_name": meta.get("case_name", ""),
+                "court_name": meta.get("court_name", ""),
+                "judgment_date": meta.get("judgment_date", ""),
+                "content": "",  # 전문은 별도 조회
+            }
         return case_data
 
     def _to_search_results(
@@ -330,6 +340,7 @@ class PrecedentSearchService:
     ) -> List[SearchResult]:
         """
         BM25 스코어 기반 검색
+        메타데이터는 PostgreSQL에서 조회
 
         Args:
             query: 검색 쿼리
@@ -372,32 +383,36 @@ class PrecedentSearchService:
         )
 
         # 사건번호별 중복 제거 및 점수 유지
-        case_data = {}
+        temp_results = []  # (case_number, content, score)
+        seen = set()
         for point in results.points:
             payload = point.payload
             case_num = payload.get("case_number", "")
-            if case_num and case_num not in case_data and case_num not in exclude:
-                case_data[case_num] = {
-                    "case_name": payload.get("case_name", ""),
-                    "court_name": payload.get("court_name", ""),
-                    "judgment_date": payload.get("judgment_date", ""),
-                    "content": payload.get("content", ""),
-                    "score": point.score,  # BM25 점수 보존
-                }
+            if case_num and case_num not in seen and case_num not in exclude:
+                seen.add(case_num)
+                temp_results.append((
+                    case_num,
+                    payload.get("content", ""),
+                    point.score,
+                ))
 
-        # SearchResult 변환 (점수순 정렬)
-        search_results = [
-            SearchResult(
+        # PostgreSQL에서 메타데이터 일괄 조회
+        case_numbers = [r[0] for r in temp_results]
+        metadata_batch = self.repository.get_metadata_batch(case_numbers) if case_numbers else {}
+
+        # SearchResult 변환
+        search_results = []
+        for case_num, content, score in temp_results:
+            meta = metadata_batch.get(case_num, {})
+            search_results.append(SearchResult(
                 case_number=case_num,
-                case_name=data["case_name"],
-                court_name=data["court_name"],
-                judgment_date=data["judgment_date"],
-                content=data["content"],
+                case_name=meta.get("case_name", ""),
+                court_name=meta.get("court_name", ""),
+                judgment_date=meta.get("judgment_date", ""),
+                content=content,
                 section="BM25",
-                score=data["score"],
-            )
-            for case_num, data in case_data.items()
-        ]
+                score=score,
+            ))
 
         # 점수 내림차순 정렬
         search_results.sort(key=lambda r: r.score, reverse=True)
@@ -482,7 +497,7 @@ class PrecedentSearchService:
     def _search_hybrid(
         self, query: str, limit: int, exclude: Set[str], merge_chunks: bool, filters: Optional[Dict[str, str]] = None
     ) -> List[SearchResult]:
-        """4순위: 동의어 확장 + 하이브리드 검색"""
+        """4순위: 동의어 확장 + 하이브리드 검색 (메타데이터는 PostgreSQL에서 조회)"""
         expanded = self._expand_query(query)
         logger.info(f"4순위 하이브리드: '{expanded}'")
 
@@ -506,20 +521,34 @@ class PrecedentSearchService:
         # 점수 결합
         combined = self._combine_scores(dense_results.points, sparse_results.points)
 
+        # 임시 결과 수집 (case_number, content, score)
+        temp_results = []
+        for data in combined:
+            case_num = data["payload"].get("case_number", "")
+            if case_num and case_num not in exclude:
+                temp_results.append((
+                    case_num,
+                    data["payload"].get("content", ""),
+                    data["score"],
+                ))
+
+        # PostgreSQL에서 메타데이터 일괄 조회
+        case_numbers = list(set(r[0] for r in temp_results))
+        metadata_batch = self.repository.get_metadata_batch(case_numbers) if case_numbers else {}
+
         # SearchResult 변환
-        results = [
-            SearchResult(
-                case_number=data["payload"].get("case_number", ""),
-                case_name=data["payload"].get("case_name", ""),
-                court_name=data["payload"].get("court_name", ""),
-                judgment_date=data["payload"].get("judgment_date", ""),
-                content=data["payload"].get("content", ""),
+        results = []
+        for case_num, content, score in temp_results:
+            meta = metadata_batch.get(case_num, {})
+            results.append(SearchResult(
+                case_number=case_num,
+                case_name=meta.get("case_name", ""),
+                court_name=meta.get("court_name", ""),
+                judgment_date=meta.get("judgment_date", ""),
+                content=content,
                 section="하이브리드",
-                score=data["score"],
-            )
-            for data in combined
-            if data["payload"].get("case_number", "") not in exclude
-        ]
+                score=score,
+            ))
 
         if merge_chunks:
             results = self._merge_case_chunks(results)
@@ -654,51 +683,62 @@ class PrecedentSearchService:
             query=models.FusionQuery(fusion=models.Fusion.RRF),
             query_filter=query_filter,
             limit=internal_limit,
-            with_payload=True,
+            with_payload=["case_number", "section"],  # 최소 payload만 요청
         )
 
-        # ★ Python 우선순위 부스팅
-        boosted_results: List[tuple] = []  # (point, boosted_score)
+        # 사건번호별 중복 제거 (섹션 가중치만 적용)
+        found: Set[str] = set()
+        temp_results: List[tuple] = []  # (case_number, section, score)
+
         for point in results.points:
             payload = point.payload
-            content = payload.get("content", "")
+            case_num = payload.get("case_number", "")
+            section = payload.get("section", "")
             score = point.score
 
-            # 우선순위 부스팅
-            if query in content:
-                score *= 3.0  # 전체 문구 일치
-            elif keywords and all(kw in content for kw in keywords):
-                score *= 2.0  # 키워드 전부 포함
-            elif keywords and any(kw in content for kw in keywords):
-                score *= 1.5  # 키워드 일부 포함
-
             # 섹션 가중치
-            section = payload.get("section", "")
             score *= self.SECTION_WEIGHTS.get(section, self.DEFAULT_SECTION_WEIGHT)
 
-            boosted_results.append((point, score))
-
-        # 부스팅 점수로 재정렬
-        boosted_results.sort(key=lambda x: x[1], reverse=True)
-
-        # 사건번호별 중복 제거 + SearchResult 변환
-        found: Set[str] = set()
-        all_results: List[SearchResult] = []
-
-        for point, boosted_score in boosted_results:
-            payload = point.payload
-            case_num = payload.get("case_number", "")
             if case_num and case_num not in found:
                 found.add(case_num)
-                all_results.append(SearchResult(
-                    case_number=case_num,
-                    case_name=payload.get("case_name", ""),
-                    court_name=payload.get("court_name", ""),
-                    judgment_date=payload.get("judgment_date", ""),
-                    content=payload.get("content", ""),
-                    section=payload.get("section", ""),
-                    score=boosted_score,
-                ))
+                temp_results.append((case_num, section, score))
+
+        # 점수순 재정렬
+        temp_results.sort(key=lambda x: x[2], reverse=True)
+
+        # PostgreSQL에서 메타데이터 + 전문 일괄 조회
+        case_numbers = [r[0] for r in temp_results]
+        metadata_batch = self.repository.get_metadata_batch(case_numbers) if case_numbers else {}
+
+        # ★ Python 우선순위 부스팅 (PostgreSQL 전문 기반)
+        all_results: List[SearchResult] = []
+        for case_num, section, score in temp_results:
+            meta = metadata_batch.get(case_num, {})
+            full_content = meta.get("full_content", "")
+
+            # 우선순위 부스팅 (전문에서 키워드 매칭)
+            if query in full_content:
+                score *= 3.0  # 전체 문구 일치
+            elif keywords and all(kw in full_content for kw in keywords):
+                score *= 2.0  # 키워드 전부 포함
+            elif keywords and any(kw in full_content for kw in keywords):
+                score *= 1.5  # 키워드 일부 포함
+
+            # 미리보기 생성 (검색어 주변 텍스트)
+            preview = self.repository.extract_preview(full_content, query)
+
+            all_results.append(SearchResult(
+                case_number=case_num,
+                case_name=meta.get("case_name", ""),
+                court_name=meta.get("court_name", ""),
+                judgment_date=meta.get("judgment_date", ""),
+                content=preview,
+                section=section,
+                score=score,
+            ))
+
+        # 부스팅 후 재정렬
+        all_results.sort(key=lambda r: r.score, reverse=True)
 
         # 최신순 정렬 (요청 시)
         if sort == "latest":
