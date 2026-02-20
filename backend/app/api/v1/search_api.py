@@ -14,8 +14,10 @@ from app.services.precedent_search_service import PrecedentSearchService
 from app.services.precedent_similar_service import PrecedentSimilarService
 from app.services.precedent_summary_service import SummaryService
 from app.services.comparison_service import ComparisonService
-from app.models.evidence import CaseAnalysis
+from app.models.evidence import Case, CaseAnalysis
+from app.models.user import User
 from tool.database import get_db
+from tool.security import get_current_user
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +62,8 @@ async def search_cases(
     court_type: Optional[str] = Query(None, description="법원 유형 (대법원, 고등법원, 지방법원)"),
     case_type: Optional[str] = Query(None, description="사건 종류 (민사, 형사, 일반행정, 가사)"),
     period: Optional[str] = Query(None, description="기간 (1y, 3y, 5y, 10y)"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """
     판례 검색 (하이브리드: 의미 + 키워드)
@@ -93,12 +97,14 @@ async def search_cases(
         )
         return results
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"검색 중 오류 발생: {str(e)}")
+        logger.error(f"검색 중 오류: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="검색 중 오류가 발생했습니다")
 
 
 @router.get("/cases/recent")
 async def get_recent_cases(
     limit: int = Query(10, description="결과 개수", ge=1, le=100),
+    current_user: User = Depends(get_current_user),
 ):
     """
     최신 판례 목록 조회 (판결일 기준 내림차순)
@@ -109,11 +115,12 @@ async def get_recent_cases(
         results = search_service.get_recent_cases(limit=limit)
         return results
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"조회 중 오류 발생: {str(e)}")
+        logger.error(f"최신 판례 조회 중 오류: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="조회 중 오류가 발생했습니다")
 
 
 @router.get("/cases/{case_number:path}")
-async def get_case_detail(case_number: str):
+async def get_case_detail(case_number: str, current_user: User = Depends(get_current_user)):
     """
     판례 상세 조회
 
@@ -131,11 +138,12 @@ async def get_case_detail(case_number: str):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"조회 중 오류 발생: {str(e)}")
+        logger.error(f"판례 상세 조회 중 오류: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="조회 중 오류가 발생했습니다")
 
 
 @router.post("/summarize")
-async def summarize(request: SummarizeRequest):
+async def summarize(request: SummarizeRequest, current_user: User = Depends(get_current_user)):
     """
     판례/법령 내용 요약
 
@@ -176,13 +184,15 @@ async def summarize(request: SummarizeRequest):
             )
             return {"summary": summary, "cached": False, "saved": False}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"요약 중 오류 발생: {str(e)}")
+        logger.error(f"요약 중 오류: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="요약 중 오류가 발생했습니다")
 
 
 @router.post("/cases/similar")
 async def search_similar_cases(
     request: SimilarCasesRequest,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """
     유사 판례 검색 (하이브리드: 의미 + 키워드)
@@ -194,6 +204,12 @@ async def search_similar_cases(
     try:
         # case_id가 있으면 DB에서 조회
         if request.case_id:
+            case = db.query(Case).filter(Case.id == request.case_id).first()
+            if not case:
+                raise HTTPException(status_code=404, detail="사건을 찾을 수 없습니다")
+            if case.law_firm_id != current_user.firm_id:
+                raise HTTPException(status_code=403, detail="해당 사건에 접근할 권한이 없습니다")
+
             case_analysis = db.query(CaseAnalysis).filter(
                 CaseAnalysis.case_id == request.case_id
             ).first()
@@ -228,11 +244,12 @@ async def search_similar_cases(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"유사 판례 검색 중 오류 발생: {str(e)}")
+        logger.error(f"유사 판례 검색 중 오류: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="유사 판례 검색 중 오류가 발생했습니다")
 
 
 @router.post("/cases/compare")
-async def compare_cases(request: CompareRequest):
+async def compare_cases(request: CompareRequest, current_user: User = Depends(get_current_user)):
     """
     현재 사건과 유사 판례 비교 분석 (RAG)
 
@@ -256,4 +273,5 @@ async def compare_cases(request: CompareRequest):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"비교 분석 중 오류 발생: {str(e)}")
+        logger.error(f"비교 분석 중 오류: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="비교 분석 중 오류가 발생했습니다")

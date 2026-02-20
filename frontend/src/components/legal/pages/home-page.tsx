@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useNavigate, useOutletContext } from "react-router-dom";
-import { Scale, ArrowUp, FolderOpen, MessageSquare } from "lucide-react";
+import { Scale, ArrowUp, FolderOpen, MessageSquare, HelpCircle, X } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Tooltip,
@@ -18,11 +18,13 @@ interface Message {
 // ── Constants ──
 const hintPhrases = [
   "의뢰인 진술과 카톡 내용을 토대로 사실 관계만 정리해줘...",
-  "오늘 상담한 사건과 유사한 사건 및 판례를 검색해줘...",
+  "최근 사건 손해배상 청구 소장 초안을 작성해줘...",
+  "오늘 상담한 사건과 유사한 판례를 찾아서 비교해줘...",
 ];
 
 const TYPING_SPEED = 58; // ms per character
 const PAUSE_AFTER_COMPLETE = 2000; // ms pause after phrase is fully typed
+const FINAL_HINT = "AI 사건 분석, 초안 작성, 유사 판례 검색 등을 도와드립니다.";
 
 const dummyResponses: Record<string, string> = {
   분석: "사건의 주요 쟁점을 분석해 드리겠습니다.\n\n1. **계약 위반 여부**: 당사자 간 계약서 제3조의 이행 의무 충족 여부가 핵심입니다.\n2. **손해배상 범위**: 직접 손해와 간접 손해의 인과관계를 입증해야 합니다.\n3. **시효 문제**: 청구권 소멸시효(3년)의 기산점 확인이 필요합니다.\n\n추가 정보를 입력해 주시면 더 상세한 분석이 가능합니다.",
@@ -86,7 +88,18 @@ function useTypingHint(active: boolean, userStartedTyping: boolean) {
         setHintText("");
       }
 
-      // All done
+      // 최종 멘트 타이핑 후 유지
+      if (cancelledRef.current) return;
+      for (let i = 0; i <= FINAL_HINT.length; i++) {
+        if (cancelledRef.current) return;
+        await new Promise<void>((r) => {
+          timeout = setTimeout(r, TYPING_SPEED);
+        });
+        if (cancelledRef.current) return;
+        setHintText(FINAL_HINT.slice(0, i));
+      }
+
+      // All done — hintText stays as FINAL_HINT
       setHintDone(true);
     }
 
@@ -169,12 +182,61 @@ export function HomePage() {
   const [greeting] = useState(() =>
     getRandomGreeting(userInfo?.name, userInfo?.role)
   );
+  const [showHelp, setShowHelp] = useState(false);
+  const helpBtnRef = useRef<HTMLButtonElement>(null);
+  const helpPopupRef = useRef<HTMLDivElement>(null);
+  const chatInputRef = useRef<HTMLDivElement>(null);
 
   const userStartedTyping = input.length > 0 || hasMessages;
   const { hintText, hintDone } = useTypingHint(
     !hasMessages,
     userStartedTyping
   );
+
+  // 도움말 팝업 외부 클릭 시 닫기
+  useEffect(() => {
+    if (!showHelp) return;
+    const handler = (e: MouseEvent) => {
+      const target = e.target as Node;
+      if (
+        helpPopupRef.current && !helpPopupRef.current.contains(target) &&
+        helpBtnRef.current && !helpBtnRef.current.contains(target)
+      ) {
+        setShowHelp(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [showHelp]);
+
+  // 도움말 가이드 애니메이션 시퀀스
+  useEffect(() => {
+    if (!showHelp) return;
+    const timers: ReturnType<typeof setTimeout>[] = [];
+
+    // Step 1: 사이드바 기능 아이콘 발광 (2회, 1.6s × 2 = 3.2s)
+    const sidebarMain = document.querySelector('[data-guide-target="sidebar-main"]');
+    if (sidebarMain) {
+      sidebarMain.classList.add("guide-pulse");
+      timers.push(setTimeout(() => sidebarMain.classList.remove("guide-pulse"), 3200));
+    }
+
+    // Step 2: 사이드바 발광 종료 0.5초 후 채팅창 발광 (2회, 3.2s)
+    timers.push(setTimeout(() => {
+      if (chatInputRef.current) {
+        chatInputRef.current.classList.add("guide-glow-soft");
+        timers.push(setTimeout(() => {
+          chatInputRef.current?.classList.remove("guide-glow-soft");
+        }, 3200));
+      }
+    }, 3700));
+
+    return () => {
+      timers.forEach(clearTimeout);
+      sidebarMain?.classList.remove("guide-pulse");
+      chatInputRef.current?.classList.remove("guide-glow-soft");
+    };
+  }, [showHelp]);
 
   const scrollToBottom = useCallback(() => {
     if (scrollRef.current) {
@@ -263,14 +325,14 @@ export function HomePage() {
             <h1 className="text-[32px] font-semibold text-foreground tracking-tight">
               {greeting}
             </h1>
-            <p className="mt-2 text-sm text-muted-foreground">
+            <p className="mt-2 text-muted-foreground" style={{ fontSize: '0.935rem' }}>
               업무와 관련된 질문을 입력해 주세요.
             </p>
           </div>
 
           {/* Chat Input */}
           <div className="w-full relative mb-12">
-            <div className="flex items-end gap-2 bg-card border border-border/50 rounded-2xl px-4 py-3 shadow-sm focus-within:border-primary/40 focus-within:shadow-md transition-all">
+            <div ref={chatInputRef} className="w-full flex items-end gap-2 bg-card border border-border/50 rounded-2xl px-4 py-3 shadow-sm focus-within:border-primary/40 focus-within:shadow-md transition-all">
               <div className="flex-1 relative">
                 <textarea
                   ref={textareaRef}
@@ -286,7 +348,7 @@ export function HomePage() {
                 {/* Typing hint overlay / placeholder (동일 위치) */}
                 {!input && (
                   <div className="absolute inset-0 flex items-center pointer-events-none text-sm leading-relaxed" style={{ color: '#A0A7B5' }}>
-                    {hintText || (hintDone ? "AI 사건 분석, 초안 작성, 유사 판례 검색 등을 도와드립니다." : "")}
+                    {hintText}
                   </div>
                 )}
               </div>
@@ -304,6 +366,43 @@ export function HomePage() {
                 <ArrowUp className="h-4 w-4 text-white" />
               </button>
             </div>
+
+            {/* Help icon — absolute, 채팅창 레이아웃에 영향 없음 */}
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  ref={helpBtnRef}
+                  type="button"
+                  onClick={() => setShowHelp((v) => !v)}
+                  className="absolute top-1/2 -translate-y-1/2 w-10 h-10 rounded-full flex items-center justify-center transition-colors hover:bg-muted/60"
+                  style={{ color: 'var(--text-light)', right: '-3rem' }}
+                >
+                  <HelpCircle className="h-5 w-5" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="right" sideOffset={4} className="bg-[var(--card)] text-[var(--text-muted)] border border-[var(--soft-border)] shadow-sm">도움말</TooltipContent>
+            </Tooltip>
+
+            {/* Help popup */}
+            {showHelp && (
+              <div ref={helpPopupRef} className="absolute right-0 top-full mt-2 w-80 bg-card rounded-xl border border-border/60 shadow-lg p-5 z-50 animate-in fade-in slide-in-from-top-2 duration-200">
+                <div className="flex items-center justify-between mb-3">
+                  <span className="text-[13px] font-semibold text-foreground">좌측 사이드바</span>
+                  <button type="button" onClick={() => setShowHelp(false)} className="text-muted-foreground/50 hover:text-muted-foreground transition-colors">
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+                <div className="space-y-2 text-[13px] text-muted-foreground leading-relaxed">
+                  <p><span className="font-medium text-foreground">①</span> <strong className="text-foreground">사건 관리</strong> - 새 사건 등록 & AI 분석</p>
+                  <p><span className="font-medium text-foreground">②</span> <strong className="text-foreground">파일 관리</strong> — 증거 · 관련 문서 등 원본 파일 관리</p>
+                  <p><span className="font-medium text-foreground">③</span> <strong className="text-foreground">판례 검색</strong> — 참고 판례 검색</p>
+                </div>
+                <div className="border-t border-border/40 mt-3 pt-3 text-[13px] leading-relaxed">
+                  <p className="font-semibold text-foreground mb-1.5">채팅 에이전트</p>
+                  <p className="text-muted-foreground">AI 어시스턴트에게 자유롭게 지시하세요.</p>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Quick Actions */}

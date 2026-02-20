@@ -1,12 +1,15 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from typing import List
+import logging
 
 from tool.database import get_db
 from tool.security import get_current_user
 from app.models.user import User
 from app.models.precedent_favorite import PrecedentFavorite
 from app.services.precedent_search_service import PrecedentSearchService
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -26,7 +29,7 @@ async def add_favorite(
     - case_number: 판례 사건번호
     - 이미 즐겨찾기한 경우 무시
     """
-    print(f"⭐ 즐겨찾기 추가: case_number={case_number}, user_id={current_user.id}")
+    logger.debug(f"즐겨찾기 추가: case_number={case_number}, user_id={current_user.id}")
 
     try:
         # 이미 즐겨찾기 되어있는지 확인
@@ -51,7 +54,7 @@ async def add_favorite(
         db.commit()
         db.refresh(new_favorite)
 
-        print(f"✅ 즐겨찾기 추가 완료: favorite_id={new_favorite.id}")
+        logger.info(f"즐겨찾기 추가 완료: favorite_id={new_favorite.id}")
 
         return {
             "message": "즐겨찾기 추가 완료",
@@ -61,8 +64,8 @@ async def add_favorite(
 
     except Exception as e:
         db.rollback()
-        print(f"❌ 즐겨찾기 추가 실패: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"즐겨찾기 추가 실패: {str(e)}")
+        logger.error(f"즐겨찾기 추가 중 오류: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="즐겨찾기 추가 중 오류가 발생했습니다")
 
 
 @router.delete("/{case_number}")
@@ -76,7 +79,7 @@ async def remove_favorite(
 
     - case_number: 판례 사건번호
     """
-    print(f"⭐ 즐겨찾기 제거: case_number={case_number}, user_id={current_user.id}")
+    logger.debug(f"즐겨찾기 제거: case_number={case_number}, user_id={current_user.id}")
 
     try:
         # 즐겨찾기 조회
@@ -92,7 +95,7 @@ async def remove_favorite(
         db.delete(favorite)
         db.commit()
 
-        print(f"✅ 즐겨찾기 제거 완료: case_number={case_number}")
+        logger.info(f"즐겨찾기 제거 완료: case_number={case_number}")
 
         return {
             "message": "즐겨찾기 제거 완료",
@@ -103,8 +106,8 @@ async def remove_favorite(
         raise
     except Exception as e:
         db.rollback()
-        print(f"❌ 즐겨찾기 제거 실패: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"즐겨찾기 제거 실패: {str(e)}")
+        logger.error(f"즐겨찾기 제거 중 오류: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="즐겨찾기 제거 중 오류가 발생했습니다")
 
 
 @router.get("")
@@ -118,7 +121,7 @@ async def get_favorites(
     - 현재 사용자의 즐겨찾기 판례 목록 반환
     - Qdrant에서 판례 상세 정보 조회하여 함께 반환
     """
-    print(f"📋 즐겨찾기 목록 조회: user_id={current_user.id}")
+    logger.debug(f"즐겨찾기 목록 조회: user_id={current_user.id}")
 
     try:
         # 즐겨찾기 목록 조회 (최신순)
@@ -126,7 +129,7 @@ async def get_favorites(
             PrecedentFavorite.user_id == current_user.id
         ).order_by(PrecedentFavorite.created_at.desc()).all()
 
-        print(f"✅ 즐겨찾기 {len(favorites)}건 조회")
+        logger.debug(f"즐겨찾기 {len(favorites)}건 조회")
 
         # 각 판례의 상세 정보 조회 (Qdrant에서)
         favorite_list = []
@@ -160,8 +163,8 @@ async def get_favorites(
         }
 
     except Exception as e:
-        print(f"❌ 즐겨찾기 목록 조회 실패: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"즐겨찾기 목록 조회 실패: {str(e)}")
+        logger.error(f"즐겨찾기 목록 조회 중 오류: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="즐겨찾기 목록 조회 중 오류가 발생했습니다")
 
 
 @router.get("/{case_number}/status")
@@ -189,8 +192,8 @@ async def get_favorite_status(
         }
 
     except Exception as e:
-        print(f"❌ 즐겨찾기 상태 확인 실패: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"즐겨찾기 상태 확인 실패: {str(e)}")
+        logger.error(f"즐겨찾기 상태 확인 중 오류: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="즐겨찾기 상태 확인 중 오류가 발생했습니다")
 
 
 @router.post("/{case_number}/toggle")
@@ -205,7 +208,7 @@ async def toggle_favorite(
     - case_number: 판례 사건번호
     - 프론트엔드에서 편하게 사용할 수 있는 토글 API
     """
-    print(f"⭐ 즐겨찾기 토글: case_number={case_number}, user_id={current_user.id}")
+    logger.debug(f"즐겨찾기 토글: case_number={case_number}, user_id={current_user.id}")
 
     try:
         # 기존 즐겨찾기 확인
@@ -218,7 +221,7 @@ async def toggle_favorite(
             # 있으면 제거
             db.delete(existing)
             db.commit()
-            print(f"✅ 즐겨찾기 제거됨: case_number={case_number}")
+            logger.info(f"즐겨찾기 제거됨: case_number={case_number}")
             return {
                 "message": "즐겨찾기 제거 완료",
                 "case_number": case_number,
@@ -233,7 +236,7 @@ async def toggle_favorite(
             db.add(new_favorite)
             db.commit()
             db.refresh(new_favorite)
-            print(f"✅ 즐겨찾기 추가됨: case_number={case_number}")
+            logger.info(f"즐겨찾기 추가됨: case_number={case_number}")
             return {
                 "message": "즐겨찾기 추가 완료",
                 "case_number": case_number,
@@ -243,5 +246,5 @@ async def toggle_favorite(
 
     except Exception as e:
         db.rollback()
-        print(f"❌ 즐겨찾기 토글 실패: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"즐겨찾기 토글 실패: {str(e)}")
+        logger.error(f"즐겨찾기 처리 중 오류: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="즐겨찾기 처리 중 오류가 발생했습니다")

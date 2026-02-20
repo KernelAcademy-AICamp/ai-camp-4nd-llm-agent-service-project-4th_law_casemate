@@ -1,11 +1,16 @@
+import logging
 from typing import List, Optional
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from app.services.timeline_service import TimeLineService
 from app.models.timeline import TimeLine
-from app.models.evidence import Evidence
+from app.models.evidence import Case, Evidence
+from app.models.user import User
 from tool.database import SessionLocal
+from tool.security import get_current_user
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/timeline", tags=["timeline"])
 
@@ -90,7 +95,7 @@ class TimelineResponse(BaseModel):
 
 
 @router.get("/{case_id}", response_model=List[TimelineResponse])
-async def get_timelines(case_id: str, db: Session = Depends(get_db)):
+async def get_timelines(case_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """
     사건의 타임라인 목록 조회 (자동 생성 포함)
 
@@ -112,6 +117,13 @@ async def get_timelines(case_id: str, db: Session = Depends(get_db)):
         else:
             numeric_case_id = int(case_id)
 
+        # 소유권 검증
+        case = db.query(Case).filter(Case.id == numeric_case_id).first()
+        if not case:
+            raise HTTPException(status_code=404, detail="사건을 찾을 수 없습니다")
+        if case.law_firm_id != current_user.firm_id:
+            raise HTTPException(status_code=403, detail="해당 사건에 접근할 권한이 없습니다")
+
         # Step 1: 기존 타임라인 확인
         existing_timelines = db.query(TimeLine).filter(
             TimeLine.case_id == numeric_case_id
@@ -129,7 +141,7 @@ async def get_timelines(case_id: str, db: Session = Depends(get_db)):
             return result
 
         # Step 3: 타임라인이 없으면 자동 생성 시도 (실패 시 빈 배열 반환)
-        print(f"[Timeline GET] 타임라인 없음 - 자동 생성 시도: case_id={numeric_case_id}")
+        logger.debug(f"[Timeline GET] 타임라인 없음 - 자동 생성 시도: case_id={numeric_case_id}")
 
         try:
             timeline_service = TimeLineService(db=db, case_id=numeric_case_id)
@@ -140,25 +152,26 @@ async def get_timelines(case_id: str, db: Session = Depends(get_db)):
             for timeline in generated_timelines:
                 result.append(format_timeline_with_evidence(timeline, db))
 
-            print(f"[Timeline GET] 자동 생성 완료: {len(result)}개")
+            logger.info(f"[Timeline GET] 자동 생성 완료: {len(result)}개")
             return result
         except Exception as gen_error:
             # 자동 생성 실패 시 빈 배열 반환 (사용자는 수동으로 생성 버튼 클릭 가능)
-            print(f"[Timeline GET] 자동 생성 실패 (빈 배열 반환): {str(gen_error)}")
+            logger.debug(f"[Timeline GET] 자동 생성 실패 (빈 배열 반환): {str(gen_error)}")
             return []
 
     except HTTPException:
         raise
     except Exception as e:
-        print(f"[Timeline GET] 에러: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"[Timeline GET] 에러: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="타임라인 조회 중 오류가 발생했습니다")
 
 
 @router.post("/{case_id}", response_model=TimelineResponse)
 async def create_timeline(
     case_id: str,
     request: TimelineRequest,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
     """
     타임라인 이벤트 추가
@@ -177,6 +190,13 @@ async def create_timeline(
             numeric_case_id = int(case_id.split("-")[1])
         else:
             numeric_case_id = int(case_id)
+
+        # 소유권 검증
+        case = db.query(Case).filter(Case.id == numeric_case_id).first()
+        if not case:
+            raise HTTPException(status_code=404, detail="사건을 찾을 수 없습니다")
+        if case.law_firm_id != current_user.firm_id:
+            raise HTTPException(status_code=403, detail="해당 사건에 접근할 권한이 없습니다")
 
         # 새 타임라인 생성
         timeline = TimeLine(
@@ -199,14 +219,16 @@ async def create_timeline(
         return format_timeline_with_evidence(timeline, db)
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"[Timeline POST] 에러: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="타임라인 생성 중 오류가 발생했습니다")
 
 
 @router.put("/{timeline_id}", response_model=TimelineResponse)
 async def update_timeline(
     timeline_id: int,
     request: TimelineRequest,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
     """
     타임라인 이벤트 수정
@@ -224,6 +246,11 @@ async def update_timeline(
 
         if not timeline:
             raise HTTPException(status_code=404, detail="타임라인을 찾을 수 없습니다")
+
+        # 소유권 검증
+        case = db.query(Case).filter(Case.id == timeline.case_id).first()
+        if not case or case.law_firm_id != current_user.firm_id:
+            raise HTTPException(status_code=403, detail="해당 사건에 접근할 권한이 없습니다")
 
         # 업데이트
         timeline.firm_id = request.firm_id
@@ -244,11 +271,12 @@ async def update_timeline(
         raise
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"[Timeline PUT] 에러: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="타임라인 수정 중 오류가 발생했습니다")
 
 
 @router.delete("/{timeline_id}")
-async def delete_timeline(timeline_id: int, db: Session = Depends(get_db)):
+async def delete_timeline(timeline_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """
     타임라인 이벤트 삭제
 
@@ -265,6 +293,11 @@ async def delete_timeline(timeline_id: int, db: Session = Depends(get_db)):
         if not timeline:
             raise HTTPException(status_code=404, detail="타임라인을 찾을 수 없습니다")
 
+        # 소유권 검증
+        case = db.query(Case).filter(Case.id == timeline.case_id).first()
+        if not case or case.law_firm_id != current_user.firm_id:
+            raise HTTPException(status_code=403, detail="해당 사건에 접근할 권한이 없습니다")
+
         db.delete(timeline)
         db.commit()
 
@@ -273,14 +306,16 @@ async def delete_timeline(timeline_id: int, db: Session = Depends(get_db)):
         raise
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"[Timeline DELETE] 에러: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="타임라인 삭제 중 오류가 발생했습니다")
 
 
 @router.post("/{case_id}/generate", response_model=List[TimelineResponse])
 async def generate_timeline(
     case_id: str,
     force: bool = True,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
     """
     타임라인 강제 재생성
@@ -296,7 +331,7 @@ async def generate_timeline(
     Returns:
         생성된 타임라인 목록
     """
-    print(f"\n[Timeline Generate API] 재생성 시작: case_id={case_id}, force={force}")
+    logger.debug(f"[Timeline Generate API] 재생성 시작: case_id={case_id}, force={force}")
 
     try:
         # case_id 파싱
@@ -305,36 +340,41 @@ async def generate_timeline(
         else:
             numeric_case_id = int(case_id)
 
+        # 소유권 검증
+        case = db.query(Case).filter(Case.id == numeric_case_id).first()
+        if not case:
+            raise HTTPException(status_code=404, detail="사건을 찾을 수 없습니다")
+        if case.law_firm_id != current_user.firm_id:
+            raise HTTPException(status_code=403, detail="해당 사건에 접근할 권한이 없습니다")
+
         # Step 1: 기존 타임라인 삭제 (force=True인 경우)
         if force:
             deleted_count = db.query(TimeLine).filter(
                 TimeLine.case_id == numeric_case_id
             ).delete()
             db.commit()
-            print(f"[Timeline Generate API] 기존 타임라인 삭제: {deleted_count}개")
+            logger.debug(f"[Timeline Generate API] 기존 타임라인 삭제: {deleted_count}개")
 
         # Step 2: 새 타임라인 생성
-        print(f"[Timeline Generate API] TimeLineService 초기화")
+        logger.debug("[Timeline Generate API] TimeLineService 초기화")
         timeline_service = TimeLineService(db=db, case_id=numeric_case_id)
 
-        print(f"[Timeline Generate API] 타임라인 생성 실행")
+        logger.debug("[Timeline Generate API] 타임라인 생성 실행")
         generated_timelines = await timeline_service.generate_timeline_auto()
 
-        print(f"[Timeline Generate API] 생성 완료: {len(generated_timelines)}개")
+        logger.info(f"[Timeline Generate API] 생성 완료: {len(generated_timelines)}개")
 
         # Step 3: 응답 형식으로 변환 (증거 정보 포함)
         result = []
         for timeline in generated_timelines:
             result.append(format_timeline_with_evidence(timeline, db))
 
-        print(f"[Timeline Generate API] 완료\n")
+        logger.info("[Timeline Generate API] 완료")
         return result
 
     except HTTPException:
         raise
     except Exception as e:
-        print(f"[Timeline Generate API] 에러: {type(e).__name__} - {str(e)}")
-        import traceback
-        print(f"[Timeline Generate API] 트레이스백:\n{traceback.format_exc()}")
+        logger.error(f"[Timeline Generate API] 에러: {e}", exc_info=True)
         db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="타임라인 생성 중 오류가 발생했습니다")

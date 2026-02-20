@@ -1,11 +1,11 @@
 import { useState } from "react";
-import { NavLink, useLocation } from "react-router-dom";
+import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import {
   Scale,
   Home,
-  Folder,
   FileText,
-  Search,
+  FolderOpen,
+  Landmark,
   Settings,
   LogOut,
   PanelLeftClose,
@@ -27,13 +27,14 @@ interface SidebarProps {
 
 const navItems = [
   { to: "/", icon: Home, label: "홈", end: true },
-  { to: "/cases", icon: Folder, label: "사건 관리" },
-  { to: "/evidence/upload", icon: FileText, label: "파일 관리" },
-  { to: "/precedents", icon: Search, label: "판례 검색" },
+  { to: "/cases", icon: FileText, label: "사건 관리" },
+  { to: "/evidence/upload", icon: FolderOpen, label: "파일 관리" },
+  { to: "/precedents", icon: Landmark, label: "판례 검색" },
 ];
 
 export function Sidebar({ collapsed, onToggle, onLogout }: SidebarProps) {
   const location = useLocation();
+  const navigate = useNavigate();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const isCasesActive =
     location.pathname.startsWith("/cases") ||
@@ -69,7 +70,11 @@ export function Sidebar({ collapsed, onToggle, onLogout }: SidebarProps) {
             <Scale className="h-[18px] w-[18px] text-white" />
           </button>
         ) : (
-          <div className="flex items-center gap-2.5">
+          <button
+            type="button"
+            onClick={() => navigate("/")}
+            className="flex items-center gap-2.5 cursor-pointer hover:opacity-80 transition-opacity duration-150"
+          >
             <div
               className="p-2 rounded-xl"
               style={{ background: "linear-gradient(135deg, #6D5EF5, #A78BFA)" }}
@@ -79,12 +84,12 @@ export function Sidebar({ collapsed, onToggle, onLogout }: SidebarProps) {
             <span className="text-base font-bold tracking-tight text-foreground">
               Casemate
             </span>
-          </div>
+          </button>
         )}
       </div>
 
-      {/* Navigation */}
-      <nav className="flex-1 py-4 overflow-y-auto px-2">
+      {/* Navigation — 가이드 발광 대상 */}
+      <nav data-guide-target="sidebar-main" className="shrink-0 py-4 px-2 mx-1 rounded-xl">
         <div className="space-y-1.5">
           {/* Toggle button — inside nav list so other icons stay fixed */}
           {collapsed ? (
@@ -93,6 +98,7 @@ export function Sidebar({ collapsed, onToggle, onLogout }: SidebarProps) {
                 <button
                   type="button"
                   onClick={onToggle}
+                  data-guide-target="sidebar-toggle"
                   className="w-full flex items-center py-2.5 px-0 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors duration-150"
                 >
                   <span className="w-[52px] flex items-center justify-center shrink-0">
@@ -149,6 +155,9 @@ export function Sidebar({ collapsed, onToggle, onLogout }: SidebarProps) {
         </div>
       </nav>
 
+      {/* Spacer */}
+      <div className="flex-1" />
+
       {/* Footer - Settings & Logout */}
       <div className="py-3 pb-8 mt-2 space-y-0.5 px-2">
         {collapsed ? (
@@ -186,7 +195,7 @@ export function Sidebar({ collapsed, onToggle, onLogout }: SidebarProps) {
           <>
             <button
               type="button"
-              onClick={() => navigate("/settings")}
+              onClick={() => setSettingsOpen(true)}
               className="w-full flex items-center py-2.5 px-0 rounded-lg text-sm font-medium text-muted-foreground hover:bg-muted/60 hover:text-foreground transition-colors duration-150"
             >
               <span className="w-[52px] flex items-center justify-center shrink-0">

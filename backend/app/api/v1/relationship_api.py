@@ -1,12 +1,18 @@
 """
 관계도 API 엔드포인트
 """
+import logging
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from tool.database import get_db
+from tool.security import get_current_user
 from app.services.relationship_service import RelationshipService
 from app.models.relationship import CasePerson, CaseRelationship
+from app.models.evidence import Case
+from app.models.user import User
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -45,7 +51,8 @@ class RelationshipUpdate(BaseModel):
 @router.get("/{case_id}")
 async def get_relationships(
     case_id: str,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
     """
     관계도 조회 (자동 생성 포함)
@@ -65,43 +72,49 @@ async def get_relationships(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid case_id format")
 
-    print(f"\n{'='*80}")
-    print(f"[Relationship API] GET 요청: case_id={numeric_case_id}")
-    print(f"{'='*80}\n")
+    # 소속 법률사무소 권한 확인
+    case = db.query(Case).filter(Case.id == numeric_case_id).first()
+    if not case:
+        raise HTTPException(status_code=404, detail="사건을 찾을 수 없습니다")
+    if case.law_firm_id != current_user.firm_id:
+        raise HTTPException(status_code=403, detail="해당 사건에 접근할 권한이 없습니다")
+
+    logger.debug(f"[Relationship API] GET 요청: case_id={numeric_case_id}")
 
     service = RelationshipService(db=db, case_id=numeric_case_id)
 
     try:
         # 기존 관계도 조회 시도
         relationship_data = service.get_relationship()
-        print(f"[Relationship API] 조회 성공: {len(relationship_data['persons'])}명, {len(relationship_data['relationships'])}개 관계")
-        print(f"[Relationship API] 응답 데이터: {relationship_data}")
+        logger.debug(f"[Relationship API] 조회 성공: {len(relationship_data['persons'])}명, {len(relationship_data['relationships'])}개 관계")
         return relationship_data
     except HTTPException as e:
         # 404 (관계도 없음)인 경우 자동 생성 시도
         if e.status_code == 404:
-            print(f"[Relationship API] 관계도 없음 - 자동 생성 시도")
+            logger.debug("[Relationship API] 관계도 없음 - 자동 생성 시도")
             try:
                 relationship_data = await service.generate_relationship()
-                print(f"[Relationship API] 자동 생성 성공: {len(relationship_data['persons'])}명, {len(relationship_data['relationships'])}개 관계")
+                logger.info(f"[Relationship API] 자동 생성 성공: {len(relationship_data['persons'])}명, {len(relationship_data['relationships'])}개 관계")
                 return relationship_data
             except Exception as gen_error:
                 # 자동 생성 실패 시 빈 데이터 반환 (사용자는 수동으로 생성 버튼 클릭 가능)
-                print(f"[Relationship API] 자동 생성 실패 (빈 데이터 반환): {str(gen_error)}")
+                logger.debug(f"[Relationship API] 자동 생성 실패 (빈 데이터 반환): {str(gen_error)}")
                 return {"persons": [], "relationships": []}
         else:
             # 다른 에러는 그대로 전달
             raise
     except Exception as e:
-        print(f"[Relationship API] 조회 실패: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"관계도 조회 실패: {str(e)}")
+        logger.debug(f"[Relationship API] 조회 실패: {str(e)}")
+        logger.error(f"관계도 조회 실패: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="관계도 조회 중 오류가 발생했습니다")
 
 
 @router.post("/{case_id}/generate")
 async def generate_relationships(
     case_id: str,
     force: bool = False,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
     """
     관계도 생성 또는 재생성
@@ -122,9 +135,14 @@ async def generate_relationships(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid case_id format")
 
-    print(f"\n{'='*80}")
-    print(f"[Relationship API] POST 요청: case_id={numeric_case_id}, force={force}")
-    print(f"{'='*80}\n")
+    # 소속 법률사무소 권한 확인
+    case = db.query(Case).filter(Case.id == numeric_case_id).first()
+    if not case:
+        raise HTTPException(status_code=404, detail="사건을 찾을 수 없습니다")
+    if case.law_firm_id != current_user.firm_id:
+        raise HTTPException(status_code=403, detail="해당 사건에 접근할 권한이 없습니다")
+
+    logger.debug(f"[Relationship API] POST 요청: case_id={numeric_case_id}, force={force}")
 
     service = RelationshipService(db=db, case_id=numeric_case_id)
 
@@ -133,7 +151,7 @@ async def generate_relationships(
         try:
             existing = service.get_relationship()
             if existing and existing.get("persons"):
-                print(f"[Relationship API] 기존 관계도 존재: {len(existing['persons'])}명")
+                logger.debug(f"[Relationship API] 기존 관계도 존재: {len(existing['persons'])}명")
                 raise HTTPException(
                     status_code=409,
                     detail="이미 관계도가 존재합니다. force=true로 재생성하거나 DELETE 후 생성하세요."
@@ -144,10 +162,10 @@ async def generate_relationships(
 
     try:
         # 관계도 생성
-        print(f"[Relationship API] 관계도 생성 시작...")
+        logger.debug("[Relationship API] 관계도 생성 시작...")
         relationship_data = await service.generate_relationship()
 
-        print(f"[Relationship API] 생성 성공: {len(relationship_data['persons'])}명, {len(relationship_data['relationships'])}개 관계")
+        logger.info(f"[Relationship API] 생성 완료: {len(relationship_data['persons'])}명, {len(relationship_data['relationships'])}개 관계")
 
         return {
             "message": "관계도 생성 완료",
@@ -156,14 +174,16 @@ async def generate_relationships(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"[Relationship API] 생성 실패: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"관계도 생성 실패: {str(e)}")
+        logger.debug(f"[Relationship API] 생성 실패: {str(e)}")
+        logger.error(f"관계도 생성 실패: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="관계도 생성 중 오류가 발생했습니다")
 
 
 @router.delete("/{case_id}")
 async def delete_relationships(
     case_id: str,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
     """
     관계도 삭제
@@ -181,21 +201,27 @@ async def delete_relationships(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid case_id format")
 
-    print(f"\n{'='*80}")
-    print(f"[Relationship API] DELETE 요청: case_id={numeric_case_id}")
-    print(f"{'='*80}\n")
+    # 소속 법률사무소 권한 확인
+    case = db.query(Case).filter(Case.id == numeric_case_id).first()
+    if not case:
+        raise HTTPException(status_code=404, detail="사건을 찾을 수 없습니다")
+    if case.law_firm_id != current_user.firm_id:
+        raise HTTPException(status_code=403, detail="해당 사건에 접근할 권한이 없습니다")
+
+    logger.debug(f"[Relationship API] DELETE 요청: case_id={numeric_case_id}")
 
     service = RelationshipService(db=db, case_id=numeric_case_id)
 
     try:
         service.delete_relationship()
-        print(f"[Relationship API] 삭제 성공")
+        logger.info("[Relationship API] 삭제 완료")
         return {"message": "관계도 삭제 완료"}
     except HTTPException:
         raise
     except Exception as e:
-        print(f"[Relationship API] 삭제 실패: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"관계도 삭제 실패: {str(e)}")
+        logger.debug(f"[Relationship API] 삭제 실패: {str(e)}")
+        logger.error(f"관계도 삭제 실패: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="관계도 삭제 중 오류가 발생했습니다")
 
 
 @router.patch("/{case_id}/persons/{person_id}/position")
@@ -204,7 +230,8 @@ async def update_person_position(
     person_id: str,
     position_x: int,
     position_y: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
     """
     인물 위치 업데이트 (프론트엔드에서 드래그 시)
@@ -226,7 +253,12 @@ async def update_person_position(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid ID format")
 
-    from app.models.relationship import CasePerson
+    # 소속 법률사무소 권한 확인
+    case = db.query(Case).filter(Case.id == numeric_case_id).first()
+    if not case:
+        raise HTTPException(status_code=404, detail="사건을 찾을 수 없습니다")
+    if case.law_firm_id != current_user.firm_id:
+        raise HTTPException(status_code=403, detail="해당 사건에 접근할 권한이 없습니다")
 
     person = db.query(CasePerson).filter(
         CasePerson.id == numeric_person_id,
@@ -249,7 +281,8 @@ async def update_person_position(
 async def create_person(
     case_id: str,
     person_data: PersonCreate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
     """
     인물 추가
@@ -266,11 +299,12 @@ async def create_person(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid case_id format")
 
-    # Case 존재 확인
-    from app.models.evidence import Case
+    # Case 존재 확인 + 소속 법률사무소 권한 확인
     case = db.query(Case).filter(Case.id == numeric_case_id).first()
     if not case:
         raise HTTPException(status_code=404, detail="사건을 찾을 수 없습니다")
+    if case.law_firm_id != current_user.firm_id:
+        raise HTTPException(status_code=403, detail="해당 사건에 접근할 권한이 없습니다")
 
     # 인물 생성
     person = CasePerson(
@@ -286,7 +320,7 @@ async def create_person(
     db.commit()
     db.refresh(person)
 
-    print(f"[Relationship API] 인물 추가: {person.name} (ID: {person.id})")
+    logger.info(f"[Relationship API] 인물 추가 완료: person_id={person.id}")
     return person.to_dict()
 
 
@@ -295,7 +329,8 @@ async def update_person(
     case_id: str,
     person_id: str,
     person_data: PersonUpdate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
     """
     인물 정보 수정
@@ -313,6 +348,13 @@ async def update_person(
         numeric_person_id = int(person_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid ID format")
+
+    # 소속 법률사무소 권한 확인
+    case = db.query(Case).filter(Case.id == numeric_case_id).first()
+    if not case:
+        raise HTTPException(status_code=404, detail="사건을 찾을 수 없습니다")
+    if case.law_firm_id != current_user.firm_id:
+        raise HTTPException(status_code=403, detail="해당 사건에 접근할 권한이 없습니다")
 
     person = db.query(CasePerson).filter(
         CasePerson.id == numeric_person_id,
@@ -333,7 +375,7 @@ async def update_person(
     db.commit()
     db.refresh(person)
 
-    print(f"[Relationship API] 인물 수정: {person.name} (ID: {person.id})")
+    logger.info(f"[Relationship API] 인물 수정 완료: person_id={person.id}")
     return person.to_dict()
 
 
@@ -341,7 +383,8 @@ async def update_person(
 async def delete_person(
     case_id: str,
     person_id: str,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
     """
     인물 삭제
@@ -358,6 +401,13 @@ async def delete_person(
         numeric_person_id = int(person_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid ID format")
+
+    # 소속 법률사무소 권한 확인
+    case = db.query(Case).filter(Case.id == numeric_case_id).first()
+    if not case:
+        raise HTTPException(status_code=404, detail="사건을 찾을 수 없습니다")
+    if case.law_firm_id != current_user.firm_id:
+        raise HTTPException(status_code=403, detail="해당 사건에 접근할 권한이 없습니다")
 
     person = db.query(CasePerson).filter(
         CasePerson.id == numeric_person_id,
@@ -379,7 +429,7 @@ async def delete_person(
     db.delete(person)
     db.commit()
 
-    print(f"[Relationship API] 인물 삭제: {person_name} (ID: {numeric_person_id})")
+    logger.info(f"[Relationship API] 인물 삭제 완료: person_id={numeric_person_id}")
     return {"message": f"인물 '{person_name}' 삭제 완료"}
 
 
@@ -389,7 +439,8 @@ async def delete_person(
 async def create_relationship(
     case_id: str,
     rel_data: RelationshipCreate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
     """
     관계 추가
@@ -406,11 +457,12 @@ async def create_relationship(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid case_id format")
 
-    # Case 존재 확인
-    from app.models.evidence import Case
+    # Case 존재 확인 + 소속 법률사무소 권한 확인
     case = db.query(Case).filter(Case.id == numeric_case_id).first()
     if not case:
         raise HTTPException(status_code=404, detail="사건을 찾을 수 없습니다")
+    if case.law_firm_id != current_user.firm_id:
+        raise HTTPException(status_code=403, detail="해당 사건에 접근할 권한이 없습니다")
 
     # 인물 존재 확인
     source_person = db.query(CasePerson).filter(
@@ -440,7 +492,7 @@ async def create_relationship(
     db.commit()
     db.refresh(relationship)
 
-    print(f"[Relationship API] 관계 추가: {source_person.name} -> {target_person.name} ({relationship.relationship_type})")
+    logger.info(f"[Relationship API] 관계 추가 완료: relationship_id={relationship.id}, type={relationship.relationship_type}")
     return relationship.to_dict()
 
 
@@ -449,7 +501,8 @@ async def update_relationship(
     case_id: str,
     relationship_id: str,
     rel_data: RelationshipUpdate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
     """
     관계 정보 수정
@@ -467,6 +520,13 @@ async def update_relationship(
         numeric_rel_id = int(relationship_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid ID format")
+
+    # 소속 법률사무소 권한 확인
+    case = db.query(Case).filter(Case.id == numeric_case_id).first()
+    if not case:
+        raise HTTPException(status_code=404, detail="사건을 찾을 수 없습니다")
+    if case.law_firm_id != current_user.firm_id:
+        raise HTTPException(status_code=403, detail="해당 사건에 접근할 권한이 없습니다")
 
     relationship = db.query(CaseRelationship).filter(
         CaseRelationship.id == numeric_rel_id,
@@ -489,7 +549,7 @@ async def update_relationship(
     db.commit()
     db.refresh(relationship)
 
-    print(f"[Relationship API] 관계 수정: ID {numeric_rel_id}")
+    logger.info(f"[Relationship API] 관계 수정 완료: relationship_id={numeric_rel_id}")
     return relationship.to_dict()
 
 
@@ -497,7 +557,8 @@ async def update_relationship(
 async def delete_relationship(
     case_id: str,
     relationship_id: str,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
     """
     관계 삭제
@@ -515,6 +576,13 @@ async def delete_relationship(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid ID format")
 
+    # 소속 법률사무소 권한 확인
+    case = db.query(Case).filter(Case.id == numeric_case_id).first()
+    if not case:
+        raise HTTPException(status_code=404, detail="사건을 찾을 수 없습니다")
+    if case.law_firm_id != current_user.firm_id:
+        raise HTTPException(status_code=403, detail="해당 사건에 접근할 권한이 없습니다")
+
     relationship = db.query(CaseRelationship).filter(
         CaseRelationship.id == numeric_rel_id,
         CaseRelationship.case_id == numeric_case_id
@@ -526,5 +594,5 @@ async def delete_relationship(
     db.delete(relationship)
     db.commit()
 
-    print(f"[Relationship API] 관계 삭제: ID {numeric_rel_id}")
+    logger.info(f"[Relationship API] 관계 삭제 완료: relationship_id={numeric_rel_id}")
     return {"message": "관계 삭제 완료"}

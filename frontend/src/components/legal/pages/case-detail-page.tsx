@@ -2156,65 +2156,67 @@ export function CaseDetailPage({
         {/* ===== 타임라인 탭 - Zigzag Design with Color Highlights ===== */}
         <TabsContent value="timeline" className="mt-6">
           <Card className="border-border/60">
-            <CardHeader className="flex flex-row items-center justify-between pb-4">
-              <div>
-                <CardTitle className="text-base font-medium">
-                  사건 경과 타임라인
-                </CardTitle>
-                <p className="text-xs text-muted-foreground mt-1">
-                  실제 발생한 사건들을 시간순으로 정리
-                </p>
+            <CardHeader className="pb-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle className="text-base font-medium">
+                    사건 경과 타임라인
+                  </CardTitle>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    실제 발생한 사건들을 시간순으로 정리
+                  </p>
+                </div>
+                <div className="flex items-center gap-3">
+                  {/* Layout toggle */}
+                  <div className="flex items-center bg-secondary/50 rounded-md p-0.5">
+                    <button
+                      type="button"
+                      onClick={() => setTimelineLayout("linear")}
+                      className={`px-2 py-1 text-xs rounded transition-colors ${timelineLayout === "linear" ? "bg-background shadow-sm font-medium text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+                    >
+                      목록
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setTimelineLayout("zigzag")}
+                      className={`px-2 py-1 text-xs rounded transition-colors ${timelineLayout === "zigzag" ? "bg-background shadow-sm font-medium text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+                    >
+                      지그재그
+                    </button>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={regenerateTimeline}
+                    disabled={timelineLoading}
+                  >
+                    <RefreshCw className={`h-4 w-4 mr-2 ${timelineLoading ? 'animate-spin' : ''}`} />
+                    새로고침
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => setIsAddingEvent(true)}
+                  >
+                    <Plus className="h-4 w-4 mr-2" />
+                    추가
+                  </Button>
+                </div>
               </div>
-              <div className="flex items-center gap-3">
-                {/* Legend */}
-                <div className="hidden sm:flex items-center gap-2 text-xs">
-                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#6D5EF5]/10 text-[#6D5EF5] font-medium">
-                    <User className="h-3 w-3" />
-                    우리측
-                  </span>
-                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#F59E0B]/10 text-[#B45309] font-medium">
-                    <UserX className="h-3 w-3" />
-                    상대측
-                  </span>
-                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#38BDF8]/10 text-[#0284C7] font-medium">
-                    <FileText className="h-3 w-3" />
-                    증거
-                  </span>
-                </div>
-                {/* Layout toggle */}
-                <div className="flex items-center bg-secondary/50 rounded-md p-0.5">
-                  <button
-                    type="button"
-                    onClick={() => setTimelineLayout("linear")}
-                    className={`px-2 py-1 text-xs rounded transition-colors ${timelineLayout === "linear" ? "bg-background shadow-sm font-medium text-foreground" : "text-muted-foreground hover:text-foreground"}`}
-                  >
-                    목록
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setTimelineLayout("zigzag")}
-                    className={`px-2 py-1 text-xs rounded transition-colors ${timelineLayout === "zigzag" ? "bg-background shadow-sm font-medium text-foreground" : "text-muted-foreground hover:text-foreground"}`}
-                  >
-                    지그재그
-                  </button>
-                </div>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={regenerateTimeline}
-                  disabled={timelineLoading}
-                >
-                  <RefreshCw className={`h-4 w-4 mr-2 ${timelineLoading ? 'animate-spin' : ''}`} />
-                  새로고침
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => setIsAddingEvent(true)}
-                >
-                  <Plus className="h-4 w-4 mr-2" />
-                  추가
-                </Button>
+              {/* Legend - 별도 줄 */}
+              <div className="hidden sm:flex items-center gap-2 text-xs">
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#6D5EF5]/10 text-[#6D5EF5] font-medium">
+                  <User className="h-3 w-3" />
+                  우리측
+                </span>
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#F59E0B]/10 text-[#B45309] font-medium">
+                  <UserX className="h-3 w-3" />
+                  상대측
+                </span>
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#38BDF8]/10 text-[#0284C7] font-medium">
+                  <FileText className="h-3 w-3" />
+                  증거
+                </span>
               </div>
             </CardHeader>
             <CardContent>

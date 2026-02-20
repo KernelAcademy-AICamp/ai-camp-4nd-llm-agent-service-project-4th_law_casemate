@@ -9,6 +9,7 @@ v2.1: 추출된 법적 쟁점 DB 캐싱
 import asyncio
 import json
 import hashlib
+import logging
 import traceback
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
@@ -19,6 +20,10 @@ from sqlalchemy import text
 from app.services.search_laws_service import SearchLawsService
 from app.models.evidence import Case, CaseAnalysis
 from tool.database import get_db
+from tool.security import get_current_user
+from app.models.user import User
+
+logger = logging.getLogger(__name__)
 
 
 class SearchLawsRequest(BaseModel):
@@ -51,7 +56,7 @@ search_laws_service = SearchLawsService()
 
 
 @router.post("/search")
-async def search_laws(request: SearchLawsRequest):
+async def search_laws(request: SearchLawsRequest, current_user: User = Depends(get_current_user)):
     """
     관련 법령 검색
 
@@ -59,10 +64,7 @@ async def search_laws(request: SearchLawsRequest):
     - **limit**: 반환할 최대 결과 수 (기본 5)
     - **score_threshold**: 최소 유사도 점수 (기본 0.3)
     """
-    print("=" * 50)
-    print(f"📜 법령 검색 요청")
-    print(f"   쿼리: {request.query[:100]}..." if len(request.query) > 100 else f"   쿼리: {request.query}")
-    print("=" * 50)
+    logger.info(f"법령 검색 요청: 쿼리={request.query[:100]}..." if len(request.query) > 100 else f"법령 검색 요청: 쿼리={request.query}")
     try:
         # 동기 함수를 스레드 풀에서 실행 (이벤트 루프 블로킹 방지)
         results = await asyncio.to_thread(
@@ -71,12 +73,11 @@ async def search_laws(request: SearchLawsRequest):
             limit=request.limit,
             score_threshold=request.score_threshold,
         )
-        print(f"✅ 법령 검색 완료: {results.get('total', 0)}건")
+        logger.info(f"법령 검색 완료: {results.get('total', 0)}건")
         return results
     except Exception as e:
-        print(f"❌ 법령 검색 오류: {str(e)}")
-        print(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=f"법령 검색 중 오류 발생: {str(e)}")
+        logger.error(f"법령 검색 오류: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="법령 검색 중 오류가 발생했습니다")
 
 
 @router.post("/search-by-case/{case_id}")
@@ -84,6 +85,7 @@ async def search_laws_by_case(
     case_id: int,
     request: SearchLawsByCaseRequest = SearchLawsByCaseRequest(),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """
     사건 ID 기반 관련 법령 검색 (2단계 파이프라인)
@@ -94,9 +96,7 @@ async def search_laws_by_case(
     - **case_id**: 사건 ID
     - **limit**: 반환할 최대 결과 수 (기본 8)
     """
-    print("=" * 50)
-    print(f"📜 법령 검색 요청 (2단계 파이프라인): case_id={case_id}")
-    print("=" * 50)
+    logger.info(f"법령 검색 요청 (2단계 파이프라인): case_id={case_id}")
 
     try:
         # 사건 정보 조회
@@ -112,10 +112,7 @@ async def search_laws_by_case(
         facts = case_summary.facts if case_summary else None
         case_type = case.case_type
 
-        print(f"   원문 길이: {len(description)}자")
-        print(f"   요약 존재: {'예' if summary else '아니오'}")
-        print(f"   사실관계 존재: {'예' if facts else '아니오'}")
-        print(f"   사건 유형: {case_type or '미지정'}")
+        logger.debug(f"원문 길이: {len(description)}자, 요약 존재: {'예' if summary else '아니오'}, 사실관계 존재: {'예' if facts else '아니오'}, 사건 유형: {case_type or '미지정'}")
 
         # description_hash 검증: 원문이 변경되었으면 캐시 무효
         current_hash = hashlib.sha256(description.encode()).hexdigest() if description else None
@@ -124,7 +121,7 @@ async def search_laws_by_case(
             and case_summary.description_hash
             and case_summary.description_hash == current_hash
         )
-        print(f"   캐시 유효: {'예' if cache_valid else '아니오'} (hash match: {case_summary.description_hash[:8] if case_summary and case_summary.description_hash else 'N/A'} vs {current_hash[:8] if current_hash else 'N/A'})")
+        logger.debug(f"캐시 유효: {'예' if cache_valid else '아니오'} (hash match: {case_summary.description_hash[:8] if case_summary and case_summary.description_hash else 'N/A'} vs {current_hash[:8] if current_hash else 'N/A'})")
 
         # === 완전 캐시 히트: GPT 추출 + 벡터 검색 결과 모두 캐시됨 ===
         if cache_valid and case_summary.legal_search_results:
@@ -135,20 +132,21 @@ async def search_laws_by_case(
                     "keywords": json.loads(case_summary.legal_keywords) if case_summary.legal_keywords else [],
                     "laws": json.loads(case_summary.legal_laws) if case_summary.legal_laws else [],
                 }
-                print(f"✅ 완전 캐시 히트: GPT+벡터 검색 결과 모두 캐시에서 반환")
-                print(f"✅ 법령 검색 완료: {cached_results.get('total', 0)}건")
+                logger.info(f"완전 캐시 히트: GPT+벡터 검색 결과 모두 캐시에서 반환")
+                logger.info(f"법령 검색 완료: {cached_results.get('total', 0)}건")
                 return cached_results
             except json.JSONDecodeError:
-                print(f"⚠️ 캐시 파싱 실패, 재검색 진행")
+                logger.debug(f"캐시 파싱 실패, 재검색 진행")
 
         # === 부분 캐시 히트: keywords만 캐시됨, 검색 결과는 없음 ===
         if cache_valid and case_summary and case_summary.legal_keywords:
             try:
                 cached_keywords = json.loads(case_summary.legal_keywords)
                 cached_laws = json.loads(case_summary.legal_laws) if case_summary.legal_laws else []
-                print(f"   📦 부분 캐시 히트: 키워드 캐시 사용, 벡터 검색 실행")
+                logger.info(f"부분 캐시 히트: 키워드 캐시 사용, 벡터 검색 실행")
 
-                results = search_laws_service.search_laws_with_cached_extraction(
+                results = await asyncio.to_thread(
+                    search_laws_service.search_laws_with_cached_extraction,
                     keywords=cached_keywords,
                     laws=cached_laws,
                     limit=request.limit,
@@ -161,11 +159,11 @@ async def search_laws_by_case(
                 results_to_cache = {"total": results.get("total", 0), "results": results.get("results", [])}
                 case_summary.legal_search_results = json.dumps(results_to_cache, ensure_ascii=False)
                 db.commit()
-                print(f"   💾 벡터 검색 결과 캐시 저장 완료")
+                logger.debug(f"벡터 검색 결과 캐시 저장 완료")
 
-                print(f"✅ 법적 쟁점: {extracted.get('keywords', [])}")
-                print(f"✅ 관련 법조문: {extracted.get('laws', [])}")
-                print(f"✅ 법령 검색 완료: {results.get('total', 0)}건")
+                logger.debug(f"법적 쟁점: {extracted.get('keywords', [])}")
+                logger.debug(f"관련 법조문: {extracted.get('laws', [])}")
+                logger.info(f"법령 검색 완료: {results.get('total', 0)}건")
                 return results
             except json.JSONDecodeError:
                 pass
@@ -177,10 +175,11 @@ async def search_laws_by_case(
             case_summary.legal_laws = None
             case_summary.crime_names = None
             case_summary.legal_search_results = None
-            print(f"   🗑️ hash 불일치: 기존 법령 캐시 무효화")
+            logger.debug(f"hash 불일치: 기존 법령 캐시 무효화")
 
         # 2단계 파이프라인 실행 (GPT 추출 + 벡터 검색)
-        results = search_laws_service.search_laws_with_extraction(
+        results = await asyncio.to_thread(
+            search_laws_service.search_laws_with_extraction,
             description=description,
             summary=summary,
             facts=facts,
@@ -198,24 +197,23 @@ async def search_laws_by_case(
             results_to_cache = {"total": results.get("total", 0), "results": results.get("results", [])}
             case_summary.legal_search_results = json.dumps(results_to_cache, ensure_ascii=False)
             db.commit()
-            print(f"   💾 법적 쟁점 + 검색 결과 저장 완료")
+            logger.debug(f"법적 쟁점 + 검색 결과 저장 완료")
 
-        print(f"✅ 법적 쟁점: {extracted.get('keywords', [])}")
-        print(f"✅ 관련 법조문: {extracted.get('laws', [])}")
-        print(f"✅ 법령 검색 완료: {results.get('total', 0)}건")
+        logger.debug(f"법적 쟁점: {extracted.get('keywords', [])}")
+        logger.debug(f"관련 법조문: {extracted.get('laws', [])}")
+        logger.info(f"법령 검색 완료: {results.get('total', 0)}건")
 
         return results
 
     except HTTPException:
         raise
     except Exception as e:
-        print(f"❌ 법령 검색 오류: {str(e)}")
-        print(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=f"법령 검색 중 오류 발생: {str(e)}")
+        logger.error(f"법령 검색 오류 (case_id={case_id}): {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="법령 검색 중 오류가 발생했습니다")
 
 
 @router.post("/search-term")
-async def search_term(request: SearchTermRequest):
+async def search_term(request: SearchTermRequest, current_user: User = Depends(get_current_user)):
     """
     법률 용어 기반 관련 조문 검색 (BM25 로컬 검색 — 외부 API 호출 없음)
 
@@ -226,7 +224,7 @@ async def search_term(request: SearchTermRequest):
     - **term**: 법률 용어 (예: "주거침입죄", "손해배상청구")
     - **limit**: 반환할 최대 결과 수 (기본 3)
     """
-    print(f"📜 법률 용어 검색 (BM25): {request.term}")
+    logger.info(f"법률 용어 검색 (BM25): {request.term}")
 
     try:
         results = await asyncio.to_thread(
@@ -241,19 +239,18 @@ async def search_term(request: SearchTermRequest):
                 detail=f"관련 법조항을 찾을 수 없습니다: {request.term}",
             )
 
-        print(f"✅ 법률 용어 검색 완료: {results['total']}건")
+        logger.info(f"법률 용어 검색 완료: {results['total']}건")
         return results
 
     except HTTPException:
         raise
     except Exception as e:
-        print(f"❌ 법률 용어 검색 오류: {str(e)}")
-        print(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=f"법률 용어 검색 중 오류 발생: {str(e)}")
+        logger.error(f"법률 용어 검색 오류: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="법률 용어 검색 중 오류가 발생했습니다")
 
 
 @router.post("/article")
-async def get_article(request: GetArticleRequest):
+async def get_article(request: GetArticleRequest, current_user: User = Depends(get_current_user)):
     """
     특정 조문 조회 (하이브리드: DB 우선 → API Fallback → 캐싱)
 
@@ -263,7 +260,7 @@ async def get_article(request: GetArticleRequest):
     Returns:
         조문 전체 내용 + 항별 분리 데이터
     """
-    print(f"📜 조문 조회: {request.law_name} 제{request.article_number}조")
+    logger.info(f"조문 조회: {request.law_name} 제{request.article_number}조")
 
     try:
         # 하이브리드 조회: DB 우선, 없으면 API에서 가져와서 캐싱
@@ -278,12 +275,11 @@ async def get_article(request: GetArticleRequest):
                 detail=f"조문을 찾을 수 없습니다: {request.law_name} 제{request.article_number}조"
             )
 
-        print(f"✅ 조문 조회 완료: {result.get('law_name')} 제{result.get('article_number')}조")
+        logger.info(f"조문 조회 완료: {result.get('law_name')} 제{result.get('article_number')}조")
         return result
 
     except HTTPException:
         raise
     except Exception as e:
-        print(f"❌ 조문 조회 오류: {str(e)}")
-        print(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=f"조문 조회 중 오류 발생: {str(e)}")
+        logger.error(f"조문 조회 오류: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="조문 조회 중 오류가 발생했습니다")

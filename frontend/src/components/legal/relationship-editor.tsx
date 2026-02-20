@@ -32,6 +32,7 @@ import {
   RefreshCw,
   Pencil,
 } from "lucide-react";
+import { apiFetch } from "@/lib/api";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 export type PersonRole = "피해자" | "가해자" | "증인" | "동료" | "미확인";
@@ -334,7 +335,7 @@ export function RelationshipEditor({
       try {
         setInternalLoading(true);
         setError(null);
-        const res = await fetch(`http://localhost:8000/api/v1/relationships/${caseId}`);
+        const res = await apiFetch(`/api/v1/relationships/${caseId}`);
         if (!res.ok) {
           const errData = await res.json().catch(() => ({}));
           throw new Error(errData.detail || "관계도를 불러오는데 실패했습니다");
@@ -380,8 +381,8 @@ export function RelationshipEditor({
     if (!newPerson.name.trim()) return;
     setIsSaving(true);
     try {
-      const res = await fetch(
-        `http://localhost:8000/api/v1/relationships/${caseId}/persons`,
+      const res = await apiFetch(
+        `/api/v1/relationships/${caseId}/persons`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -419,8 +420,8 @@ export function RelationshipEditor({
     if (!editingPerson) return;
     setIsSaving(true);
     try {
-      const res = await fetch(
-        `http://localhost:8000/api/v1/relationships/${caseId}/persons/${editingPerson.id}`,
+      const res = await apiFetch(
+        `/api/v1/relationships/${caseId}/persons/${editingPerson.id}`,
         {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
@@ -446,8 +447,8 @@ export function RelationshipEditor({
     async (nodeId: string) => {
       if (!confirm("이 인물을 삭제하시겠습니까?")) return;
       try {
-        const res = await fetch(
-          `http://localhost:8000/api/v1/relationships/${caseId}/persons/${nodeId}`,
+        const res = await apiFetch(
+          `/api/v1/relationships/${caseId}/persons/${nodeId}`,
           { method: "DELETE" }
         );
         if (!res.ok) throw new Error();
@@ -466,8 +467,8 @@ export function RelationshipEditor({
     if (!sourceId || !targetId || !label.trim()) return;
     setIsSaving(true);
     try {
-      const res = await fetch(
-        `http://localhost:8000/api/v1/relationships/${caseId}/relationships`,
+      const res = await apiFetch(
+        `/api/v1/relationships/${caseId}/relationships`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -518,15 +519,15 @@ export function RelationshipEditor({
     try {
       if (personChanged) {
         // 1) 기존 삭제
-        const delRes = await fetch(
-          `http://localhost:8000/api/v1/relationships/${caseId}/relationships/${editingEdge.id}`,
+        const delRes = await apiFetch(
+          `/api/v1/relationships/${caseId}/relationships/${editingEdge.id}`,
           { method: "DELETE" }
         );
         if (!delRes.ok) throw new Error();
 
         // 2) 새로 생성
-        const createRes = await fetch(
-          `http://localhost:8000/api/v1/relationships/${caseId}/relationships`,
+        const createRes = await apiFetch(
+          `/api/v1/relationships/${caseId}/relationships`,
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -556,8 +557,8 @@ export function RelationshipEditor({
         ]);
       } else {
         // 인물 변경 없음: 일반 PUT
-        const res = await fetch(
-          `http://localhost:8000/api/v1/relationships/${caseId}/relationships/${editingEdge.id}`,
+        const res = await apiFetch(
+          `/api/v1/relationships/${caseId}/relationships/${editingEdge.id}`,
           {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
@@ -586,8 +587,8 @@ export function RelationshipEditor({
     async (edgeId: string) => {
       if (!confirm("이 관계를 삭제하시겠습니까?")) return;
       try {
-        const res = await fetch(
-          `http://localhost:8000/api/v1/relationships/${caseId}/relationships/${edgeId}`,
+        const res = await apiFetch(
+          `/api/v1/relationships/${caseId}/relationships/${edgeId}`,
           { method: "DELETE" }
         );
         if (!res.ok) throw new Error();

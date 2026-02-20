@@ -6,6 +6,7 @@
 - PostgreSQL에서 메타데이터/전문 조회
 """
 
+import os
 import time
 import logging
 from typing import List, Dict, Any, Optional
@@ -26,12 +27,20 @@ import re
 
 logger = logging.getLogger(__name__)
 
+
+def is_reranking_enabled() -> bool:
+    """USE_RERANKING 환경변수 확인 (기본값: false)"""
+    return os.getenv("USE_RERANKING", "false").lower() in ("true", "1", "yes")
+
+
 # 리랭커 모델 (Lazy Loading)
 _reranker_model = None
 
 
 def get_reranker_model():
-    """리랭커 모델 싱글톤 로드"""
+    """리랭커 모델 싱글톤 로드. 리랭킹 비활성 시 None 반환."""
+    if not is_reranking_enabled():
+        return None
     global _reranker_model
     if _reranker_model is None:
         from sentence_transformers import CrossEncoder
@@ -82,14 +91,14 @@ class PrecedentSimilarService:
     SEARCH_LIMIT = 50  # 각 검색(Dense/Sparse)에서 가져올 수
     RERANK_CANDIDATES = 30  # 리랭킹할 판례 후보 수
 
-    def __init__(self, use_reranking: bool = True):
+    def __init__(self, use_reranking: bool | None = None):
         self.embedding_service = PrecedentEmbeddingService(
             model=PrecedentEmbeddingService.MODEL_SMALL
         )
         self.qdrant_client = get_qdrant_client()
         self.openai_client = get_openai_client()
         self.repository = PrecedentRepository()
-        self.use_reranking = use_reranking
+        self.use_reranking = use_reranking if use_reranking is not None else is_reranking_enabled()
 
     # ==================== 쿼리 정제 + 키워드 추출 ====================
 
@@ -377,6 +386,8 @@ class PrecedentSimilarService:
             return []
 
         reranker = get_reranker_model()
+        if reranker is None:
+            return candidates[:top_k]
 
         # (쿼리, best_chunk) 쌍 생성
         pairs = []

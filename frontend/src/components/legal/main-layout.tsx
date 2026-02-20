@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { User, LogOut, Scale } from "lucide-react";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import { ProfileDialog } from "@/components/legal/profile-dialog";
 
 interface MainLayoutProps {
@@ -20,6 +21,7 @@ interface MainLayoutProps {
     name: string;
     email: string;
     role?: string;
+    avatar_url?: string;
   };
 }
 
@@ -79,13 +81,27 @@ export function MainLayout({ onLogout, userInfo }: MainLayoutProps) {
             </div>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="icon" className="h-9 w-9 rounded-full">
-                  <User className="h-[18px] w-[18px]" />
+                <Button variant="ghost" size="icon" className="h-9 w-9 rounded-full p-0 overflow-hidden">
+                  {localUserInfo?.avatar_url ? (
+                    <Avatar className="h-9 w-9">
+                      <AvatarImage src={localUserInfo.avatar_url} alt="프로필" />
+                      <AvatarFallback><User className="h-[18px] w-[18px]" /></AvatarFallback>
+                    </Avatar>
+                  ) : (
+                    <User className="h-[18px] w-[18px]" />
+                  )}
                   <span className="sr-only">프로필</span>
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-60 p-0 overflow-hidden">
-                <div className="px-4 py-5 bg-muted/30">
+                <div className="px-4 py-5 bg-muted/30 flex items-center gap-3">
+                  <Avatar className="h-10 w-10 shrink-0">
+                    {localUserInfo?.avatar_url ? (
+                      <AvatarImage src={localUserInfo.avatar_url} alt="프로필" />
+                    ) : null}
+                    <AvatarFallback><User className="h-5 w-5" /></AvatarFallback>
+                  </Avatar>
+                  <div>
                   <p className="text-sm font-semibold text-foreground">
                     {localUserInfo?.name || "사용자"}
                   </p>
@@ -101,6 +117,7 @@ export function MainLayout({ onLogout, userInfo }: MainLayoutProps) {
                           : localUserInfo.role}
                     </span>
                   )}
+                  </div>
                 </div>
                 <DropdownMenuSeparator className="m-0" />
                 <div className="p-1">

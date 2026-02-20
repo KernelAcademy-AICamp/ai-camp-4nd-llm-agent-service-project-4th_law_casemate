@@ -418,6 +418,26 @@ input[type="date"]::-webkit-calendar-picker-indicator {
   cursor: pointer !important;
 }
 
+/* 도움말 가이드 — 사이드바 기능 아이콘 발광 */
+@keyframes guide-pulse {
+  0%   { box-shadow: none; }
+  35%  { box-shadow: 4px 0 28px -2px rgba(255, 255, 100, 0.65), 0 0 14px 2px rgba(255, 255, 100, 0.25); }
+  100% { box-shadow: none; }
+}
+.guide-pulse {
+  animation: guide-pulse 1.6s ease-in-out 2;
+}
+
+/* 도움말 가이드 — 채팅창 동일 발광 */
+@keyframes guide-glow-soft {
+  0%   { box-shadow: none; }
+  40%  { box-shadow: 0 0 24px 6px rgba(255, 255, 100, 0.5), inset 0 0 8px rgba(255, 255, 100, 0.08); border-color: rgba(255, 255, 100, 0.5); }
+  100% { box-shadow: none; }
+}
+.guide-glow-soft {
+  animation: guide-glow-soft 1.6s ease-in-out 2;
+}
+
 /* 분석 stale 알림 말풍선 애니메이션 */
 @keyframes stale-popup-in {
   0% {

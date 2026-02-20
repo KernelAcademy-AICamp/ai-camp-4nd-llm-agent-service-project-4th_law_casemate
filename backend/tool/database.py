@@ -7,6 +7,8 @@ load_dotenv()
 
 # 환경 변수에서 DB 주소 가져오기
 SQLALCHEMY_DATABASE_URL = os.getenv("DATABASE_URL")
+if not SQLALCHEMY_DATABASE_URL:
+    raise RuntimeError("DATABASE_URL 환경변수가 설정되지 않았습니다. .env 파일을 확인하세요.")
 
 # DB 엔진 생성 (연결 풀 설정)
 engine = create_engine(

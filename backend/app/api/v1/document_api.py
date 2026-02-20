@@ -10,6 +10,7 @@ v1.1: CRUD + Markdown 출력 지시 추가
 import os
 import json
 import hashlib
+import logging
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from typing import Optional, List
@@ -23,6 +24,8 @@ from app.models.evidence import Case, CaseAnalysis, Evidence, CaseEvidenceMappin
 from app.models.timeline import TimeLine
 from app.models.case_document import CaseDocument, CaseDocumentDraft
 from app.models.user import User
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Documents"])
 
@@ -586,6 +589,8 @@ async def generate_sections(
     case = db.query(Case).filter(Case.id == request.case_id).first()
     if not case:
         raise HTTPException(status_code=404, detail="사건을 찾을 수 없습니다")
+    if case.law_firm_id != current_user.firm_id:
+        raise HTTPException(status_code=403, detail="해당 사건에 접근할 권한이 없습니다")
 
     current_hash = hashlib.sha256((case.description or "").encode()).hexdigest()
 
@@ -598,7 +603,7 @@ async def generate_sections(
     if cached and cached.description_hash == current_hash and cached.content:
         try:
             sections = json.loads(cached.content)
-            print(f"✅ 초안 캐시 히트: case_id={request.case_id}")
+            logger.debug(f"초안 캐시 히트: case_id={request.case_id}")
             return GenerateSectionsResponse(
                 crime_facts=sections.get("crime_facts", ""),
                 complaint_reason=sections.get("complaint_reason", ""),
@@ -607,7 +612,7 @@ async def generate_sections(
             pass  # 캐시 파싱 실패 → 재생성
 
     # 캐시 미스 → GPT 호출
-    print(f"📄 초안 생성 (GPT): case_id={request.case_id}")
+    logger.info(f"초안 생성 (GPT): case_id={request.case_id}")
     context = retrieve_case_context(request.case_id, db)
     user_prompt = build_sections_prompt(context)
 
@@ -639,7 +644,7 @@ async def generate_sections(
             )
             db.add(cached)
         db.commit()
-        print(f"💾 초안 캐시 저장: case_id={request.case_id}")
+        logger.debug(f"초안 캐시 저장: case_id={request.case_id}")
 
         return GenerateSectionsResponse(
             crime_facts=sections.get("crime_facts", ""),
@@ -649,7 +654,8 @@ async def generate_sections(
     except json.JSONDecodeError:
         raise HTTPException(status_code=500, detail="GPT 응답 파싱 실패")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"섹션 생성 오류: {str(e)}")
+        logger.error(f"섹션 생성 중 오류: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="섹션 생성 중 오류가 발생했습니다")
 
 
 # ==================== 컨텍스트 조회 (OpenAI 없음) ====================
@@ -661,6 +667,12 @@ async def get_case_context(
     current_user: User = Depends(get_current_user),
 ):
     """사건 컨텍스트 데이터 반환 (DB 조회만, OpenAI 호출 없음)"""
+    case = db.query(Case).filter(Case.id == case_id).first()
+    if not case:
+        raise HTTPException(status_code=404, detail="사건을 찾을 수 없습니다")
+    if case.law_firm_id != current_user.firm_id:
+        raise HTTPException(status_code=403, detail="해당 사건에 접근할 권한이 없습니다")
+
     context = retrieve_case_context(case_id, db)
     return context
 
@@ -884,9 +896,7 @@ async def generate_document(
     2. Augmentation: 프롬프트 구성
     3. Generation: GPT-4o 호출
     """
-    print("=" * 50)
-    print(f"📄 문서 생성 요청: case_id={request.case_id}, type={request.document_type}")
-    print("=" * 50)
+    logger.info(f"문서 생성 요청: case_id={request.case_id}, type={request.document_type}")
 
     # 문서 유형 검증
     if request.document_type not in SYSTEM_PROMPTS:
@@ -895,18 +905,25 @@ async def generate_document(
             detail=f"지원하지 않는 문서 유형: {request.document_type}. (criminal_complaint, demand_letter, civil_complaint)"
         )
 
+    # 사건 소유권 검증
+    case = db.query(Case).filter(Case.id == request.case_id).first()
+    if not case:
+        raise HTTPException(status_code=404, detail="사건을 찾을 수 없습니다")
+    if case.law_firm_id != current_user.firm_id:
+        raise HTTPException(status_code=403, detail="해당 사건에 접근할 권한이 없습니다")
+
     try:
         # 1. Retrieval
         context = retrieve_case_context(request.case_id, db)
-        print(f"   사건: {context['case']['title']}")
-        print(f"   분석 존재: {'예' if context['analysis']['summary'] else '아니오'}")
-        print(f"   증거 수: {len(context['evidences'])}건")
-        print(f"   타임라인: {len(context['timeline'])}건")
+        logger.debug(f"사건: {context['case']['title']}")
+        logger.debug(f"분석 존재: {'예' if context['analysis']['summary'] else '아니오'}")
+        logger.debug(f"증거 수: {len(context['evidences'])}건")
+        logger.debug(f"타임라인: {len(context['timeline'])}건")
 
         # 2. Augmentation
         system_prompt = SYSTEM_PROMPTS[request.document_type]
         user_prompt = build_user_prompt(context, request.document_type)
-        print(f"   프롬프트 길이: {len(user_prompt)}자")
+        logger.debug(f"프롬프트 길이: {len(user_prompt)}자")
 
         # 3. Generation
         response = openai_client.chat.completions.create(
@@ -928,7 +945,7 @@ async def generate_document(
             if content.rstrip().endswith("```"):
                 content = content.rstrip()[:-3].rstrip()
 
-        print(f"✅ 문서 생성 완료: {len(content)}자")
+        logger.info(f"문서 생성 완료: {len(content)}자")
 
         # 문서 제목 생성
         type_names = {
@@ -954,7 +971,5 @@ async def generate_document(
     except HTTPException:
         raise
     except Exception as e:
-        import traceback
-        print(f"❌ 문서 생성 오류: {str(e)}")
-        print(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=f"문서 생성 중 오류 발생: {str(e)}")
+        logger.error(f"문서 생성 중 오류: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="문서 생성 중 오류가 발생했습니다")
