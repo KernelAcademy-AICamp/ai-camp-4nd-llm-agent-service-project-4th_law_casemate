@@ -2515,9 +2515,6 @@ export function CaseDetailPage({
                   <Users className="h-4 w-4" />
                   인물 관계도 편집기
                 </CardTitle>
-                <p className="text-xs text-muted-foreground">
-                  인물을 드래그하여 이동하고, 파란 점을 드래그하여 관계를 연결하세요
-                </p>
               </div>
             </CardHeader>
             <CardContent className="p-0">
