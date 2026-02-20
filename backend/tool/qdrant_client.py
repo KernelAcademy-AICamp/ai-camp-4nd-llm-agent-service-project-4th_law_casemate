@@ -4,6 +4,7 @@ Qdrant 벡터 DB 클라이언트 서비스
 """
 
 import os
+import threading
 from typing import Optional, List, Dict, Any
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
@@ -12,31 +13,35 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# ==================== QdrantClient 싱글톤 ====================
+
+_qdrant_client = None
+_qdrant_lock = threading.Lock()
+
+
+def get_qdrant_client():
+    """QdrantClient 싱글톤 (thread-safe)"""
+    global _qdrant_client
+    if _qdrant_client is None:
+        with _qdrant_lock:
+            if _qdrant_client is None:
+                host = os.getenv("QDRANT_HOST", "localhost")
+                port = int(os.getenv("QDRANT_PORT", "6333"))
+                _qdrant_client = QdrantClient(host=host, port=port)
+    return _qdrant_client
+
 
 class QdrantService:
     """Qdrant 벡터 DB 서비스"""
 
     # 컬렉션 이름 상수
-    LAWS_COLLECTION = "laws"
-    CASES_COLLECTION = "cases"
-    SUMMARIES_COLLECTION = "case_summaries"
+    LAWS_COLLECTION = "laws_hybrid"
+    CASES_COLLECTION = "precedents"
+    SUMMARIES_COLLECTION = "precedent_summaries"
 
-    def __init__(
-        self,
-        host: Optional[str] = None,
-        port: Optional[int] = None,
-    ):
-        """
-        Qdrant 클라이언트 초기화
-
-        Args:
-            host: Qdrant 서버 호스트 (기본: localhost)
-            port: Qdrant 서버 포트 (기본: 6333)
-        """
-        self.host = host or os.getenv("QDRANT_HOST", "localhost")
-        self.port = port or int(os.getenv("QDRANT_PORT", "6333"))
-
-        self.client = QdrantClient(host=self.host, port=self.port)
+    def __init__(self):
+        """Qdrant 클라이언트 초기화 (싱글톤 사용)"""
+        self.client = get_qdrant_client()
 
     def check_connection(self) -> bool:
         """Qdrant 서버 연결 확인"""
@@ -223,24 +228,12 @@ class QdrantService:
         Returns:
             성공 여부
         """
-        import uuid
+        import hashlib
         import time
 
         try:
-            # 기존 요약이 있으면 삭제
-            self.client.delete(
-                collection_name=self.SUMMARIES_COLLECTION,
-                points_selector=models.FilterSelector(
-                    filter=models.Filter(
-                        must=[
-                            models.FieldCondition(
-                                key="case_number",
-                                match=models.MatchValue(value=case_number),
-                            )
-                        ]
-                    )
-                ),
-            )
+            # case_number 기반 결정론적 ID 생성 (동일 case_number면 동일 ID → upsert로 덮어쓰기)
+            point_id = hashlib.md5(f"summary_{case_number}".encode()).hexdigest()
 
             # 벡터 구성
             vector = {}
@@ -252,9 +245,9 @@ class QdrantService:
                     values=sparse_vector["values"],
                 )
 
-            # 새 요약 저장
+            # 요약 저장 (동일 ID면 덮어쓰기)
             point = PointStruct(
-                id=str(uuid.uuid4()),
+                id=point_id,
                 vector=vector,
                 payload={
                     "case_number": case_number,
@@ -309,75 +302,6 @@ class QdrantService:
             return []
 
     # ==================== 벡터 저장 ====================
-
-    def upsert_vectors(
-        self,
-        collection_name: str,
-        points: List[Dict[str, Any]],
-    ) -> bool:
-        """
-        벡터 저장 (있으면 업데이트, 없으면 삽입)
-
-        Args:
-            collection_name: 컬렉션 이름
-            points: 저장할 포인트 리스트
-                [
-                    {
-                        "id": "unique_id",
-                        "vector": [0.1, 0.2, ...],
-                        "payload": {"title": "...", "content": "..."}
-                    },
-                    ...
-                ]
-
-        Returns:
-            성공 여부
-        """
-        try:
-            point_structs = [
-                PointStruct(
-                    id=p["id"],
-                    vector=p["vector"],
-                    payload=p.get("payload", {}),
-                )
-                for p in points
-            ]
-
-            self.client.upsert(
-                collection_name=collection_name,
-                points=point_structs,
-            )
-            return True
-
-        except Exception as e:
-            print(f"벡터 저장 실패: {e}")
-            return False
-
-    def upsert_batch(
-        self,
-        collection_name: str,
-        points: List[Dict[str, Any]],
-        batch_size: int = 100,
-    ) -> int:
-        """
-        대량 벡터 배치 저장
-
-        Args:
-            collection_name: 컬렉션 이름
-            points: 저장할 포인트 리스트
-            batch_size: 한 번에 저장할 개수
-
-        Returns:
-            저장된 포인트 수
-        """
-        total_saved = 0
-
-        for i in range(0, len(points), batch_size):
-            batch = points[i:i + batch_size]
-            if self.upsert_vectors(collection_name, batch):
-                total_saved += len(batch)
-
-        return total_saved
 
     def upsert_hybrid_vectors(
         self,
@@ -455,64 +379,6 @@ class QdrantService:
 
         return total_saved
 
-    # ==================== 벡터 검색 ====================
-
-    def search(
-        self,
-        collection_name: str,
-        query_vector: List[float],
-        limit: int = 10,
-        score_threshold: Optional[float] = None,
-        filter_conditions: Optional[Dict[str, Any]] = None,
-    ) -> List[Dict[str, Any]]:
-        """
-        유사 벡터 검색
-
-        Args:
-            collection_name: 컬렉션 이름
-            query_vector: 검색할 벡터
-            limit: 반환할 최대 결과 수
-            score_threshold: 최소 유사도 점수
-            filter_conditions: 필터 조건
-
-        Returns:
-            검색 결과 리스트
-        """
-        try:
-            # 필터 구성
-            query_filter = None
-            if filter_conditions:
-                query_filter = models.Filter(
-                    must=[
-                        models.FieldCondition(
-                            key=key,
-                            match=models.MatchValue(value=value),
-                        )
-                        for key, value in filter_conditions.items()
-                    ]
-                )
-
-            results = self.client.query_points(
-                collection_name=collection_name,
-                query=query_vector,
-                limit=limit,
-                score_threshold=score_threshold,
-                query_filter=query_filter,
-            )
-
-            return [
-                {
-                    "id": r.id,
-                    "score": r.score,
-                    "payload": r.payload,
-                }
-                for r in results.points
-            ]
-
-        except Exception as e:
-            print(f"검색 실패: {e}")
-            return []
-
     # ==================== 초기 설정 ====================
 
     def setup_collections(self, vector_size: int = 1536) -> bool:
@@ -540,31 +406,3 @@ class QdrantService:
             success = False
 
         return success
-
-
-# ==================== 사용 예시 ====================
-
-def example_usage():
-    """사용 예시"""
-    service = QdrantService()
-
-    # 연결 확인
-    if not service.check_connection():
-        print("Qdrant 서버에 연결할 수 없습니다.")
-        return
-
-    print("Qdrant 연결 성공!")
-
-    # 컬렉션 목록 확인
-    print(f"현재 컬렉션: {service.list_collections()}")
-
-    # 컬렉션 초기 설정
-    service.setup_collections(vector_size=1536)
-
-    # 컬렉션 정보 확인
-    print(f"laws 컬렉션: {service.get_collection_info('laws')}")
-    print(f"cases 컬렉션: {service.get_collection_info('cases')}")
-
-
-if __name__ == "__main__":
-    example_usage()

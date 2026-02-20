@@ -1,5 +1,3 @@
-"use client";
-
 import { useNavigate } from "react-router-dom";
 import { type CaseData, sampleCases } from "@/lib/sample-data";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -186,7 +184,7 @@ const referenceData = {
   faultRecognitionRate: [
     { label: "과실인정", value: 78, color: "bg-emerald-500" },
     { label: "일부인정", value: 15, color: "bg-amber-400" },
-    { label: "기각", value: 7, color: "bg-red-400" },
+    { label: "기각", value: 7, color: "bg-[#EF4444]" },
   ],
   damageRange: { min: 500, max: 3000, avg: 1200 },
 };
@@ -196,7 +194,7 @@ const referenceData = {
 const getRiskColor = (level: "high" | "medium" | "low") => {
   switch (level) {
     case "high":
-      return { bg: "bg-red-500", text: "text-red-600", border: "border-red-200", bgLight: "bg-red-50" };
+      return { bg: "bg-[#EF4444]", text: "text-[#EF4444]", border: "border-[#EF4444]/20", bgLight: "bg-[#EF4444]/5" };
     case "medium":
       return { bg: "bg-amber-500", text: "text-amber-600", border: "border-amber-200", bgLight: "bg-amber-50" };
     case "low":
@@ -216,7 +214,7 @@ const getRiskLabel = (level: "high" | "medium" | "low") => {
 };
 
 const getHeatmapIntensity = (count: number) => {
-  if (count === 0) return { bg: "bg-red-100", border: "border-red-300 border-dashed", text: "text-red-500", isGap: true };
+  if (count === 0) return { bg: "bg-[#EF4444]/10", border: "border-[#EF4444]/30 border-dashed", text: "text-[#EF4444]", isGap: true };
   if (count === 1) return { bg: "bg-emerald-100", border: "border-transparent", text: "text-emerald-700", isGap: false };
   if (count === 2) return { bg: "bg-emerald-300", border: "border-transparent", text: "text-emerald-800", isGap: false };
   return { bg: "bg-emerald-500", border: "border-transparent", text: "text-white", isGap: false };
@@ -347,7 +345,7 @@ export function DashboardPage({ cases: propCases }: DashboardPageProps) {
                     <span>1</span>
                   </div>
                   <div className="flex items-center gap-1">
-                    <div className="w-3 h-3 rounded bg-red-100 border border-dashed border-red-300" />
+                    <div className="w-3 h-3 rounded bg-[#EF4444]/10 border border-dashed border-[#EF4444]/30" />
                     <span>공백</span>
                   </div>
                 </div>
@@ -400,13 +398,13 @@ export function DashboardPage({ cases: propCases }: DashboardPageProps) {
                 </div>
 
                 {/* Gap Alert */}
-                <div className="mt-4 p-2.5 rounded-lg bg-red-50 border border-red-200">
+                <div className="mt-4 p-2.5 rounded-lg bg-[#EF4444]/5 border border-[#EF4444]/20">
                   <div className="flex items-start gap-2">
-                    <AlertCircle className="h-4 w-4 text-red-500 shrink-0 mt-0.5" />
+                    <AlertCircle className="h-4 w-4 text-[#EF4444] shrink-0 mt-0.5" />
                     <div>
-                      <p className="text-[11px] font-medium text-red-700">증거 공백 감지</p>
-                      <p className="text-[11px] text-red-600 mt-0.5">23.12 녹취/이메일, 24.03 녹취, 24.09 녹취/진술서</p>
-                      <Button variant="link" size="sm" className="h-auto p-0 mt-1 text-[11px] text-red-700">
+                      <p className="text-[11px] font-medium text-[#EF4444]">증거 공백 감지</p>
+                      <p className="text-[11px] text-[#EF4444]/80 mt-0.5">23.12 녹취/이메일, 24.03 녹취, 24.09 녹취/진술서</p>
+                      <Button variant="link" size="sm" className="h-auto p-0 mt-1 text-[11px] text-[#EF4444]">
                         공백 구간 보완 가이드 <ArrowRight className="h-3 w-3 ml-1" />
                       </Button>
                     </div>
@@ -603,8 +601,8 @@ export function DashboardPage({ cases: propCases }: DashboardPageProps) {
             <Card className="border-border/60">
               <CardContent className="py-3">
                 <div className="flex items-center gap-3">
-                  <div className="w-9 h-9 rounded-lg bg-red-100 flex items-center justify-center">
-                    <Calendar className="h-4 w-4 text-red-600" />
+                  <div className="w-9 h-9 rounded-lg bg-[#EF4444]/10 flex items-center justify-center">
+                    <Calendar className="h-4 w-4 text-[#EF4444]" />
                   </div>
                   <div className="flex-1 min-w-0">
                     <p className="text-[10px] text-muted-foreground flex items-center gap-1">

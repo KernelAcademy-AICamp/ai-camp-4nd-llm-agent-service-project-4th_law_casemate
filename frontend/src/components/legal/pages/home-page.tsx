@@ -1,7 +1,5 @@
-"use client";
-
 import { useState, useRef, useEffect, useCallback } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useOutletContext } from "react-router-dom";
 import { Scale, ArrowUp, FolderOpen, MessageSquare } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
@@ -19,8 +17,8 @@ interface Message {
 
 // ── Constants ──
 const hintPhrases = [
-  "의뢰인 진술과 카톡 내용을 기준으로 사실관계만 정리해줘...",
-  "오늘 상담한 사건에서 쟁점이 될 수 있는 포인트를 정리해줘...",
+  "의뢰인 진술과 카톡 내용을 토대로 사실 관계만 정리해줘...",
+  "오늘 상담한 사건과 유사한 사건 및 판례를 검색해줘...",
 ];
 
 const TYPING_SPEED = 58; // ms per character
@@ -112,15 +110,65 @@ function useTypingHint(active: boolean, userStartedTyping: boolean) {
   return { hintText, hintDone };
 }
 
+// ── Types ──
+interface OutletContextType {
+  userInfo?: {
+    id: number;
+    name: string;
+    email: string;
+    role?: string;
+  };
+}
+
+function getRoleTitle(role?: string): string {
+  if (role === "lawyer") return " 변호사";
+  if (role === "legal-officer") return " 법무사";
+  return "";
+}
+
+function getRandomGreeting(name?: string, role?: string): string {
+  const hour = new Date().getHours();
+  const displayName = name
+    ? `${name}${getRoleTitle(role)}님`
+    : undefined;
+
+  const greetings: string[] = [
+    "무엇이든 도와드릴게요.",
+    "어떤 업무를 함께할까요?",
+  ];
+
+  if (displayName) {
+    greetings.push(`${displayName}, 안녕하세요!`);
+  }
+
+  if (hour >= 5 && hour < 12) {
+    greetings.push("좋은 아침이에요! 오늘은 어떤 사건을 볼까요?");
+    if (displayName) greetings.push(`${displayName}, 새로운 하루가 시작됐어요.`);
+  } else if (hour >= 12 && hour < 18) {
+    greetings.push("좋은 오후에요! 진행 중인 업무를 이어볼까요?");
+    if (displayName) greetings.push(`${displayName}, 좋은 오후에요.`);
+  } else {
+    greetings.push("오늘도 수고 많으셨어요.");
+    greetings.push("마무리할 업무가 있으신가요?");
+    if (displayName) greetings.push(`${displayName}, 늦은 시간까지 고생이 많아요.`);
+  }
+
+  return greetings[Math.floor(Math.random() * greetings.length)];
+}
+
 // ── Component ──
 export function HomePage() {
   const navigate = useNavigate();
+  const { userInfo } = useOutletContext<OutletContextType>();
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [isTyping, setIsTyping] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const hasMessages = messages.length > 0;
+  const [greeting] = useState(() =>
+    getRandomGreeting(userInfo?.name, userInfo?.role)
+  );
 
   const userStartedTyping = input.length > 0 || hasMessages;
   const { hintText, hintDone } = useTypingHint(
@@ -211,25 +259,17 @@ export function HomePage() {
 
         <div className="relative z-10 flex flex-col items-center w-full max-w-2xl px-4">
           {/* Greeting */}
-          <div className="mb-8 text-center">
-            <div
-              className="inline-flex items-center justify-center w-12 h-12 rounded-2xl mb-4"
-              style={{
-                background: "linear-gradient(135deg, #6D5EF5, #A78BFA)",
-              }}
-            >
-              <Scale className="h-6 w-6 text-white" />
-            </div>
+          <div className="mb-12 text-center">
             <h1 className="text-[32px] font-semibold text-foreground tracking-tight">
-              무엇을 도와드릴까요?
+              {greeting}
             </h1>
             <p className="mt-2 text-sm text-muted-foreground">
-              업무 관련 질문을 입력해 주세요
+              업무와 관련된 질문을 입력해 주세요.
             </p>
           </div>
 
           {/* Chat Input */}
-          <div className="w-full relative mb-6">
+          <div className="w-full relative mb-12">
             <div className="flex items-end gap-2 bg-card border border-border/50 rounded-2xl px-4 py-3 shadow-sm focus-within:border-primary/40 focus-within:shadow-md transition-all">
               <div className="flex-1 relative">
                 <textarea
@@ -238,15 +278,15 @@ export function HomePage() {
                   onChange={(e) => setInput(e.target.value)}
                   onInput={handleTextareaInput}
                   onKeyDown={handleKeyDown}
-                  placeholder={showNativePlaceholder ? "메시지를 입력하세요..." : ""}
+                  placeholder=""
                   rows={1}
                   className="w-full resize-none bg-transparent text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none leading-relaxed"
                   style={{ maxHeight: 160 }}
                 />
-                {/* Typing hint overlay */}
-                {hintText && !input && (
+                {/* Typing hint overlay / placeholder (동일 위치) */}
+                {!input && (
                   <div className="absolute inset-0 flex items-center pointer-events-none text-sm leading-relaxed" style={{ color: '#A0A7B5' }}>
-                    {hintText}
+                    {hintText || (hintDone ? "AI 사건 분석, 초안 작성, 유사 판례 검색 등을 도와드립니다." : "")}
                   </div>
                 )}
               </div>
@@ -267,25 +307,16 @@ export function HomePage() {
           </div>
 
           {/* Quick Actions */}
-          <div className="flex gap-3 justify-center">
+          <div className="flex gap-5 justify-center">
             <Tooltip>
               <TooltipTrigger asChild>
                 <button
                   type="button"
                   onClick={() => navigate("/cases")}
-                  className="flex items-center gap-2.5 px-4 py-3 rounded-xl border text-xs transition-all"
+                  className="flex items-center gap-2.5 px-4 py-3 rounded-xl text-xs font-medium transition-opacity hover:opacity-85"
                   style={{
-                    background: "rgba(109,94,245,0.04)",
-                    borderColor: "rgba(109,94,245,0.10)",
-                    color: "#7C6EF6",
-                  }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.background = "rgba(109,94,245,0.08)";
-                    e.currentTarget.style.borderColor = "rgba(109,94,245,0.18)";
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.background = "rgba(109,94,245,0.04)";
-                    e.currentTarget.style.borderColor = "rgba(109,94,245,0.10)";
+                    background: "linear-gradient(135deg, #6D5EF5, #8B7AF7)",
+                    color: "#fff",
                   }}
                 >
                   <FolderOpen className="h-4 w-4" />
@@ -299,19 +330,10 @@ export function HomePage() {
                 <button
                   type="button"
                   onClick={() => sendMessage("마지막 대화를 이어서 진행해줘")}
-                  className="flex items-center gap-2.5 px-4 py-3 rounded-xl border text-xs transition-all"
+                  className="flex items-center gap-2.5 px-4 py-3 rounded-xl text-xs font-medium transition-opacity hover:opacity-85"
                   style={{
-                    background: "rgba(109,94,245,0.04)",
-                    borderColor: "rgba(109,94,245,0.10)",
-                    color: "#7C6EF6",
-                  }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.background = "rgba(109,94,245,0.08)";
-                    e.currentTarget.style.borderColor = "rgba(109,94,245,0.18)";
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.background = "rgba(109,94,245,0.04)";
-                    e.currentTarget.style.borderColor = "rgba(109,94,245,0.10)";
+                    background: "linear-gradient(135deg, #6D5EF5, #8B7AF7)",
+                    color: "#fff",
                   }}
                 >
                   <MessageSquare className="h-4 w-4" />

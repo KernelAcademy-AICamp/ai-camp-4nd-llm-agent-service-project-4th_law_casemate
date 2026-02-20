@@ -1,5 +1,3 @@
-"use client";
-
 import { createContext, useContext, useState } from "react";
 import type { ReactNode } from "react";
 
@@ -22,25 +20,36 @@ export interface SimilarCaseResult {
   score: number;
 }
 
+// 파싱 결과 타입 (텍스트 기반)
+export interface ParsedComparison {
+  case_overview: string;
+  precedent_summary: string;
+  similarities: string;
+  differences: string;
+  strategy_points: string;
+}
+
 // 비교 분석 결과 타입
 export interface ComparisonResult {
   success: boolean;
   analysis: string;
-  parsed: {
-    case_overview: string;
-    precedent_summary: string;
-    similarities: string;
-    differences: string;
-    strategy_points: string;
-  };
+  parsed: ParsedComparison;
   precedent_info: {
     case_number: string;
     case_name: string;
     court_name: string;
     judgment_date: string;
   };
+  prompt_version?: string;
   elapsed_time: number;
   error?: string;
+}
+
+// 필터 타입
+export interface SearchFilters {
+  courtTypes: string[];  // 중복 선택 가능
+  caseTypes: string[];   // 중복 선택 가능
+  period: string | null; // 단일 선택
 }
 
 // 판례 상세 + 요약 캐시 타입
@@ -66,6 +75,9 @@ interface SearchContextType {
   setHasSearched: (searched: boolean) => void;
   currentPage: number;
   setCurrentPage: (page: number) => void;
+  // 검색 필터
+  filters: SearchFilters;
+  setFilters: (filters: SearchFilters | ((prev: SearchFilters) => SearchFilters)) => void;
   // 유사 판례 캐시
   getSimilarCases: (caseId: string) => SimilarCaseResult[] | null;
   setSimilarCases: (caseId: string, cases: SimilarCaseResult[]) => void;
@@ -96,12 +108,29 @@ function limitCacheSize<T>(cache: Record<string, T>, maxSize: number): Record<st
   return newCache;
 }
 
+// 초기 필터 상태
+const initialFilters: SearchFilters = {
+  courtTypes: [],
+  caseTypes: [],
+  period: null,
+};
+
 // Provider 컴포넌트
 export function SearchProvider({ children }: { children: ReactNode }) {
   const [searchQuery, setSearchQuery] = useState("");
   const [results, setResults] = useState<SearchResult[]>([]);
   const [hasSearched, setHasSearched] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
+  const [filtersState, setFiltersState] = useState<SearchFilters>(initialFilters);
+
+  // 함수형 업데이트 지원하는 setFilters
+  const setFilters = (value: SearchFilters | ((prev: SearchFilters) => SearchFilters)) => {
+    if (typeof value === "function") {
+      setFiltersState(value);
+    } else {
+      setFiltersState(value);
+    }
+  };
 
   // 유사 판례 캐시
   const [similarCasesCache, setSimilarCasesCache] = useState<Record<string, SimilarCaseResult[]>>({});
@@ -178,6 +207,8 @@ export function SearchProvider({ children }: { children: ReactNode }) {
         setHasSearched,
         currentPage,
         setCurrentPage,
+        filters: filtersState,
+        setFilters,
         getSimilarCases,
         setSimilarCases,
         getComparison,

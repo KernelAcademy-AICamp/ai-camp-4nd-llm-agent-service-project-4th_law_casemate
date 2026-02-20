@@ -3,37 +3,28 @@
 GPT를 활용한 판례 요약 생성 및 저장된 요약 조회
 """
 
-import os
 import re
 import time
 import logging
 from typing import Optional, Dict, Any
-from openai import OpenAI
-from qdrant_client import QdrantClient
-from qdrant_client.http import models
-from dotenv import load_dotenv
 
-from app.prompts.summary_prompt import SUMMARY_SYSTEM_PROMPT
+from app.prompts.summary_prompt import SUMMARY_SYSTEM_PROMPT, PROMPT_VERSION
+from app.services.precedent_embedding_service import get_openai_client
+from app.services.precedent_summary_validator import get_validator, get_flag_manager, ValidationResult
+from tool.database import SessionLocal
+from app.models.precedent import PrecedentSummary
 
 logger = logging.getLogger(__name__)
-
-load_dotenv()
 
 
 class SummaryService:
     """판례 요약 서비스"""
 
-    SUMMARIES_COLLECTION = "case_summaries"
-
     # 긴 판례 기준 (청크 개수 대신 문자 수로 판단)
     LONG_CONTENT_THRESHOLD = 30000  # 약 300청크 * 100자
 
     def __init__(self):
-        self.openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-        self.qdrant_client = QdrantClient(
-            host=os.getenv("QDRANT_HOST", "localhost"),
-            port=int(os.getenv("QDRANT_PORT", "6333"))
-        )
+        self.openai_client = get_openai_client()  # 싱글톤
 
     # ==================== 섹션 파싱 ====================
 
@@ -109,7 +100,7 @@ class SummaryService:
         back = full_text[-5000:]
         return f"{front}\n\n... (중략) ...\n\n{back}"
 
-    def summarize(self, content: str) -> str:
+    def summarize(self, content: str, validate: bool = True) -> Dict[str, Any]:
         """
         판례 내용을 구조화된 형식으로 요약 (GPT 호출)
 
@@ -120,12 +111,21 @@ class SummaryService:
 
         Args:
             content: 요약할 텍스트 (전체 판례 내용)
+            validate: 팩트 검증 수행 여부
 
         Returns:
-            구조화된 요약 텍스트
+            {
+                "summary": 요약 텍스트,
+                "validation": ValidationResult (validate=True일 때),
+                "is_valid": 검증 통과 여부
+            }
         """
         if not content or len(content.strip()) < 10:
-            return "요약할 내용이 없습니다."
+            return {
+                "summary": "요약할 내용이 없습니다.",
+                "validation": None,
+                "is_valid": False,
+            }
 
         start_time = time.time()
 
@@ -145,18 +145,38 @@ class SummaryService:
                     "content": f"다음 판례 내용을 요약해주세요:\n\n{summary_source}"
                 }
             ],
-            temperature=0.3,
+            temperature=0.1,
             max_tokens=1500,
         )
 
+        summary = response.choices[0].message.content
         elapsed_time = time.time() - start_time
         logger.info(f"요약 완료 - 소요 시간: {elapsed_time:.2f}초")
 
-        return response.choices[0].message.content
+        # 팩트 검증
+        validation = None
+        is_valid = True
+        if validate:
+            validator = get_validator()
+            validation = validator.validate(summary, content)
+            is_valid = validation.is_valid
+            logger.info(
+                f"팩트 검증: {validation.score:.1%} "
+                f"({validation.matched_facts}/{validation.total_facts}) "
+                f"- {'통과' if is_valid else '실패'}"
+            )
+            if not is_valid:
+                logger.warning(f"미확인 팩트: {validation.unmatched_facts}")
+
+        return {
+            "summary": summary,
+            "validation": validation,
+            "is_valid": is_valid,
+        }
 
     def get_saved_summary(self, case_number: str) -> Optional[str]:
         """
-        저장된 요약 조회
+        저장된 요약 조회 (PostgreSQL)
 
         Args:
             case_number: 사건번호
@@ -165,45 +185,129 @@ class SummaryService:
             저장된 요약 텍스트, 없으면 None
         """
         try:
-            results = self.qdrant_client.scroll(
-                collection_name=self.SUMMARIES_COLLECTION,
-                scroll_filter=models.Filter(
-                    must=[
-                        models.FieldCondition(
-                            key="case_number",
-                            match=models.MatchValue(value=case_number)
-                        )
-                    ]
-                ),
-                limit=1,
-                with_payload=True,
-                with_vectors=False,
-            )
+            with SessionLocal() as db:
+                record = db.query(PrecedentSummary).filter(
+                    PrecedentSummary.case_number == case_number
+                ).first()
 
-            if results[0]:
-                return results[0][0].payload.get("summary")
-            return None
+                if record:
+                    return record.summary
+                return None
 
         except Exception as e:
             logger.error(f"요약 조회 실패: {e}")
             return None
 
-    def get_or_generate_summary(self, case_number: str, content: str) -> Dict[str, Any]:
+    def _save_generated_summary(
+        self,
+        case_number: str,
+        summary: str,
+        case_info: Dict[str, Any] = None,
+    ) -> bool:
         """
-        저장된 요약이 있으면 반환, 없으면 생성
+        생성된 요약을 PostgreSQL에 저장 (텍스트만, 임베딩 없음)
+
+        Args:
+            case_number: 사건번호
+            summary: 요약 텍스트
+            case_info: 메타데이터 (현재 미사용)
+
+        Returns:
+            저장 성공 여부
+        """
+        try:
+            with SessionLocal() as db:
+                # 기존 레코드 확인
+                existing = db.query(PrecedentSummary).filter(
+                    PrecedentSummary.case_number == case_number
+                ).first()
+
+                if existing:
+                    # 업데이트
+                    existing.summary = summary
+                    existing.prompt_version = PROMPT_VERSION
+                else:
+                    # 새로 생성
+                    new_record = PrecedentSummary(
+                        case_number=case_number,
+                        summary=summary,
+                        prompt_version=PROMPT_VERSION,
+                    )
+                    db.add(new_record)
+
+                db.commit()
+                logger.info(f"요약 저장 완료: {case_number}")
+                return True
+
+        except Exception as e:
+            logger.error(f"요약 저장 실패 ({case_number}): {e}")
+            return False
+
+    def get_or_generate_summary(
+        self,
+        case_number: str,
+        content: str,
+        case_info: Dict[str, Any] = None,
+        save_to_db: bool = True,
+        validate: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        저장된 요약이 있으면 반환, 없으면 생성 후 저장
 
         Args:
             case_number: 사건번호
             content: 판례 내용 (요약 생성 시 사용)
+            case_info: 메타데이터 (저장 시 사용)
+            save_to_db: 새로 생성된 요약을 DB에 저장할지 여부
+            validate: 팩트 검증 수행 여부
 
         Returns:
-            {"summary": str, "cached": bool}
+            {
+                "summary": str,
+                "cached": bool,
+                "saved": bool,
+                "validation": ValidationResult (새로 생성 시),
+                "is_valid": bool
+            }
         """
         # 먼저 저장된 요약 확인
         saved_summary = self.get_saved_summary(case_number)
         if saved_summary:
-            return {"summary": saved_summary, "cached": True}
+            return {
+                "summary": saved_summary,
+                "cached": True,
+                "saved": False,
+                "validation": None,
+                "is_valid": True,  # 이미 저장된 건 검증 통과로 간주
+            }
 
-        # 없으면 새로 생성
-        summary = self.summarize(content)
-        return {"summary": summary, "cached": False}
+        # 없으면 새로 생성 (검증 포함)
+        result = self.summarize(content, validate=validate)
+        summary = result["summary"]
+        validation = result["validation"]
+        is_valid = result["is_valid"]
+
+        # 검증 실패 시 플래그 저장
+        if validation and not is_valid:
+            flag_manager = get_flag_manager()
+            flag_manager.add_flag(
+                case_number=case_number,
+                score=validation.score,
+                unmatched_facts=validation.unmatched_facts,
+                summary=summary,
+                details=validation.details,
+            )
+            logger.warning(f"할루시네이션 의심 플래그 추가: {case_number}")
+
+        # 생성된 요약을 Qdrant에 저장 (검증 통과 시에만 저장하거나, 항상 저장)
+        saved = False
+        if save_to_db:
+            saved = self._save_generated_summary(case_number, summary, case_info)
+
+        return {
+            "summary": summary,
+            "cached": False,
+            "saved": saved,
+            "validation": validation,
+            "is_valid": is_valid,
+        }

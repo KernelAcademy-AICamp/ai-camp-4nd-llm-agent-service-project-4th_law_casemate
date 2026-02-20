@@ -34,6 +34,7 @@ class Case(Base):
     opponent_role = Column(String(50), nullable=True)  # 상대방 역할 (피고/피고소인 등)
     case_type = Column(String(50), nullable=True)
     status = Column(String(50), server_default="접수", nullable=True)
+    availability = Column(String(1), server_default="o", nullable=True)  # o:open, c:close, h:hold
     incident_date = Column(Date, nullable=True)
     incident_date_end = Column(Date, nullable=True)
     notification_date = Column(Date, nullable=True)
@@ -76,6 +77,7 @@ class EvidenceAnalysis(Base):
 
     id = Column(BigInteger, primary_key=True, index=True, autoincrement=False, server_default=text('get_time_id()'))  # DB DEFAULT로 시간 기반 ID 생성
     evidence_id = Column(BigInteger, ForeignKey('evidences.id', ondelete='SET NULL'), nullable=True)  # 증거 ID
+    case_id = Column(BigInteger, ForeignKey('cases.id', ondelete='SET NULL'), nullable=True)  # 사건 ID (같은 증거도 사건마다 다른 분석)
     summary = Column(Text, nullable=True)  # STT 결과 또는 요약
     legal_relevance = Column(Text, nullable=True)  # 법적 관련성 분석
     risk_level = Column(String(20), nullable=True)  # 위험 수준 (high, medium, low)
@@ -92,9 +94,10 @@ class CaseAnalysis(Base):
     facts = Column(Text, nullable=True)  # 사실관계
     claims = Column(Text, nullable=True)  # 청구내용
     legal_keywords = Column(Text, nullable=True)  # 법적 쟁점 키워드 (JSON)
+    crime_names = Column(Text, nullable=True)  # 죄명 목록 (JSON) - "~죄" 형태
     legal_laws = Column(Text, nullable=True)  # 관련 법조문 (JSON)
-    similar_precedents = Column(Text, nullable=True)  # 유사 판례 검색 결과 (JSON)
-    search_query = Column(Text, nullable=True)  # 판례 검색용 변환 쿼리 (GPT 캐싱)
+    similar_precedents = Column(Text, nullable=True)  # [미사용] 유사 판례 검색 결과 (JSON) — 별도 테이블로 관리 중
+    search_query = Column(Text, nullable=True)  # [미사용] 판례 검색용 변환 쿼리 — legal_keywords로 대체됨
     legal_search_results = Column(Text, nullable=True)  # 법령 벡터 검색 결과 캐시 (JSON)
     description_hash = Column(String(64), nullable=True)  # 원문 변경 감지용 해시
     analyzed_at = Column(DateTime, nullable=True)  # 분석 실행 시점

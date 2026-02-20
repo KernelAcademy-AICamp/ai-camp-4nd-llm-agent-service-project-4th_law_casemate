@@ -1,7 +1,7 @@
 """
 법령 검색 서비스
-Qdrant laws 컬렉션을 활용한 관련 법령 검색
-하이브리드 검색 지원 (Dense + Sparse + RRF)
+Qdrant laws_hybrid 컬렉션을 활용한 관련 법령 검색
+하이브리드 검색 (Dense + Sparse + RRF)
 
 v2.0 업데이트:
 - Parent/Child 구조 기반 중복 제거
@@ -11,29 +11,28 @@ v2.0 업데이트:
 v3.0 업데이트:
 - 2단계 파이프라인: 법적 쟁점 추출 → 법령 검색
 - 일상 언어 → 법률 용어 변환으로 검색 정확도 향상
+
+v3.1 업데이트:
+- laws_hybrid 단일 컬렉션으로 통합 (laws 컬렉션 폴백 제거)
 """
 
-import os
+import re
 import json
 import logging
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
-from qdrant_client import QdrantClient
 from qdrant_client.http import models
-from openai import OpenAI
-from dotenv import load_dotenv
 
-# 임베딩 서비스 재활용
+from tool.qdrant_client import get_qdrant_client
 from app.services.precedent_embedding_service import (
-    create_dense_embedding_cached,
+    create_openai_embedding_cached,
     get_sparse_model,
+    get_openai_client,
 )
 
 logger = logging.getLogger(__name__)
-
-load_dotenv()
 
 
 @dataclass
@@ -61,25 +60,14 @@ class LawSearchResult:
 
 
 class SearchLawsService:
-    """법령 벡터 검색 서비스 (하이브리드 검색 지원)"""
+    """법령 벡터 검색 서비스 (하이브리드 검색: Dense + Sparse + RRF)"""
 
-    LAWS_COLLECTION = "laws"
-    LAWS_HYBRID_COLLECTION = "laws_hybrid"
+    COLLECTION = "laws_hybrid"
 
     def __init__(self):
-        self.qdrant_client = QdrantClient(
-            host=os.getenv("QDRANT_HOST", "localhost"),
-            port=int(os.getenv("QDRANT_PORT", "6333"))
-        )
+        self.qdrant_client = get_qdrant_client()
         self.sparse_model = get_sparse_model()
-        self.openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
-        # 하이브리드 컬렉션 존재 여부 확인
-        self._use_hybrid = self._check_hybrid_collection()
-        if self._use_hybrid:
-            logger.info("법령 검색: 하이브리드 모드 (laws_hybrid)")
-        else:
-            logger.info("법령 검색: Dense-only 모드 (laws)")
+        self.openai_client = get_openai_client()
 
     # ==================== 법적 쟁점 추출 (2단계 파이프라인 1단계) ====================
 
@@ -118,15 +106,19 @@ class SearchLawsService:
         input_text = "\n\n".join(input_parts)
 
         if not input_text.strip():
-            return {"keywords": [], "laws": [], "search_query": ""}
+            return {"crime_names": [], "keywords": [], "laws": [], "search_query": ""}
 
-        system_prompt = """너는 법률 전문가다. 사건 내용을 분석하여 적용 가능한 법적 쟁점과 관련 법조문을 추출하라.
+        system_prompt = """너는 법률 전문가다. 사건 내용을 분석하여 적용 가능한 죄명, 법적 쟁점, 관련 법조문을 추출하라.
 
 [출력 규칙]
-1. keywords: 이 사건에 적용될 수 있는 법적 쟁점/죄명/청구원인 (3~7개)
-2. laws: 관련될 수 있는 구체적 법조문 (3~7개)
+1. crime_names: 적용 가능한 정확한 죄명 (1~5개)
+   - 반드시 "~죄" 형태로 출력 (예: "명예훼손죄", "모욕죄", "사기죄")
+   - 형법/특별법상 공식 죄명만 사용
+2. keywords: 법적 쟁점/개념/청구원인 (3~7개)
+   - 죄명을 제외한 법적 쟁점만 포함 (예: "인격권 침해", "불법행위", "위자료")
+3. laws: 관련될 수 있는 구체적 법조문 (3~7개)
    - 형식: "법령명 제N조" (예: "형법 제307조", "민법 제750조")
-3. 확실하지 않은 것은 제외하고, 명확히 관련된 것만 포함
+4. 확실하지 않은 것은 제외하고, 명확히 관련된 것만 포함
 
 [주요 법령 참고]
 - 형사: 형법, 정보통신망법, 성폭력처벌법, 특정범죄가중처벌법
@@ -134,7 +126,7 @@ class SearchLawsService:
 - 가사: 민법(가족법), 가사소송법
 
 JSON 형식으로만 출력하라:
-{"keywords": ["...", "..."], "laws": ["...", "..."]}"""
+{"crime_names": ["명예훼손죄", "..."], "keywords": ["...", "..."], "laws": ["...", "..."]}"""
 
         user_prompt = input_text
         if case_type:
@@ -161,15 +153,17 @@ JSON 형식으로만 출력하라:
             result_text = result_text.strip()
 
             result = json.loads(result_text)
+            crime_names = result.get("crime_names", [])
             keywords = result.get("keywords", [])
             laws = result.get("laws", [])
 
-            # 검색 쿼리 생성 (키워드 + 법조문 결합)
+            # 검색 쿼리 생성 (키워드 + 법조문 결합, crime_names는 검색 쿼리에 불포함)
             search_query = " ".join(keywords + laws)
 
-            logger.info(f"법적 쟁점 추출 완료: keywords={keywords}, laws={laws}")
+            logger.info(f"법적 쟁점 추출 완료: crime_names={crime_names}, keywords={keywords}, laws={laws}")
 
             return {
+                "crime_names": crime_names,
                 "keywords": keywords,
                 "laws": laws,
                 "search_query": search_query,
@@ -177,10 +171,10 @@ JSON 형식으로만 출력하라:
 
         except json.JSONDecodeError as e:
             logger.error(f"법적 쟁점 추출 JSON 파싱 실패: {e}")
-            return {"keywords": [], "laws": [], "search_query": ""}
+            return {"crime_names": [], "keywords": [], "laws": [], "search_query": ""}
         except Exception as e:
             logger.error(f"법적 쟁점 추출 실패: {e}")
-            return {"keywords": [], "laws": [], "search_query": ""}
+            return {"crime_names": [], "keywords": [], "laws": [], "search_query": ""}
 
     def search_laws_with_extraction(
         self,
@@ -264,20 +258,9 @@ JSON 형식으로만 출력하라:
         # 법령 검색
         return self.search_laws(query=search_query, limit=limit)
 
-    def _check_hybrid_collection(self) -> bool:
-        """하이브리드 컬렉션이 존재하고 사용 가능한지 확인"""
-        try:
-            collections = self.qdrant_client.get_collections()
-            for col in collections.collections:
-                if col.name == self.LAWS_HYBRID_COLLECTION:
-                    return True
-            return False
-        except Exception:
-            return False
-
     def _create_dense_embedding(self, text: str) -> List[float]:
         """Dense 임베딩 생성 (기존 캐싱 함수 재활용)"""
-        return list(create_dense_embedding_cached(text))
+        return list(create_openai_embedding_cached(text))
 
     def _create_sparse_embedding(self, text: str) -> models.SparseVector:
         """Sparse 임베딩 생성 (BM25)"""
@@ -308,12 +291,12 @@ JSON 형식으로만 출력하라:
         law_role_filter: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
-        사건 내용 기반 관련 법령 검색
+        사건 내용 기반 관련 법령 하이브리드 검색 (Dense + Sparse + RRF)
 
         Args:
             query: 검색 쿼리 (사건 요약 + 사실관계)
             limit: 반환할 최대 결과 수 (기본 8)
-            score_threshold: 최소 유사도 점수 (Dense-only 모드에서만 적용)
+            score_threshold: (미사용, 하위 호환성 유지)
             deduplicate: 동일 조문 중복 제거 여부 (기본 True)
             max_per_article: 동일 조문당 최대 결과 수 (기본 2)
             law_role_filter: 법령 역할 필터 ("substance" or "procedure")
@@ -321,22 +304,6 @@ JSON 형식으로만 출력하라:
         Returns:
             검색 결과 딕셔너리
         """
-        if self._use_hybrid:
-            return self._search_hybrid(
-                query, limit, deduplicate, max_per_article, law_role_filter
-            )
-        else:
-            return self._search_dense_only(query, limit, score_threshold)
-
-    def _search_hybrid(
-        self,
-        query: str,
-        limit: int,
-        deduplicate: bool = True,
-        max_per_article: int = 2,
-        law_role_filter: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """하이브리드 검색 (Dense + Sparse + RRF 융합)"""
         # 병렬로 임베딩 생성
         dense_vector, sparse_vector = self._create_embeddings_parallel(query)
 
@@ -357,7 +324,7 @@ JSON 형식으로만 출력하라:
 
         # 하이브리드 검색 (RRF 융합)
         results = self.qdrant_client.query_points(
-            collection_name=self.LAWS_HYBRID_COLLECTION,
+            collection_name=self.COLLECTION,
             prefetch=[
                 models.Prefetch(
                     query=dense_vector,
@@ -390,24 +357,6 @@ JSON 형식으로만 출력하라:
             "total": len(search_results),
             "results": [r.to_dict() for r in search_results],
         }
-
-    def _search_dense_only(
-        self,
-        query: str,
-        limit: int,
-        score_threshold: float,
-    ) -> Dict[str, Any]:
-        """Dense-only 검색 (기존 방식)"""
-        query_vector = self._create_dense_embedding(query)
-
-        results = self.qdrant_client.query_points(
-            collection_name=self.LAWS_COLLECTION,
-            query=query_vector,
-            limit=limit,
-            score_threshold=score_threshold,
-        )
-
-        return self._process_results(results)
 
     def _process_results_to_list(self, results) -> List[LawSearchResult]:
         """검색 결과를 LawSearchResult 리스트로 변환"""
@@ -460,10 +409,334 @@ JSON 형식으로만 출력하라:
         deduplicated.sort(key=lambda x: x.score, reverse=True)
         return deduplicated[:limit]
 
-    def _process_results(self, results) -> Dict[str, Any]:
-        """검색 결과 처리 (하위 호환성 유지)"""
+    def search_by_term(
+        self,
+        term: str,
+        limit: int = 3,
+    ) -> Dict[str, Any]:
+        """
+        하이브리드 검색 (Dense + Sparse + RRF)
+
+        죄명·법률용어 → 관련 조문 검색에 사용.
+        Dense(OpenAI 임베딩)로 의미 기반 매칭,
+        Sparse(BM25)로 키워드 매칭 후 RRF 융합.
+
+        Args:
+            term: 법률 용어 (예: "주거침입죄", "손해배상청구")
+            limit: 반환할 최대 결과 수
+
+        Returns:
+            검색 결과 딕셔너리 (get_article과 동일 형식)
+        """
+        dense_vector, sparse_vector = self._create_embeddings_parallel(term)
+
+        fetch_limit = limit * 3
+        results = self.qdrant_client.query_points(
+            collection_name=self.COLLECTION,
+            prefetch=[
+                models.Prefetch(
+                    query=dense_vector,
+                    using="dense",
+                    limit=fetch_limit,
+                ),
+                models.Prefetch(
+                    query=sparse_vector,
+                    using="sparse",
+                    limit=fetch_limit,
+                ),
+            ],
+            query=models.FusionQuery(fusion=models.Fusion.RRF),
+            limit=fetch_limit,
+        )
+
         search_results = self._process_results_to_list(results)
+        search_results = self._deduplicate_by_article(search_results, max_per_article=1, limit=limit)
+
+        # 항별 파싱 추가 (article 엔드포인트와 동일 형식)
+        result_dicts = []
+        for r in search_results:
+            d = r.to_dict()
+            d["paragraphs"] = self._parse_paragraphs(r.content)
+            result_dicts.append(d)
+
         return {
-            "total": len(search_results),
-            "results": [r.to_dict() for r in search_results],
+            "total": len(result_dicts),
+            "results": result_dicts,
         }
+
+    def get_article(self, law_name: str, article_number: str) -> Optional[Dict[str, Any]]:
+        """
+        특정 조문 조회 (법령명 + 조문번호)
+
+        Args:
+            law_name: 법령명 (예: "형법", "정보통신망 이용촉진 및 정보보호 등에 관한 법률")
+            article_number: 조문번호 (예: "307", "70의2")
+
+        Returns:
+            조문 정보 딕셔너리 또는 None
+        """
+        collection = self.COLLECTION
+
+        # 법령명 정제: 장(章) 정보 제거
+        # 예: "노동조합 및 노동관계조정법 제4장 쟁의행위" → "노동조합 및 노동관계조정법"
+        law_name_clean = re.sub(r'\s*제\d+장[^제]*$', '', law_name).strip()
+        if law_name_clean != law_name:
+            logger.info(f"법령명 정제: {law_name} → {law_name_clean}")
+            law_name = law_name_clean
+
+        # 조문번호 정규화: "제70조의2" → "70의2", "307" → "307"
+        article_num_match = re.match(r"제?(\d+)(?:조)?(?:의(\d+))?", article_number)
+        if article_num_match:
+            base_num = article_num_match.group(1)
+            sub_num = article_num_match.group(2)
+            article_num_clean = f"{base_num}의{sub_num}" if sub_num else base_num
+        else:
+            article_num_clean = re.sub(r"[^0-9]", "", article_number)
+            if not article_num_clean:
+                article_num_clean = article_number
+
+        logger.info(f"조문 조회: law_name={law_name}, article_number={article_number} → {article_num_clean}")
+
+        # 1차 시도: 정확한 법령명 매칭
+        results = self.qdrant_client.scroll(
+            collection_name=collection,
+            scroll_filter=models.Filter(
+                must=[
+                    models.FieldCondition(
+                        key="law_name",
+                        match=models.MatchValue(value=law_name)
+                    ),
+                    models.FieldCondition(
+                        key="article_number",
+                        match=models.MatchValue(value=article_num_clean)
+                    ),
+                ]
+            ),
+            limit=20,
+            with_payload=True,
+        )
+
+        # 2차 시도: 법령명 부분 매칭 (긴 법령명의 경우)
+        if not results[0] and len(law_name) > 10:
+            # 법령명에서 핵심 키워드 추출 (예: "정보통신망" 또는 앞 10자)
+            law_keyword = law_name[:10]
+            logger.info(f"정확한 매칭 실패, 부분 매칭 시도: {law_keyword}")
+
+            results = self.qdrant_client.scroll(
+                collection_name=collection,
+                scroll_filter=models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="law_name",
+                            match=models.MatchText(text=law_keyword)
+                        ),
+                        models.FieldCondition(
+                            key="article_number",
+                            match=models.MatchValue(value=article_num_clean)
+                        ),
+                    ]
+                ),
+                limit=20,
+                with_payload=True,
+            )
+
+        if not results[0]:
+            logger.info(f"DB에서 조문 없음: {law_name} 제{article_num_clean}조")
+            return None
+
+        # Parent와 Child 분리
+        parent = None
+        children = []
+
+        for point in results[0]:
+            payload = point.payload
+            point_type = payload.get("point_type", "")
+
+            if point_type == "parent":
+                parent = payload
+            else:
+                children.append(payload)
+
+        if not parent:
+            # Parent가 없으면 첫 번째 결과 사용
+            parent = results[0][0].payload
+
+        # 항별 파싱 (①②③ 등의 기호로 분리)
+        content = parent.get("content", "")
+        paragraphs = self._parse_paragraphs(content)
+
+        logger.info(f"DB에서 조문 찾음: {parent.get('law_name')} 제{parent.get('article_number')}조")
+
+        return {
+            "law_name": parent.get("law_name", ""),
+            "article_number": parent.get("article_number", ""),
+            "article_title": parent.get("article_title", ""),
+            "content": content,
+            "paragraphs": paragraphs,
+        }
+
+    async def get_article_with_fallback(
+        self,
+        law_name: str,
+        article_number: str,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        조문 조회 (DB 우선 → API Fallback → 캐싱)
+
+        Args:
+            law_name: 법령명 (예: "형법")
+            article_number: 조문번호 (예: "307")
+
+        Returns:
+            조문 정보 딕셔너리 또는 None
+        """
+        # 1. DB에서 먼저 조회
+        result = self.get_article(law_name, article_number)
+        if result:
+            logger.info(f"조문 조회 (DB): {law_name} 제{article_number}조")
+            return result
+
+        # 2. DB에 없으면 API에서 가져오기
+        logger.info(f"조문 조회 (API Fallback): {law_name} 제{article_number}조")
+
+        from tool.law_api_client import LawAPIClient
+
+        try:
+            async with LawAPIClient() as client:
+                api_result = await client.get_article(law_name, article_number)
+
+                if not api_result:
+                    logger.warning(f"API에서도 조문 없음: {law_name} 제{article_number}조")
+                    return None
+
+                # 3. 항별 파싱
+                content = api_result.get("content", "")
+                paragraphs = self._parse_paragraphs(content)
+
+                result = {
+                    "law_name": api_result.get("law_name", law_name),
+                    "article_number": api_result.get("article_number", article_number),
+                    "article_title": api_result.get("article_title", ""),
+                    "content": content,
+                    "paragraphs": paragraphs,
+                }
+
+                # 4. DB에 캐싱 (비동기로 저장)
+                self._save_article_to_qdrant(result)
+
+                return result
+
+        except Exception as e:
+            logger.error(f"API 조문 조회 실패: {e}")
+            return None
+
+    def _save_article_to_qdrant(self, article: Dict[str, Any]) -> None:
+        """
+        API에서 가져온 조문을 Qdrant에 저장 (캐싱)
+
+        기존 수집 로직과 동일한 구조로 저장 (Parent/Child)
+        """
+        import hashlib
+        from datetime import datetime
+
+        try:
+            law_name = article.get("law_name", "")
+            article_number = article.get("article_number", "")
+            article_title = article.get("article_title", "")
+            content = article.get("content", "")
+
+            if not law_name or not article_number or not content:
+                return
+
+            # Dense 임베딩 생성
+            dense_vector = self._create_dense_embedding(content[:2000])  # 최대 2000자
+
+            # Sparse 임베딩 생성
+            sparse_emb = list(self.sparse_model.embed([content[:2000]]))[0]
+            sparse_vector = {
+                "indices": sparse_emb.indices.tolist(),
+                "values": sparse_emb.values.tolist(),
+            }
+
+            # Point ID 생성 (Parent)
+            id_string = f"law_{law_name}_{article_number}_parent"
+            hash_hex = hashlib.md5(id_string.encode()).hexdigest()[:16]
+            point_id = int(hash_hex, 16)
+
+            # Qdrant에 저장
+            from qdrant_client.http import models as qdrant_models
+
+            point = qdrant_models.PointStruct(
+                id=point_id,
+                vector={
+                    "dense": dense_vector,
+                    "sparse": qdrant_models.SparseVector(
+                        indices=sparse_vector["indices"],
+                        values=sparse_vector["values"],
+                    ),
+                },
+                payload={
+                    "law_name": law_name,
+                    "article_number": article_number,
+                    "article_title": article_title,
+                    "content": content,
+                    "point_type": "parent",
+                    "collected_date": datetime.now().strftime("%Y-%m-%d"),
+                    "source": "api_fallback",
+                },
+            )
+
+            self.qdrant_client.upsert(
+                collection_name=self.COLLECTION,
+                points=[point],
+            )
+
+            logger.info(f"조문 캐싱 완료: {law_name} 제{article_number}조")
+
+        except Exception as e:
+            logger.error(f"조문 캐싱 실패: {e}")
+
+    def _parse_paragraphs(self, content: str) -> List[Dict[str, Any]]:
+        """
+        조문 내용에서 항별로 분리
+
+        Args:
+            content: 조문 전체 내용
+
+        Returns:
+            [{"number": "1", "content": "①..."}, {"number": "2", "content": "②..."}, ...]
+        """
+        # 원문자 기호: ①②③④⑤⑥⑦⑧⑨⑩ 등
+        paragraph_markers = "①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳"
+
+        paragraphs = []
+
+        # 항 기호로 분리
+        pattern = r"([①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳])"
+        parts = re.split(pattern, content)
+
+        # 첫 부분이 조문 제목일 수 있음 (예: "제307조(명예훼손)")
+        current_number = 0
+
+        i = 0
+        while i < len(parts):
+            part = parts[i].strip()
+
+            if part in paragraph_markers:
+                # 항 번호 찾음
+                current_number = paragraph_markers.index(part) + 1
+                # 다음 부분이 내용
+                if i + 1 < len(parts):
+                    para_content = part + parts[i + 1].strip()
+                    paragraphs.append({
+                        "number": str(current_number),
+                        "content": para_content,
+                    })
+                    i += 2
+                else:
+                    i += 1
+            else:
+                # 항 기호가 없는 부분 (조문 제목 등)
+                i += 1
+
+        return paragraphs

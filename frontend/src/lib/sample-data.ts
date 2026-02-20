@@ -30,6 +30,16 @@ export interface PrecedentData {
   };
 }
 
+export interface Party {
+  name: string;
+  role: string;
+}
+
+export interface TimelineEvent {
+  date: string;
+  event: string;
+}
+
 export interface CaseData {
   id: string;
   name: string;
@@ -44,6 +54,9 @@ export interface CaseData {
   claimAmount: number;
   description?: string;
   period?: string;
+  parties?: Party[];
+  timeline?: TimelineEvent[];
+  crimeNames?: string[];
 }
 
 export const sampleCases: CaseData[] = [

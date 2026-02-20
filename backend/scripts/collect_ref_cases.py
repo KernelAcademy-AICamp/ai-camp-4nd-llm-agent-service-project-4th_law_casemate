@@ -6,7 +6,6 @@ Qdrant에 저장된 판례의 참조판례 섹션에서 사건번호를 추출�
 import sys
 import asyncio
 import argparse
-import time
 import re
 from pathlib import Path
 from typing import List, Dict, Any, Set
@@ -32,7 +31,9 @@ class RefCaseCollector(BaseCaseCollector):
 
     def __init__(self):
         super().__init__()
-        self.qdrant_client = QdrantClient(host='localhost', port=6333)
+        from tool.qdrant_client import get_qdrant_client
+        self.qdrant_client = get_qdrant_client()  # 싱글톤 사용
+        self.api_client: LawAPIClient | None = None
 
     # ==================== 고유 로직: Qdrant에서 참조판례 추출 ====================
 
@@ -54,7 +55,7 @@ class RefCaseCollector(BaseCaseCollector):
 
         while True:
             results, offset = self.qdrant_client.scroll(
-                collection_name='cases',
+                collection_name='precedents',
                 scroll_filter=Filter(
                     must=[
                         FieldCondition(key="keyword", match=MatchValue(value=keyword))
@@ -101,41 +102,52 @@ class RefCaseCollector(BaseCaseCollector):
 
     # ==================== 고유 로직: 사건번호로 API 검색 ====================
 
-    async def search_case_by_number(self, case_number: str) -> Dict[str, Any] | None:
+    async def search_case_by_number(self, case_number: str, keyword: str = "") -> Dict[str, Any] | None:
         """
-        사건번호로 판례 검색 후 상세 정보 조회
+        사건번호로 판례 검색 후 상세 정보 조회 (Rate Limit + Retry 적용)
 
         Args:
             case_number: 사건번호 (예: "2012도13607")
+            keyword: 검색 키워드 (실패 기록용)
 
         Returns:
             판례 상세 정보 또는 None
         """
-        async with LawAPIClient() as client:
-            try:
-                # 사건번호로 검색 (결과가 뒤에 있을 수 있으므로 충분히 가져옴)
-                result = await client.search_cases(query=case_number, display=50)
-                prec_search = result.get("PrecSearch", {})
-                cases = prec_search.get("prec", [])
+        # 1. 사건번호로 검색 (Rate Limit + Retry)
+        result = await self.api_call_with_retry(
+            self.api_client.search_cases,
+            query=case_number,
+            display=50,
+            case_number=case_number,
+            keyword=keyword,
+        )
 
-                if not cases:
-                    return None
+        if result is None:
+            return None
 
-                if isinstance(cases, dict):
-                    cases = [cases]
+        prec_search = result.get("PrecSearch", {})
+        cases = prec_search.get("prec", [])
 
-                # 정확히 일치하는 사건번호 찾기
-                for case in cases:
-                    if case.get("사건번호", "").replace(" ", "") == case_number.replace(" ", ""):
-                        case_id = case.get("판례일련번호", "")
-                        if case_id:
-                            detail_result = await client.get_case_detail(case_id)
-                            return detail_result.get("PrecService", {})
+        if not cases:
+            return None
 
-                return None
+        if isinstance(cases, dict):
+            cases = [cases]
 
-            except Exception as e:
-                print(f"    - {case_number} 검색 실패: {e}")
+        # 정확히 일치하는 사건번호 찾기
+        for case in cases:
+            if case.get("사건번호", "").replace(" ", "") == case_number.replace(" ", ""):
+                case_id = case.get("판례일련번호", "")
+                if case_id:
+                    # 2. 상세 조회 (Rate Limit + Retry)
+                    detail_result = await self.api_call_with_retry(
+                        self.api_client.get_case_detail,
+                        case_id,
+                        case_number=case_number,
+                        keyword=keyword,
+                    )
+                    if detail_result:
+                        return detail_result.get("PrecService", {})
 
         return None
 
@@ -160,72 +172,77 @@ class RefCaseCollector(BaseCaseCollector):
         total_failed = 0
         total_summaries = 0
 
-        for keyword in self.KEYWORDS:
-            # 1. 해당 키워드 판례들의 참조판례 사건번호 추출
-            ref_map = self.get_ref_case_numbers(keyword)
+        # API 클라이언트 세션 유지 (전체 수집 동안 재사용)
+        async with LawAPIClient() as client:
+            self.api_client = client
 
-            # 2. 모든 참조판례 사건번호 수집 (중복 제거)
-            all_ref_numbers = set()
-            ref_from_map = {}  # 참조판례 → 원본 판례 매핑
+            for keyword in self.KEYWORDS:
+                # 1. 해당 키워드 판례들의 참조판례 사건번호 추출
+                ref_map = self.get_ref_case_numbers(keyword)
 
-            for origin_case, ref_cases in ref_map.items():
-                for ref_case in ref_cases:
-                    all_ref_numbers.add(ref_case)
-                    if ref_case not in ref_from_map:
-                        ref_from_map[ref_case] = []
-                    ref_from_map[ref_case].append(origin_case)
+                # 2. 모든 참조판례 사건번호 수집 (중복 제거)
+                all_ref_numbers = set()
+                ref_from_map = {}  # 참조판례 → 원본 판례 매핑
 
-            # 3. 이미 수집된 것 제외
-            new_refs = all_ref_numbers - self.collected_case_numbers
-            print(f"\n[{keyword}] 새로 수집할 참조판례: {len(new_refs)}건 (기존 {len(all_ref_numbers) - len(new_refs)}건 제외)")
+                for origin_case, ref_cases in ref_map.items():
+                    for ref_case in ref_cases:
+                        all_ref_numbers.add(ref_case)
+                        if ref_case not in ref_from_map:
+                            ref_from_map[ref_case] = []
+                        ref_from_map[ref_case].append(origin_case)
 
-            # 4. 각 참조판례 수집
-            for i, ref_number in enumerate(new_refs, 1):
-                print(f"  [{i}/{len(new_refs)}] {ref_number} 수집 중...", end=" ")
+                # 3. 이미 수집된 것 제외
+                new_refs = all_ref_numbers - self.collected_case_numbers
+                print(f"\n[{keyword}] 새로 수집할 참조판례: {len(new_refs)}건 (기존 {len(all_ref_numbers) - len(new_refs)}건 제외)")
 
-                # API로 상세 조회
-                detail = await self.search_case_by_number(ref_number)
+                # 4. 각 참조판례 수집
+                for i, ref_number in enumerate(new_refs, 1):
+                    print(f"  [{i}/{len(new_refs)}] {ref_number} 수집 중...", end=" ")
 
-                if not detail:
-                    print("→ 조회 실패")
-                    total_failed += 1
-                    continue
+                    # API로 상세 조회 (Rate Limit + Retry 적용)
+                    detail = await self.search_case_by_number(ref_number, keyword=keyword)
 
-                actual_case_number = detail.get("사건번호", ref_number)
+                    if not detail:
+                        print("→ 조회 실패")
+                        total_failed += 1
+                        continue
 
-                # 이미 수집된 경우 스킵
-                if self.is_duplicate(actual_case_number):
-                    print("→ 이미 존재")
-                    total_skipped += 1
-                    continue
+                    actual_case_number = detail.get("사건번호", ref_number)
 
-                # 메타데이터 구성 (참조판례 고유 필드 포함)
-                case_info = {
-                    "case_number": actual_case_number,
-                    "case_name": detail.get("사건명", ""),
-                    "court_name": detail.get("법원명", ""),
-                    "judgment_date": detail.get("선고일자", ""),
-                    "case_type": detail.get("사건종류명", ""),
-                    "judgment_type": detail.get("판결유형", ""),
-                    "case_serial_number": detail.get("판례정보일련번호", ""),
-                    "case_type_code": detail.get("사건종류코드", ""),
-                    "court_type_code": detail.get("법원종류코드", ""),
-                    "source": "reference",  # 참조판례 구분
-                    "ref_from": ",".join(ref_from_map.get(ref_number, [])),
-                }
+                    # 이미 수집된 경우 스킵
+                    if self.is_duplicate(actual_case_number):
+                        print("→ 이미 존재")
+                        total_skipped += 1
+                        continue
 
-                # 공통 처리 (청킹 → 임베딩 → 저장 → 요약)
-                ref_keyword = f"ref:{keyword}"
-                result = self.process_case(detail, case_info, ref_keyword, skip_summary)
+                    # 메타데이터 구성 (참조판례 고유 필드 포함)
+                    case_info = {
+                        "case_number": actual_case_number,
+                        "case_name": detail.get("사건명", ""),
+                        "court_name": detail.get("법원명", ""),
+                        "judgment_date": detail.get("선고일자", ""),
+                        "case_type": detail.get("사건종류명", ""),
+                        "judgment_type": detail.get("판결유형", ""),
+                        "case_serial_number": detail.get("판례정보일련번호", ""),
+                        "case_type_code": detail.get("사건종류코드", ""),
+                        "court_type_code": detail.get("법원종류코드", ""),
+                        "source": "reference",  # 참조판례 구분
+                        "ref_from": ",".join(ref_from_map.get(ref_number, [])),
+                    }
 
-                total_saved += result["chunks_saved"]
-                if result["summary_saved"]:
-                    total_summaries += 1
+                    # 공통 처리 (청킹 → 임베딩 → 저장 → 요약)
+                    ref_keyword = f"ref:{keyword}"
+                    result = self.process_case(detail, case_info, ref_keyword, skip_summary)
 
-                total_collected += 1
-                print(f"→ 완료 ({result['chunks_saved']}청크)")
+                    total_saved += result["chunks_saved"]
+                    if result["summary_saved"]:
+                        total_summaries += 1
 
-                time.sleep(0.5)
+                    total_collected += 1
+                    print(f"→ 완료 ({result['chunks_saved']}청크)")
+
+        # 실패 케이스 저장
+        self.save_failed_cases()
 
         print(f"\n수집 완료!")
         print(f"  - 수집: {total_collected}건")
@@ -233,6 +250,8 @@ class RefCaseCollector(BaseCaseCollector):
         print(f"  - 요약: {total_summaries}개")
         print(f"  - 스킵(중복): {total_skipped}건")
         print(f"  - 실패: {total_failed}건")
+        if self.get_failed_cases_count() > 0:
+            print(f"  - API 실패 기록: {self.get_failed_cases_count()}건 (failed_cases.json 참고)")
 
 
 async def main():

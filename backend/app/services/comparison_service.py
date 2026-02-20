@@ -3,41 +3,32 @@
 현재 사건과 유사 판례를 비교하여 전략적 인사이트 제공 (RAG)
 """
 
-import os
+import re
 import time
 import logging
 from typing import Dict, Any, Optional
-from openai import OpenAI
-from qdrant_client import QdrantClient
-from qdrant_client.http import models
-from dotenv import load_dotenv
 
 from app.prompts.comparison_prompt import (
-    COMPARISON_SYSTEM_PROMPT,
-    COMPARISON_USER_TEMPLATE,
-    COMPARISON_PROMPT_VERSION,
+    COMPARISON_SYSTEM_PROMPT_V2,
+    COMPARISON_USER_TEMPLATE_V2,
+    COMPARISON_PROMPT_VERSION_V2,
 )
+from app.services.precedent_embedding_service import get_openai_client
+from app.services.precedent_repository import PrecedentRepository
 
 logger = logging.getLogger(__name__)
-
-load_dotenv()
 
 
 class ComparisonService:
     """판례 비교 분석 서비스"""
 
-    CASES_COLLECTION = "cases"
-
     def __init__(self):
-        self.openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-        self.qdrant_client = QdrantClient(
-            host=os.getenv("QDRANT_HOST", "localhost"),
-            port=int(os.getenv("QDRANT_PORT", "6333"))
-        )
+        self.openai_client = get_openai_client()  # 싱글톤 사용
+        self.repository = PrecedentRepository()
 
     def _get_precedent_content(self, case_number: str) -> Optional[Dict[str, Any]]:
         """
-        판례 원문 및 메타데이터 조회
+        PostgreSQL에서 판례 원문 및 메타데이터 조회
 
         Args:
             case_number: 사건번호
@@ -46,61 +37,18 @@ class ComparisonService:
             판례 정보 딕셔너리 또는 None
         """
         try:
-            results = self.qdrant_client.scroll(
-                collection_name=self.CASES_COLLECTION,
-                scroll_filter=models.Filter(
-                    must=[
-                        models.FieldCondition(
-                            key="case_number",
-                            match=models.MatchValue(value=case_number)
-                        )
-                    ]
-                ),
-                limit=100,
-                with_payload=True,
-                with_vectors=False,
-            )
+            # PostgreSQL에서 판례 상세 정보 조회
+            detail = self.repository.get_case_detail(case_number)
 
-            chunks = results[0]
-            if not chunks:
+            if not detail:
                 return None
 
-            # 메타데이터 추출 (첫 번째 청크에서)
-            first_payload = chunks[0].payload
-            metadata = {
-                "case_number": first_payload.get("case_number", ""),
-                "case_name": first_payload.get("case_name", ""),
-                "court_name": first_payload.get("court_name", ""),
-                "judgment_date": first_payload.get("judgment_date", ""),
-            }
-
-            # 청크들을 chunk_index로 정렬하여 전문 구성
-            chunk_list = []
-            for point in chunks:
-                payload = point.payload
-                chunk_list.append({
-                    "section": payload.get("section", ""),
-                    "chunk_index": payload.get("chunk_index", 0),
-                    "content": payload.get("content", ""),
-                })
-
-            chunk_list.sort(key=lambda x: x["chunk_index"])
-
-            # 전문 텍스트 합치기
-            content_parts = []
-            current_section = None
-            for chunk in chunk_list:
-                if chunk["section"] != current_section:
-                    current_section = chunk["section"]
-                    if current_section:
-                        content_parts.append(f"\n[{current_section}]")
-                content_parts.append(chunk["content"])
-
-            full_text = "\n".join(content_parts)
-
             return {
-                **metadata,
-                "content": full_text,
+                "case_number": detail.get("case_number", ""),
+                "case_name": detail.get("case_name", ""),
+                "court_name": detail.get("court_name", ""),
+                "judgment_date": detail.get("judgment_date", ""),
+                "content": detail.get("full_text", ""),
             }
 
         except Exception as e:
@@ -134,8 +82,9 @@ class ComparisonService:
                 "error": f"판례를 찾을 수 없습니다: {target_case_number}",
             }
 
-        # 2. 프롬프트 생성
-        user_prompt = COMPARISON_USER_TEMPLATE.format(
+        # 2. V2 프롬프트 생성
+        system_prompt = COMPARISON_SYSTEM_PROMPT_V2
+        user_prompt = COMPARISON_USER_TEMPLATE_V2.format(
             origin_facts=origin_facts,
             origin_claims=origin_claims,
             precedent_case_number=precedent["case_number"],
@@ -150,19 +99,20 @@ class ComparisonService:
             response = self.openai_client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
-                    {"role": "system", "content": COMPARISON_SYSTEM_PROMPT},
+                    {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
-                temperature=0.3,
+                temperature=0.1,
                 max_tokens=2000,
             )
 
-            analysis = response.choices[0].message.content
+            raw_response = response.choices[0].message.content
 
             elapsed_time = time.time() - start_time
             logger.info(f"비교 분석 완료 - 소요 시간: {elapsed_time:.2f}초")
 
-            # 4. 결과 파싱 (섹션별 분리)
+            # 4. 결과 파싱
+            analysis = raw_response
             parsed = self._parse_analysis(analysis)
 
             return {
@@ -175,7 +125,7 @@ class ComparisonService:
                     "court_name": precedent["court_name"],
                     "judgment_date": precedent["judgment_date"],
                 },
-                "prompt_version": COMPARISON_PROMPT_VERSION,
+                "prompt_version": COMPARISON_PROMPT_VERSION_V2,
                 "elapsed_time": round(elapsed_time, 2),
             }
 
@@ -204,11 +154,11 @@ class ComparisonService:
             "strategy_points": "",
         }
 
-        # 섹션 구분자 패턴
+        # 섹션 구분자 패턴 (V2: 핵심 쟁점별 유사점 추가)
         sections = {
             "case_overview": ["# 현재 사건 개요", "## 현재 사건 개요", "현재 사건 개요"],
             "precedent_summary": ["# 유사 판례 요약", "## 유사 판례 요약", "유사 판례 요약"],
-            "similarities": ["# 유사점", "## 유사점", "유사점"],
+            "similarities": ["# 핵심 쟁점별 유사점", "## 핵심 쟁점별 유사점", "핵심 쟁점별 유사점", "# 유사점", "## 유사점", "유사점"],
             "differences": ["# 차이점", "## 차이점", "차이점"],
             "strategy_points": ["# 전략 포인트", "## 전략 포인트", "전략 포인트"],
         }

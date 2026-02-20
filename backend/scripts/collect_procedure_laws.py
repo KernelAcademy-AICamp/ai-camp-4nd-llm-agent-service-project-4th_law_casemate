@@ -17,6 +17,7 @@ import re
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 from dotenv import load_dotenv
+import openai
 from openai import OpenAI
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -30,7 +31,7 @@ load_dotenv()
 # 설정
 QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
 QDRANT_PORT = int(os.getenv("QDRANT_PORT", "6333"))
-COLLECTION_NAME = "laws"
+COLLECTION_NAME = "laws_hybrid"
 
 # 수집 대상 절차법
 TARGET_LAWS = ["민사소송법"]  # 형사소송법은 이미 완료
@@ -220,18 +221,27 @@ class ProcedureLawCollector:
                 for item in batch
             ]
 
-            response = self.openai_client.embeddings.create(
-                model="text-embedding-3-small",
-                input=texts
-            )
+            for attempt in range(3):
+                try:
+                    response = self.openai_client.embeddings.create(
+                        model="text-embedding-3-small",
+                        input=texts
+                    )
 
-            for j, item in enumerate(batch):
-                item_with_vector = item.copy()
-                item_with_vector["vector"] = response.data[j].embedding
-                results.append(item_with_vector)
+                    for j, item in enumerate(batch):
+                        item_with_vector = item.copy()
+                        item_with_vector["vector"] = response.data[j].embedding
+                        results.append(item_with_vector)
+                    break  # 성공 시 루프 탈출
+
+                except openai.RateLimitError:
+                    print(f"  - Rate limit 도달, 5초 대기 후 재시도 ({attempt + 1}/3)")
+                    time.sleep(5)
+                except Exception as e:
+                    print(f"  - 임베딩 생성 실패: {e}")
+                    break
 
             print(f"  - 진행: {min(i + batch_size, len(items))}/{len(items)}")
-            time.sleep(1)  # Rate limit 방지
 
         return results
 

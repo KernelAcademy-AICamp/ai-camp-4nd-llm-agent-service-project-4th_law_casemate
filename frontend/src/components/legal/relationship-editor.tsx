@@ -1,8 +1,7 @@
 "use client";
 
-import React from "react"
-
-import { useState, useRef, useCallback, useEffect } from "react";
+import React, { useState, useCallback, useEffect, useMemo, useRef } from "react";
+import mermaid from "mermaid";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -22,29 +21,19 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
-  ContextMenu,
-  ContextMenuContent,
-  ContextMenuItem,
-  ContextMenuTrigger,
-} from "@/components/ui/context-menu";
-import {
   Plus,
   Trash2,
   User,
-  UserX,
   Users,
   AlertCircle,
   Eye,
   Briefcase,
   HelpCircle,
-  GripVertical,
-  Move,
-  Link2,
-  MousePointer,
-  MousePointerClick,
+  RefreshCw,
+  Pencil,
 } from "lucide-react";
 
-// Types
+// ── Types ──────────────────────────────────────────────────────────────────
 export type PersonRole = "피해자" | "가해자" | "증인" | "동료" | "미확인";
 
 export interface PersonNode {
@@ -66,1022 +55,811 @@ export interface RelationshipEdge {
 
 interface RelationshipEditorProps {
   caseId: string;
+  data?: { persons: any[]; relationships: any[] };
+  loading?: boolean;
+  onRefresh?: () => void;
 }
 
-const roleConfig: Record<
-  PersonRole,
-  { color: string; bgColor: string; borderColor: string; iconBg: string; icon: React.ReactNode }
-> = {
+// ── Role config ────────────────────────────────────────────────────────────
+const ROLE_COLOR: Record<PersonRole, string> = {
+  피해자: "#6D5EF5",
+  가해자: "#EF4444",
+  증인:   "#38BDF8",
+  동료:   "#F59E0B",
+  미확인: "#94A3B8",
+};
+
+const roleConfig: Record<PersonRole, {
+  color: string; bgColor: string; borderColor: string;
+  iconBg: string; icon: React.ReactNode; mermaidClass: string;
+}> = {
   피해자: {
-    color: "text-[#6D5EF5]",
-    bgColor: "bg-[#F5F3FF]",
+    color: "text-[#6D5EF5]", bgColor: "bg-[#F5F3FF]",
     borderColor: "border-[#6D5EF5]/30",
     iconBg: "bg-gradient-to-br from-[#6D5EF5] to-[#A78BFA]",
-    icon: <User className="h-5 w-5 text-white" />,
+    icon: <User className="h-4 w-4 text-white" />,
+    mermaidClass: "victim",
   },
   가해자: {
-    color: "text-[#EF4444]",
-    bgColor: "bg-red-50",
+    color: "text-[#EF4444]", bgColor: "bg-[#EF4444]/5",
     borderColor: "border-[#EF4444]/30",
-    iconBg: "bg-gradient-to-br from-[#EF4444] to-[#F87171]",
-    icon: <AlertCircle className="h-5 w-5 text-white" />,
+    iconBg: "bg-gradient-to-br from-[#EF4444] to-[#EF4444]/70",
+    icon: <AlertCircle className="h-4 w-4 text-white" />,
+    mermaidClass: "perpetrator",
   },
   증인: {
-    color: "text-[#0284C7]",
-    bgColor: "bg-sky-50",
+    color: "text-[#0284C7]", bgColor: "bg-sky-50",
     borderColor: "border-[#38BDF8]/30",
     iconBg: "bg-gradient-to-br from-[#38BDF8] to-[#7DD3FC]",
-    icon: <Eye className="h-5 w-5 text-white" />,
+    icon: <Eye className="h-4 w-4 text-white" />,
+    mermaidClass: "witness",
   },
   동료: {
-    color: "text-[#B45309]",
-    bgColor: "bg-amber-50",
+    color: "text-[#B45309]", bgColor: "bg-amber-50",
     borderColor: "border-[#F59E0B]/30",
     iconBg: "bg-gradient-to-br from-[#F59E0B] to-[#FBBF24]",
-    icon: <Briefcase className="h-5 w-5 text-white" />,
+    icon: <Briefcase className="h-4 w-4 text-white" />,
+    mermaidClass: "colleague",
   },
   미확인: {
-    color: "text-[#94A3B8]",
-    bgColor: "bg-slate-50",
+    color: "text-[#94A3B8]", bgColor: "bg-slate-50",
     borderColor: "border-[#94A3B8]/30 border-dashed",
     iconBg: "bg-gradient-to-br from-[#94A3B8] to-[#CBD5E1]",
-    icon: <HelpCircle className="h-5 w-5 text-white" />,
+    icon: <HelpCircle className="h-4 w-4 text-white" />,
+    mermaidClass: "unknown",
   },
 };
 
+// ── Mermaid helpers ────────────────────────────────────────────────────────
+let mermaidInitialized = false;
+
+function initMermaid() {
+  if (mermaidInitialized) return;
+  mermaid.initialize({
+    startOnLoad: false,
+    theme: "neutral",
+    flowchart: {
+      useMaxWidth: false,
+      curve: "basis",
+      padding: 24,
+    },
+    themeVariables: {
+      fontFamily: "inherit",
+      fontSize: "14px",
+      edgeLabelBackground: "#ffffff",
+    },
+  });
+  mermaidInitialized = true;
+}
+
+function sanitizeLabel(text: string): string {
+  return text.replace(/"/g, "'").replace(/\n/g, " ").replace(/</g, "&lt;").replace(/>/g, "&gt;").trim();
+}
+
+/**
+ * Mermaid graph LR definition 생성.
+ *
+ * 핵심 규칙:
+ * - 쌍방 관계: A→B 와 B→A 를 각각 별도의 엣지로 렌더링 → Dagre 가 자동 오프셋
+ * - 동일 방향 중복: A→B 가 여러 개여도 각 엣지를 별도 라인으로 → Dagre 가 평행선으로 처리
+ * - 엣지 라벨: label (+ 메모 앞부분) 으로 각 라인에 표시
+ */
+function generateMermaidDef(nodes: PersonNode[], edges: RelationshipEdge[]): string {
+  if (nodes.length === 0) return "";
+
+  const lines: string[] = ["graph LR"];
+
+  // classDef — 역할별 스타일
+  lines.push("  classDef victim      fill:#F5F3FF,stroke:#6D5EF5,color:#4C3DB0,font-weight:bold");
+  lines.push("  classDef perpetrator fill:#FEF2F2,stroke:#EF4444,color:#B91C1C,font-weight:bold");
+  lines.push("  classDef witness     fill:#F0F9FF,stroke:#38BDF8,color:#0369A1,font-weight:bold");
+  lines.push("  classDef colleague   fill:#FFFBEB,stroke:#F59E0B,color:#92400E,font-weight:bold");
+  lines.push("  classDef unknown     fill:#F8FAFC,stroke:#94A3B8,color:#64748B,stroke-dasharray:5 5");
+
+  // 노드 정의: 숫자 ID는 'p' 접두어 필요
+  for (const node of nodes) {
+    const safeId = `p${node.id}`;
+    const label = `${sanitizeLabel(node.name)} (${node.role})`;
+    lines.push(`  ${safeId}["${label}"]`);
+  }
+
+  // 클래스 적용
+  for (const node of nodes) {
+    lines.push(`  class p${node.id} ${roleConfig[node.role].mermaidClass}`);
+  }
+
+  // 엣지 정의 — 각 관계는 반드시 별도 라인
+  for (const edge of edges) {
+    const sourceId = `p${edge.sourceId}`;
+    const targetId = `p${edge.targetId}`;
+
+    const edgeLabel = sanitizeLabel(edge.label || "관계");
+
+    if (edge.directed !== false) {
+      // 방향성 있는 관계: 화살표
+      // 쌍방 관계(A→B + B→A)는 각각 별도 엣지로 저장되므로
+      // Dagre 레이아웃이 자동으로 두 화살표를 평행하게 오프셋 처리함
+      lines.push(`  ${sourceId} -->|"${edgeLabel}"| ${targetId}`);
+    } else {
+      // 방향성 없는 관계: 선만 표시 (화살표 없음)
+      lines.push(`  ${sourceId} ---|"${edgeLabel}"| ${targetId}`);
+    }
+  }
+
+  return lines.join("\n");
+}
+
+// ── Mermaid 렌더 컴포넌트 ──────────────────────────────────────────────────
+function MermaidDiagram({ definition }: { definition: string }) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [renderError, setRenderError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!containerRef.current) return;
+    if (!definition) {
+      containerRef.current.innerHTML = "";
+      return;
+    }
+
+    initMermaid();
+
+    // 고유 ID (mermaid 내부에서 DOM id로 사용)
+    const id = `mermaid-rel-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+
+    mermaid
+      .render(id, definition)
+      .then(({ svg }) => {
+        if (!containerRef.current) return;
+        containerRef.current.innerHTML = svg;
+
+        // SVG를 부모 컨테이너에 맞게 조정
+        const svgEl = containerRef.current.querySelector("svg");
+        if (svgEl) {
+          svgEl.style.width = "100%";
+          svgEl.style.height = "auto";
+          svgEl.style.minHeight = "280px";
+          svgEl.removeAttribute("width");
+          svgEl.removeAttribute("height");
+        }
+        setRenderError(null);
+      })
+      .catch((err) => {
+        console.error("[MermaidDiagram] render error:", err);
+        setRenderError("다이어그램 렌더링 오류");
+      });
+  }, [definition]);
+
+  if (renderError) {
+    return (
+      <div className="flex items-center justify-center h-full text-sm text-destructive gap-2 p-4">
+        <AlertCircle className="h-4 w-4 shrink-0" />
+        {renderError}
+      </div>
+    );
+  }
+
+  return (
+    <div
+      ref={containerRef}
+      className="w-full min-h-[280px] p-4 flex justify-center items-start"
+    />
+  );
+}
+
+// ── 역할 선택 아이템 ───────────────────────────────────────────────────────
+function RoleItem({ role }: { role: PersonRole }) {
+  return (
+    <div className="flex items-center gap-2">
+      <div className="w-2.5 h-2.5 rounded-full" style={{ background: ROLE_COLOR[role] }} />
+      {role}
+    </div>
+  );
+}
+
+const ALL_ROLES: PersonRole[] = ["피해자", "가해자", "증인", "동료", "미확인"];
+
+// ── 메인 컴포넌트 ──────────────────────────────────────────────────────────
 export function RelationshipEditor({
   caseId,
+  data,
+  loading: externalLoading = false,
+  onRefresh,
 }: RelationshipEditorProps) {
-  // State
   const [nodes, setNodes] = useState<PersonNode[]>([]);
   const [edges, setEdges] = useState<RelationshipEdge[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [internalLoading, setInternalLoading] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Load relationship data from API
-  useEffect(() => {
-    const loadRelationships = async () => {
-      try {
-        setLoading(true);
-        setError(null);
+  const loading = externalLoading || internalLoading;
 
-        console.log("[RelationshipEditor] Loading relationships for caseId:", caseId);
-
-        const response = await fetch(
-          `http://localhost:8000/api/v1/relationships/${caseId}`
-        );
-
-        console.log("[RelationshipEditor] Response status:", response.status);
-
-        if (!response.ok) {
-          const errorData = await response.json().catch(() => ({}));
-          throw new Error(errorData.detail || "관계도를 불러오는데 실패했습니다");
-        }
-
-        const data = await response.json();
-        console.log("[RelationshipEditor] Received data:", data);
-
-        // Validate response data
-        if (!data || !Array.isArray(data.persons) || !Array.isArray(data.relationships)) {
-          throw new Error("잘못된 응답 형식입니다");
-        }
-
-        // Valid role mapping
-        const validRoles: PersonRole[] = ["피해자", "가해자", "증인", "동료", "미확인"];
-        const normalizeRole = (role: string): PersonRole => {
-          if (validRoles.includes(role as PersonRole)) {
-            return role as PersonRole;
-          }
-          const roleMap: Record<string, PersonRole> = {
-            "원고": "피해자",
-            "피고": "가해자",
-            "피고소인": "가해자",
-            "상사": "동료",
-            "관련자": "미확인",
-          };
-          return roleMap[role] || "미확인";
+  // ── 데이터 변환 ──────────────────────────────────────────────────────────
+  const convertData = useCallback(
+    (raw: { persons: any[]; relationships: any[] }) => {
+      const normalizeRole = (role: string): PersonRole => {
+        if ((ALL_ROLES as string[]).includes(role)) return role as PersonRole;
+        const map: Record<string, PersonRole> = {
+          원고: "피해자", 피고: "가해자", 피고소인: "가해자",
+          고소인: "피해자", 상사: "동료", 관련자: "미확인",
         };
-
-        const convertedNodes: PersonNode[] = data.persons
-          .filter((person: any) => person && person.id && person.name && person.role)
-          .map((person: any, index: number) => ({
-            id: String(person.id),
-            name: person.name,
-            role: normalizeRole(person.role),
-            x: person.position_x ?? (300 + (index % 3) * 200),
-            y: person.position_y ?? (200 + Math.floor(index / 3) * 150),
-          }));
-
-        const validPersonIds = new Set(convertedNodes.map(node => node.id));
-
-        const convertedEdges: RelationshipEdge[] = data.relationships
-          .filter((rel: any) => {
-            if (!rel || !rel.id || !rel.source_person_id || !rel.target_person_id) {
-              console.warn("[RelationshipEditor] Invalid relationship:", rel);
-              return false;
-            }
-            const sourceId = String(rel.source_person_id);
-            const targetId = String(rel.target_person_id);
-            if (!validPersonIds.has(sourceId) || !validPersonIds.has(targetId)) {
-              console.warn("[RelationshipEditor] Relationship references non-existent person:", rel);
-              return false;
-            }
-            return true;
-          })
-          .map((rel: any) => ({
-            id: String(rel.id),
-            sourceId: String(rel.source_person_id),
-            targetId: String(rel.target_person_id),
-            label: rel.label || rel.relationship_type || "관계",
-            memo: rel.memo || "",
-            directed: rel.is_directed ?? true,
-          }));
-
-        console.log("[RelationshipEditor] Converted nodes:", convertedNodes.length);
-        console.log("[RelationshipEditor] Converted edges:", convertedEdges.length);
-
-        setNodes(convertedNodes);
-        setEdges(convertedEdges);
-      } catch (err) {
-        console.error("[RelationshipEditor] Failed to load relationships:", err);
-        setError(err instanceof Error ? err.message : "알 수 없는 오류가 발생했습니다");
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    if (caseId) {
-      loadRelationships();
-    } else {
-      console.warn("[RelationshipEditor] No caseId provided");
-      setLoading(false);
-      setError("사건 ID가 필요합니다");
-    }
-  }, [caseId]);
-
-  // Zoom & Pan state
-  const [zoom, setZoom] = useState(1);
-  const [panOffset, setPanOffset] = useState({ x: 0, y: 0 });
-  const [isPanning, setIsPanning] = useState(false);
-  const [panStart, setPanStart] = useState({ x: 0, y: 0 });
-
-  // Convert screen coordinates to canvas (world) coordinates
-  const screenToCanvas = useCallback(
-    (clientX: number, clientY: number) => {
-      if (!canvasRef.current) return { x: 0, y: 0 };
-      const rect = canvasRef.current.getBoundingClientRect();
-      return {
-        x: (clientX - rect.left - panOffset.x) / zoom,
-        y: (clientY - rect.top - panOffset.y) / zoom,
+        return map[role] || "미확인";
       };
-    },
-    [zoom, panOffset]
-  );
 
-  // Fit all nodes into view
-  const fitToView = useCallback(() => {
-    if (!canvasRef.current || nodes.length === 0) return;
-    const rect = canvasRef.current.getBoundingClientRect();
-    const padding = 80;
-    const nodeW = 130;
-    const nodeH = 90;
+      const convertedNodes: PersonNode[] = raw.persons
+        .filter((p: any) => p && p.id && p.name && p.role)
+        .map((p: any, idx: number) => ({
+          id: String(p.id),
+          name: p.name,
+          role: normalizeRole(p.role),
+          x: p.position_x ?? 300 + (idx % 3) * 200,
+          y: p.position_y ?? 200 + Math.floor(idx / 3) * 150,
+        }));
 
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    for (const node of nodes) {
-      if (node.x < minX) minX = node.x;
-      if (node.y < minY) minY = node.y;
-      if (node.x + nodeW > maxX) maxX = node.x + nodeW;
-      if (node.y + nodeH > maxY) maxY = node.y + nodeH;
-    }
+      const validIds = new Set(convertedNodes.map((n) => n.id));
+      const convertedEdges: RelationshipEdge[] = raw.relationships
+        .filter((r: any) => {
+          if (!r?.id || !r.source_person_id || !r.target_person_id) return false;
+          return validIds.has(String(r.source_person_id)) && validIds.has(String(r.target_person_id));
+        })
+        .map((r: any) => ({
+          id: String(r.id),
+          sourceId: String(r.source_person_id),
+          targetId: String(r.target_person_id),
+          label: r.label || r.relationship_type || "관계",
+          memo: r.memo || "",
+          directed: r.is_directed ?? true,
+        }));
 
-    const contentW = maxX - minX;
-    const contentH = maxY - minY;
-    if (contentW <= 0 || contentH <= 0) return;
-
-    const scaleX = (rect.width - padding * 2) / contentW;
-    const scaleY = (rect.height - padding * 2) / contentH;
-    const newZoom = Math.min(Math.max(Math.min(scaleX, scaleY), 0.3), 2.0);
-
-    const centerX = (minX + maxX) / 2;
-    const centerY = (minY + maxY) / 2;
-    const newPanX = rect.width / 2 - centerX * newZoom;
-    const newPanY = rect.height / 2 - centerY * newZoom;
-
-    setZoom(newZoom);
-    setPanOffset({ x: newPanX, y: newPanY });
-  }, [nodes]);
-
-  // State for interactions (원본 로직 그대로)
-  const [draggingNode, setDraggingNode] = useState<string | null>(null);
-  const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
-  const [connecting, setConnecting] = useState<{
-    sourceId: string;
-    mouseX: number;
-    mouseY: number;
-  } | null>(null);
-  const [selectedNode, setSelectedNode] = useState<string | null>(null);
-  const [selectedEdge, setSelectedEdge] = useState<string | null>(null);
-
-  // Dialog states
-  const [isAddPersonOpen, setIsAddPersonOpen] = useState(false);
-  const [isEditPersonOpen, setIsEditPersonOpen] = useState(false);
-  const [isEditEdgeOpen, setIsEditEdgeOpen] = useState(false);
-
-  // Form states
-  const [newPerson, setNewPerson] = useState<Partial<PersonNode>>({
-    name: "",
-    role: "미확인",
-  });
-  const [editingPerson, setEditingPerson] = useState<PersonNode | null>(null);
-  const [editingEdge, setEditingEdge] = useState<RelationshipEdge | null>(null);
-  const [newEdgeData, setNewEdgeData] = useState<{
-    sourceId: string;
-    targetId: string;
-  } | null>(null);
-
-  const canvasRef = useRef<HTMLDivElement>(null);
-
-  // Wheel zoom (cursor-centered)
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-
-    const handleWheel = (e: WheelEvent) => {
-      e.preventDefault();
-      const rect = canvas.getBoundingClientRect();
-      const mouseX = e.clientX - rect.left;
-      const mouseY = e.clientY - rect.top;
-
-      const canvasX = (mouseX - panOffset.x) / zoom;
-      const canvasY = (mouseY - panOffset.y) / zoom;
-
-      const delta = e.deltaY > 0 ? 0.9 : 1.1;
-      const newZoom = Math.min(Math.max(zoom * delta, 0.3), 2.0);
-
-      const newPanX = mouseX - canvasX * newZoom;
-      const newPanY = mouseY - canvasY * newZoom;
-
-      setZoom(newZoom);
-      setPanOffset({ x: newPanX, y: newPanY });
-    };
-
-    canvas.addEventListener("wheel", handleWheel, { passive: false });
-    return () => canvas.removeEventListener("wheel", handleWheel);
-  }, [zoom, panOffset]);
-
-  // Get node position for edge drawing
-  const getNodeCenter = useCallback(
-    (nodeId: string) => {
-      const node = nodes.find((n) => n.id === nodeId);
-      if (!node) return { x: 0, y: 0 };
-      return { x: node.x + 65, y: node.y + 45 };
-    },
-    [nodes]
-  );
-
-  // Handle mouse move (원본 로직 + zoom/pan 적용)
-  const handleMouseMove = useCallback(
-    (e: React.MouseEvent) => {
-      if (!canvasRef.current) return;
-
-      // Panning
-      if (isPanning) {
-        const dx = e.clientX - panStart.x;
-        const dy = e.clientY - panStart.y;
-        setPanOffset((prev) => ({ x: prev.x + dx, y: prev.y + dy }));
-        setPanStart({ x: e.clientX, y: e.clientY });
-        return;
-      }
-
-      const { x, y } = screenToCanvas(e.clientX, e.clientY);
-
-      if (draggingNode) {
-        setNodes((prev) =>
-          prev.map((node) =>
-            node.id === draggingNode
-              ? { ...node, x: x - dragOffset.x, y: y - dragOffset.y }
-              : node
-          )
-        );
-      }
-
-      if (connecting) {
-        setConnecting((prev) => (prev ? { ...prev, mouseX: x, mouseY: y } : null));
-      }
-    },
-    [draggingNode, dragOffset, connecting, isPanning, panStart, screenToCanvas]
-  );
-
-  // Handle mouse up (원본 로직 + zoom/pan 적용)
-  const handleMouseUp = useCallback(
-    async (e: React.MouseEvent) => {
-      if (isPanning) {
-        setIsPanning(false);
-      }
-
-      if (connecting && canvasRef.current) {
-        const { x, y } = screenToCanvas(e.clientX, e.clientY);
-
-        const targetNode = nodes.find(
-          (node) =>
-            node.id !== connecting.sourceId &&
-            x >= node.x &&
-            x <= node.x + 130 &&
-            y >= node.y &&
-            y <= node.y + 90
-        );
-
-        if (targetNode) {
-          const existingEdge = edges.find(
-            (e) =>
-              (e.sourceId === connecting.sourceId &&
-                e.targetId === targetNode.id) ||
-              (e.sourceId === targetNode.id &&
-                e.targetId === connecting.sourceId)
-          );
-
-          if (!existingEdge) {
-            setNewEdgeData({
-              sourceId: connecting.sourceId,
-              targetId: targetNode.id,
-            });
-            setEditingEdge({
-              id: "",
-              sourceId: connecting.sourceId,
-              targetId: targetNode.id,
-              label: "",
-              memo: "",
-              directed: true,
-            });
-            setIsEditEdgeOpen(true);
-          }
-        }
-      }
-
-      // Save node position to DB after dragging
-      if (draggingNode) {
-        const draggedNode = nodes.find((n) => n.id === draggingNode);
-        if (draggedNode) {
-          try {
-            const response = await fetch(
-              `http://localhost:8000/api/v1/relationships/${caseId}/persons/${draggingNode}/position?position_x=${Math.round(draggedNode.x)}&position_y=${Math.round(draggedNode.y)}`,
-              { method: "PATCH" }
-            );
-            if (!response.ok) {
-              console.error("[RelationshipEditor] Failed to save position");
-            } else {
-              console.log(`[RelationshipEditor] Position saved: ${draggedNode.name} (${Math.round(draggedNode.x)}, ${Math.round(draggedNode.y)})`);
-            }
-          } catch (err) {
-            console.error("[RelationshipEditor] Error saving position:", err);
-          }
-        }
-      }
-
-      setDraggingNode(null);
-      setConnecting(null);
-    },
-    [connecting, nodes, edges, draggingNode, caseId, isPanning, screenToCanvas]
-  );
-
-  // Start dragging node (원본 로직 + zoom 적용)
-  const handleNodeMouseDown = useCallback(
-    (e: React.MouseEvent, nodeId: string) => {
-      if (e.button !== 0) return;
-      e.stopPropagation();
-
-      const node = nodes.find((n) => n.id === nodeId);
-      if (!node || !canvasRef.current) return;
-
-      const canvasPos = screenToCanvas(e.clientX, e.clientY);
-      setDragOffset({
-        x: canvasPos.x - node.x,
-        y: canvasPos.y - node.y,
-      });
-      setDraggingNode(nodeId);
-      setSelectedNode(nodeId);
-      setSelectedEdge(null);
-    },
-    [nodes, screenToCanvas]
-  );
-
-  // Start connecting from node (원본 로직 + zoom 적용)
-  const handleConnectStart = useCallback(
-    (e: React.MouseEvent, nodeId: string) => {
-      e.stopPropagation();
-      if (!canvasRef.current) return;
-
-      const canvasPos = screenToCanvas(e.clientX, e.clientY);
-      setConnecting({
-        sourceId: nodeId,
-        mouseX: canvasPos.x,
-        mouseY: canvasPos.y,
-      });
-    },
-    [screenToCanvas]
-  );
-
-  // Add new person (place at viewport center)
-  const handleAddPerson = useCallback(() => {
-    if (!newPerson.name) return;
-
-    let cx = 350, cy = 200;
-    if (canvasRef.current) {
-      const rect = canvasRef.current.getBoundingClientRect();
-      cx = (rect.width / 2 - panOffset.x) / zoom - 65;
-      cy = (rect.height / 2 - panOffset.y) / zoom - 45;
-    }
-
-    const id = Date.now().toString();
-    const newNode: PersonNode = {
-      id,
-      name: newPerson.name,
-      role: (newPerson.role as PersonRole) || "미확인",
-      x: cx + Math.random() * 60 - 30,
-      y: cy + Math.random() * 60 - 30,
-    };
-
-    setNodes((prev) => [...prev, newNode]);
-    setNewPerson({ name: "", role: "미확인" });
-    setIsAddPersonOpen(false);
-  }, [newPerson, zoom, panOffset]);
-
-  // Update person
-  const handleUpdatePerson = useCallback(() => {
-    if (!editingPerson) return;
-
-    setNodes((prev) =>
-      prev.map((node) => (node.id === editingPerson.id ? editingPerson : node))
-    );
-    setEditingPerson(null);
-    setIsEditPersonOpen(false);
-  }, [editingPerson]);
-
-  // Delete person
-  const handleDeletePerson = useCallback((nodeId: string) => {
-    setNodes((prev) => prev.filter((n) => n.id !== nodeId));
-    setEdges((prev) =>
-      prev.filter((e) => e.sourceId !== nodeId && e.targetId !== nodeId)
-    );
-    setSelectedNode(null);
-  }, []);
-
-  // Add or update edge
-  const handleSaveEdge = useCallback(() => {
-    if (!editingEdge || !editingEdge.label) return;
-
-    if (newEdgeData) {
-      const newEdge: RelationshipEdge = {
-        id: Date.now().toString(),
-        sourceId: newEdgeData.sourceId,
-        targetId: newEdgeData.targetId,
-        label: editingEdge.label,
-        memo: editingEdge.memo,
-        directed: editingEdge.directed,
-      };
-      setEdges((prev) => [...prev, newEdge]);
-      setNewEdgeData(null);
-    } else {
-      setEdges((prev) =>
-        prev.map((e) => (e.id === editingEdge.id ? editingEdge : e))
-      );
-    }
-
-    setEditingEdge(null);
-    setIsEditEdgeOpen(false);
-  }, [editingEdge, newEdgeData]);
-
-  // Delete edge
-  const handleDeleteEdge = useCallback((edgeId: string) => {
-    setEdges((prev) => prev.filter((e) => e.id !== edgeId));
-    setSelectedEdge(null);
-  }, []);
-
-  // Open edit person dialog
-  const openEditPerson = useCallback(
-    (nodeId: string) => {
-      const node = nodes.find((n) => n.id === nodeId);
-      if (node) {
-        setEditingPerson({ ...node });
-        setIsEditPersonOpen(true);
-      }
-    },
-    [nodes]
-  );
-
-  // Open edit edge dialog
-  const openEditEdge = useCallback(
-    (edgeId: string) => {
-      const edge = edges.find((e) => e.id === edgeId);
-      if (edge) {
-        setEditingEdge({ ...edge });
-        setIsEditEdgeOpen(true);
-      }
-    },
-    [edges]
-  );
-
-  // Handle edge click
-  const handleEdgeClick = useCallback((e: React.MouseEvent, edgeId: string) => {
-    e.stopPropagation();
-    setSelectedEdge(edgeId);
-    setSelectedNode(null);
-  }, []);
-
-  // Clear selection on canvas click
-  const handleCanvasClick = useCallback(() => {
-    if (!isPanning) {
-      setSelectedNode(null);
-      setSelectedEdge(null);
-    }
-  }, [isPanning]);
-
-  // Start panning on empty canvas mousedown (left-click) or anywhere (middle-click)
-  const handleCanvasMouseDown = useCallback(
-    (e: React.MouseEvent) => {
-      if (e.button === 1) {
-        e.preventDefault();
-        setIsPanning(true);
-        setPanStart({ x: e.clientX, y: e.clientY });
-        return;
-      }
-      if (e.button !== 0) return;
-      if (e.target === canvasRef.current || (e.target as HTMLElement).dataset?.pannable === "true") {
-        setIsPanning(true);
-        setPanStart({ x: e.clientX, y: e.clientY });
-      }
+      return { nodes: convertedNodes, edges: convertedEdges };
     },
     []
   );
 
-  // Draw edge path
-  const getEdgePath = useCallback(
-    (edge: RelationshipEdge) => {
-      const source = getNodeCenter(edge.sourceId);
-      const target = getNodeCenter(edge.targetId);
+  // ── 데이터 로드 ──────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (data) {
+      const { nodes: n, edges: e } = convertData(data);
+      setNodes(n);
+      setEdges(e);
+      setError(null);
+      return;
+    }
 
-      const midX = (source.x + target.x) / 2;
-      const midY = (source.y + target.y) / 2;
-      const dx = target.x - source.x;
-      const dy = target.y - source.y;
-      const offset = Math.min(30, Math.sqrt(dx * dx + dy * dy) * 0.2);
+    if (!caseId) {
+      setError("사건 ID가 필요합니다");
+      return;
+    }
 
-      const len = Math.sqrt(dx * dx + dy * dy);
-      const perpX = -dy / len;
-      const perpY = dx / len;
+    const load = async () => {
+      try {
+        setInternalLoading(true);
+        setError(null);
+        const res = await fetch(`http://localhost:8000/api/v1/relationships/${caseId}`);
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(errData.detail || "관계도를 불러오는데 실패했습니다");
+        }
+        const raw = await res.json();
+        if (!raw || !Array.isArray(raw.persons) || !Array.isArray(raw.relationships)) {
+          throw new Error("잘못된 응답 형식입니다");
+        }
+        const { nodes: n, edges: e } = convertData(raw);
+        setNodes(n);
+        setEdges(e);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "알 수 없는 오류가 발생했습니다");
+      } finally {
+        setInternalLoading(false);
+      }
+    };
 
-      const ctrlX = midX + perpX * offset;
-      const ctrlY = midY + perpY * offset;
+    load();
+  }, [caseId, data, convertData]);
 
-      return { source, target, ctrl: { x: ctrlX, y: ctrlY }, mid: { x: midX, y: midY } };
+  // ── Mermaid 정의 ─────────────────────────────────────────────────────────
+  const mermaidDef = useMemo(() => generateMermaidDef(nodes, edges), [nodes, edges]);
+
+  // ── 다이얼로그 상태 ──────────────────────────────────────────────────────
+  const [isAddPersonOpen, setIsAddPersonOpen]   = useState(false);
+  const [isEditPersonOpen, setIsEditPersonOpen] = useState(false);
+  const [isAddEdgeOpen, setIsAddEdgeOpen]       = useState(false);
+  const [isEditEdgeOpen, setIsEditEdgeOpen]     = useState(false);
+
+  // ── 폼 상태 ─────────────────────────────────────────────────────────────
+  const [newPerson, setNewPerson] = useState<{ name: string; role: PersonRole }>({
+    name: "", role: "미확인",
+  });
+  const [editingPerson, setEditingPerson] = useState<PersonNode | null>(null);
+  const [editingEdge, setEditingEdge]     = useState<RelationshipEdge | null>(null);
+  const [newEdgeForm, setNewEdgeForm] = useState({
+    sourceId: "", targetId: "", label: "", memo: "", directed: true,
+  });
+
+  // ── CRUD: 인물 ──────────────────────────────────────────────────────────
+  const handleAddPerson = useCallback(async () => {
+    if (!newPerson.name.trim()) return;
+    setIsSaving(true);
+    try {
+      const res = await fetch(
+        `http://localhost:8000/api/v1/relationships/${caseId}/persons`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: newPerson.name,
+            role: newPerson.role,
+            description: "",
+            position_x: 300,
+            position_y: 200,
+          }),
+        }
+      );
+      if (!res.ok) throw new Error();
+      const created = await res.json();
+      setNodes((prev) => [
+        ...prev,
+        {
+          id: String(created.id),
+          name: created.name,
+          role: created.role as PersonRole,
+          x: created.position_x,
+          y: created.position_y,
+        },
+      ]);
+      setNewPerson({ name: "", role: "미확인" });
+      setIsAddPersonOpen(false);
+    } catch {
+      alert("인물 추가에 실패했습니다");
+    } finally {
+      setIsSaving(false);
+    }
+  }, [newPerson, caseId]);
+
+  const handleUpdatePerson = useCallback(async () => {
+    if (!editingPerson) return;
+    setIsSaving(true);
+    try {
+      const res = await fetch(
+        `http://localhost:8000/api/v1/relationships/${caseId}/persons/${editingPerson.id}`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: editingPerson.name,
+            role: editingPerson.role,
+            description: "",
+          }),
+        }
+      );
+      if (!res.ok) throw new Error();
+      setNodes((prev) => prev.map((n) => (n.id === editingPerson.id ? editingPerson : n)));
+      setEditingPerson(null);
+      setIsEditPersonOpen(false);
+    } catch {
+      alert("인물 수정에 실패했습니다");
+    } finally {
+      setIsSaving(false);
+    }
+  }, [editingPerson, caseId]);
+
+  const handleDeletePerson = useCallback(
+    async (nodeId: string) => {
+      if (!confirm("이 인물을 삭제하시겠습니까?")) return;
+      try {
+        const res = await fetch(
+          `http://localhost:8000/api/v1/relationships/${caseId}/persons/${nodeId}`,
+          { method: "DELETE" }
+        );
+        if (!res.ok) throw new Error();
+        setNodes((prev) => prev.filter((n) => n.id !== nodeId));
+        setEdges((prev) => prev.filter((e) => e.sourceId !== nodeId && e.targetId !== nodeId));
+      } catch {
+        alert("인물 삭제에 실패했습니다");
+      }
     },
-    [getNodeCenter]
+    [caseId]
   );
 
+  // ── CRUD: 관계 ──────────────────────────────────────────────────────────
+  const handleAddEdge = useCallback(async () => {
+    const { sourceId, targetId, label, memo, directed } = newEdgeForm;
+    if (!sourceId || !targetId || !label.trim()) return;
+    setIsSaving(true);
+    try {
+      const res = await fetch(
+        `http://localhost:8000/api/v1/relationships/${caseId}/relationships`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            source_person_id: parseInt(sourceId),
+            target_person_id: parseInt(targetId),
+            relationship_type: label,
+            label,
+            memo,
+            is_directed: directed,
+          }),
+        }
+      );
+      if (!res.ok) throw new Error();
+      const created = await res.json();
+      setEdges((prev) => [
+        ...prev,
+        {
+          id: String(created.id),
+          sourceId: String(created.source_person_id),
+          targetId: String(created.target_person_id),
+          label: created.label,
+          memo: created.memo,
+          directed: created.is_directed,
+        },
+      ]);
+      setNewEdgeForm({ sourceId: "", targetId: "", label: "", memo: "", directed: true });
+      setIsAddEdgeOpen(false);
+    } catch {
+      alert("관계 추가에 실패했습니다");
+    } finally {
+      setIsSaving(false);
+    }
+  }, [newEdgeForm, caseId]);
+
+  const handleUpdateEdge = useCallback(async () => {
+    if (!editingEdge) return;
+
+    // 출발/도착 인물이 변경된 경우: 백엔드가 person 변경을 미지원이므로
+    // 기존 관계 삭제 → 새 관계 생성으로 처리
+    const originalEdge = edges.find((e) => e.id === editingEdge.id);
+    const personChanged =
+      originalEdge &&
+      (originalEdge.sourceId !== editingEdge.sourceId ||
+        originalEdge.targetId !== editingEdge.targetId);
+
+    setIsSaving(true);
+    try {
+      if (personChanged) {
+        // 1) 기존 삭제
+        const delRes = await fetch(
+          `http://localhost:8000/api/v1/relationships/${caseId}/relationships/${editingEdge.id}`,
+          { method: "DELETE" }
+        );
+        if (!delRes.ok) throw new Error();
+
+        // 2) 새로 생성
+        const createRes = await fetch(
+          `http://localhost:8000/api/v1/relationships/${caseId}/relationships`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              source_person_id: parseInt(editingEdge.sourceId),
+              target_person_id: parseInt(editingEdge.targetId),
+              relationship_type: editingEdge.label,
+              label: editingEdge.label,
+              memo: editingEdge.memo,
+              is_directed: editingEdge.directed,
+            }),
+          }
+        );
+        if (!createRes.ok) throw new Error();
+        const created = await createRes.json();
+
+        setEdges((prev) => [
+          ...prev.filter((e) => e.id !== editingEdge.id),
+          {
+            id: String(created.id),
+            sourceId: String(created.source_person_id),
+            targetId: String(created.target_person_id),
+            label: created.label,
+            memo: created.memo,
+            directed: created.is_directed,
+          },
+        ]);
+      } else {
+        // 인물 변경 없음: 일반 PUT
+        const res = await fetch(
+          `http://localhost:8000/api/v1/relationships/${caseId}/relationships/${editingEdge.id}`,
+          {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              relationship_type: editingEdge.label,
+              label: editingEdge.label,
+              memo: editingEdge.memo,
+              is_directed: editingEdge.directed,
+            }),
+          }
+        );
+        if (!res.ok) throw new Error();
+        setEdges((prev) => prev.map((e) => (e.id === editingEdge.id ? editingEdge : e)));
+      }
+
+      setEditingEdge(null);
+      setIsEditEdgeOpen(false);
+    } catch {
+      alert("관계 수정에 실패했습니다");
+    } finally {
+      setIsSaving(false);
+    }
+  }, [editingEdge, edges, caseId]);
+
+  const handleDeleteEdge = useCallback(
+    async (edgeId: string) => {
+      if (!confirm("이 관계를 삭제하시겠습니까?")) return;
+      try {
+        const res = await fetch(
+          `http://localhost:8000/api/v1/relationships/${caseId}/relationships/${edgeId}`,
+          { method: "DELETE" }
+        );
+        if (!res.ok) throw new Error();
+        setEdges((prev) => prev.filter((e) => e.id !== edgeId));
+      } catch {
+        alert("관계 삭제에 실패했습니다");
+      }
+    },
+    [caseId]
+  );
+
+  const openEditPerson = useCallback(
+    (nodeId: string) => {
+      const node = nodes.find((n) => n.id === nodeId);
+      if (node) { setEditingPerson({ ...node }); setIsEditPersonOpen(true); }
+    },
+    [nodes]
+  );
+
+  const openEditEdge = useCallback(
+    (edgeId: string) => {
+      const edge = edges.find((e) => e.id === edgeId);
+      if (edge) { setEditingEdge({ ...edge }); setIsEditEdgeOpen(true); }
+    },
+    [edges]
+  );
+
+  const getPersonName = (id: string) => nodes.find((n) => n.id === id)?.name ?? id;
+
+  // ── 렌더 ─────────────────────────────────────────────────────────────────
   return (
-    <div className="flex flex-col h-[600px]">
-      {/* Toolbar */}
-      <div className="flex items-center justify-between p-3 border-b border-border/60 bg-[#FBFBFF]">
+    <div className="flex flex-col h-[640px]">
+
+      {/* ─ 툴바 ─────────────────────────────────────────────────────────── */}
+      <div className="flex items-center justify-between px-3 py-2 border-b border-border/60 bg-[#FBFBFF] shrink-0">
         <div className="flex items-center gap-2">
+          {onRefresh && (
+            <Button size="sm" variant="outline" onClick={onRefresh} disabled={loading}>
+              <RefreshCw className={`h-4 w-4 mr-1.5 ${loading ? "animate-spin" : ""}`} />
+              새로고침
+            </Button>
+          )}
+          <Button size="sm" variant="outline" onClick={() => setIsAddPersonOpen(true)}>
+            <Plus className="h-4 w-4 mr-1" />
+            인물 추가
+          </Button>
           <Button
             size="sm"
             variant="outline"
-            onClick={() => setIsAddPersonOpen(true)}
+            onClick={() => setIsAddEdgeOpen(true)}
+            disabled={nodes.length < 2}
           >
-            <Plus className="h-4 w-4 mr-2" />
-            인물 추가
+            <Plus className="h-4 w-4 mr-1" />
+            관계 추가
           </Button>
-          {selectedNode && (
-            <>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => openEditPerson(selectedNode)}
-              >
-                인물 편집
-              </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                className="text-destructive bg-transparent"
-                onClick={() => handleDeletePerson(selectedNode)}
-              >
-                <Trash2 className="h-4 w-4" />
-              </Button>
-            </>
-          )}
-          {selectedEdge && (
-            <>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => openEditEdge(selectedEdge)}
-              >
-                관계 편집
-              </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                className="text-destructive bg-transparent"
-                onClick={() => handleDeleteEdge(selectedEdge)}
-              >
-                <Trash2 className="h-4 w-4" />
-              </Button>
-            </>
-          )}
         </div>
-        <div className="flex items-center gap-2 text-xs">
-          <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-[#6D5EF5]/10 text-[#6D5EF5] font-medium">피해자</span>
-          <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-[#EF4444]/10 text-[#EF4444] font-medium">가해자</span>
-          <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-[#38BDF8]/10 text-[#0284C7] font-medium">증인</span>
-          <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-[#F59E0B]/10 text-[#B45309] font-medium">동료</span>
-          <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-[#94A3B8]/10 text-[#94A3B8] font-medium">미확인</span>
+
+        {/* 역할 범례 */}
+        <div className="flex items-center gap-1.5 text-xs">
+          {ALL_ROLES.map((role) => (
+            <span
+              key={role}
+              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full font-medium"
+              style={{
+                background: `${ROLE_COLOR[role]}18`,
+                color: ROLE_COLOR[role],
+              }}
+            >
+              {role}
+            </span>
+          ))}
         </div>
       </div>
 
-      {/* Canvas */}
-      <div
-        ref={canvasRef}
-        className={`flex-1 relative overflow-hidden select-none ${isPanning ? "cursor-grabbing" : "cursor-default"}`}
-        onMouseMove={handleMouseMove}
-        onMouseUp={handleMouseUp}
-        onMouseLeave={handleMouseUp}
-        onClick={handleCanvasClick}
-        onMouseDown={handleCanvasMouseDown}
-        onAuxClick={(e) => e.preventDefault()}
-      >
-        {/* Background grid (adjusts with zoom) */}
-        <div
-          className="absolute inset-0 bg-[#FBFBFF]"
-          data-pannable="true"
-          style={{
-            backgroundImage: "radial-gradient(circle, #E2E0FF 1px, transparent 1px)",
-            backgroundSize: `${20 * zoom}px ${20 * zoom}px`,
-            backgroundPosition: `${panOffset.x}px ${panOffset.y}px`,
-          }}
-        />
+      {/* ─ 메인 영역 ─────────────────────────────────────────────────────── */}
+      <div className="flex flex-1 overflow-hidden">
 
-        {/* Transform container */}
-        <div
-          className="absolute origin-top-left"
-          style={{
-            transform: `translate(${panOffset.x}px, ${panOffset.y}px) scale(${zoom})`,
-          }}
-        >
-          {/* SVG for edges */}
-          <svg className="absolute overflow-visible w-0 h-0 pointer-events-none" style={{ top: 0, left: 0 }}>
-            <defs>
-              <marker
-                id="arrowhead"
-                markerWidth="10"
-                markerHeight="7"
-                refX="9"
-                refY="3.5"
-                orient="auto"
-              >
-                <polygon points="0 0, 10 3.5, 0 7" fill="#C4B5FD" />
-              </marker>
-              <marker
-                id="arrowhead-selected"
-                markerWidth="10"
-                markerHeight="7"
-                refX="9"
-                refY="3.5"
-                orient="auto"
-              >
-                <polygon points="0 0, 10 3.5, 0 7" fill="#6D5EF5" />
-              </marker>
-            </defs>
+        {/* Mermaid 다이어그램 */}
+        <div className="flex-1 overflow-auto bg-[#FBFBFF] relative">
+          {loading ? (
+            <div className="absolute inset-0 flex items-center justify-center bg-background/80 z-10">
+              <div className="text-center">
+                <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-primary mx-auto mb-3" />
+                <p className="text-sm text-muted-foreground">관계도를 불러오는 중…</p>
+                <p className="text-xs mt-1 text-muted-foreground/60">AI가 인물 관계를 분석하고 있습니다</p>
+              </div>
+            </div>
+          ) : error ? (
+            <div className="absolute inset-0 flex items-center justify-center z-10">
+              <div className="text-center">
+                <AlertCircle className="h-10 w-10 mx-auto mb-3 text-destructive opacity-50" />
+                <p className="text-sm text-destructive">{error}</p>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="mt-3"
+                  onClick={() => window.location.reload()}
+                >
+                  다시 시도
+                </Button>
+              </div>
+            </div>
+          ) : nodes.length === 0 ? (
+            <div className="absolute inset-0 flex items-center justify-center z-10">
+              <div className="text-center text-muted-foreground">
+                <Users className="h-10 w-10 mx-auto mb-3 opacity-30" />
+                <p className="text-sm">인물을 추가하여 관계도를 구성하세요</p>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="mt-3"
+                  onClick={() => setIsAddPersonOpen(true)}
+                >
+                  <Plus className="h-4 w-4 mr-2" />
+                  첫 번째 인물 추가
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <MermaidDiagram definition={mermaidDef} />
+          )}
+        </div>
 
-            {/* Edges */}
-            {edges.map((edge) => {
-              const path = getEdgePath(edge);
-              const isSelected = selectedEdge === edge.id;
+        {/* ─ 사이드 패널 (인물/관계 목록) ──────────────────────────────── */}
+        <div className="w-52 shrink-0 border-l border-border/60 flex flex-col overflow-hidden bg-white">
 
-              return (
-                <g key={edge.id}>
-                  {/* Clickable area (wider, invisible) */}
-                  <path
-                    d={`M ${path.source.x} ${path.source.y} Q ${path.ctrl.x} ${path.ctrl.y} ${path.target.x} ${path.target.y}`}
-                    fill="none"
-                    stroke="transparent"
-                    strokeWidth="20"
-                    className="pointer-events-auto cursor-pointer"
-                    onClick={(e) => handleEdgeClick(e, edge.id)}
-                    onDoubleClick={() => openEditEdge(edge.id)}
-                  />
-                  {/* Visible edge */}
-                  <path
-                    d={`M ${path.source.x} ${path.source.y} Q ${path.ctrl.x} ${path.ctrl.y} ${path.target.x} ${path.target.y}`}
-                    fill="none"
-                    stroke={isSelected ? "#6D5EF5" : "#C4B5FD"}
-                    strokeWidth={isSelected ? 3 : 2}
-                    markerEnd={
-                      edge.directed
-                        ? isSelected
-                          ? "url(#arrowhead-selected)"
-                          : "url(#arrowhead)"
-                        : undefined
-                    }
-                  />
-                  {/* Edge label with pill background */}
-                  <rect
-                    x={path.ctrl.x - edge.label.length * 5 - 8}
-                    y={path.ctrl.y - 20}
-                    width={edge.label.length * 10 + 16}
-                    height={20}
-                    rx={10}
-                    fill="white"
-                    stroke={isSelected ? "#6D5EF5" : "#E2E8F0"}
-                    strokeWidth="1"
-                    className="pointer-events-none"
-                  />
-                  <text
-                    x={path.ctrl.x}
-                    y={path.ctrl.y - 7}
-                    textAnchor="middle"
-                    className={`text-xs pointer-events-none ${isSelected ? "fill-[#6D5EF5] font-medium" : "fill-[#64748B]"}`}
-                  >
-                    {edge.label}
-                  </text>
-                </g>
-              );
-            })}
-
-            {/* Connecting line (원본 로직 그대로) */}
-            {connecting && (
-              <line
-                x1={getNodeCenter(connecting.sourceId).x}
-                y1={getNodeCenter(connecting.sourceId).y}
-                x2={connecting.mouseX}
-                y2={connecting.mouseY}
-                stroke="#6D5EF5"
-                strokeWidth="2"
-                strokeDasharray="5,5"
-              />
-            )}
-          </svg>
-
-          {/* Person nodes */}
-          {nodes.map((node) => {
-            const config = roleConfig[node.role];
-            const isSelected = selectedNode === node.id;
-
-            return (
-              <ContextMenu key={node.id}>
-                <ContextMenuTrigger asChild>
+          {/* 인물 목록 */}
+          <div className="flex-1 overflow-y-auto min-h-0">
+            <div className="sticky top-0 px-2.5 py-1.5 bg-[#FBFBFF] border-b border-border/40">
+              <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
+                인물 ({nodes.length})
+              </p>
+            </div>
+            <div className="divide-y divide-border/30">
+              {nodes.map((node) => (
+                <div
+                  key={node.id}
+                  className="flex items-center gap-2 px-2.5 py-1.5 hover:bg-muted/40 group"
+                >
                   <div
-                    className={`absolute w-[130px] rounded-lg border shadow-sm transition-all duration-200 ${config.bgColor} ${config.borderColor} ${isSelected ? "shadow-lg ring-2 ring-[#6D5EF5]" : "hover:shadow-md"} ${draggingNode === node.id ? "cursor-grabbing" : "cursor-grab"}`}
-                    style={{ left: node.x, top: node.y }}
-                    onMouseDown={(e) => handleNodeMouseDown(e, node.id)}
-                    onDoubleClick={() => openEditPerson(node.id)}
-                  >
-                    {/* Connect handle (원본: 우측 파란 점) */}
-                    <div
-                      className="absolute -right-2 top-1/2 -translate-y-1/2 w-4 h-4 rounded-full bg-[#6D5EF5] border-2 border-white shadow cursor-crosshair hover:scale-125 transition-transform z-10"
-                      onMouseDown={(e) => {
-                        e.stopPropagation();
-                        handleConnectStart(e, node.id);
-                      }}
-                    />
+                    className="w-2 h-2 rounded-full shrink-0"
+                    style={{ background: ROLE_COLOR[node.role] }}
+                  />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs font-medium truncate leading-tight">{node.name}</p>
+                    <p className="text-[10px] truncate" style={{ color: ROLE_COLOR[node.role] }}>
+                      {node.role}
+                    </p>
+                  </div>
+                  <div className="flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <button
+                      onClick={() => openEditPerson(node.id)}
+                      className="p-0.5 rounded hover:text-primary"
+                    >
+                      <Pencil className="h-3 w-3 text-muted-foreground hover:text-primary" />
+                    </button>
+                    <button
+                      onClick={() => handleDeletePerson(node.id)}
+                      className="p-0.5 rounded hover:text-destructive"
+                    >
+                      <Trash2 className="h-3 w-3 text-muted-foreground hover:text-destructive" />
+                    </button>
+                  </div>
+                </div>
+              ))}
+              {nodes.length === 0 && (
+                <p className="text-[11px] text-muted-foreground/60 text-center py-4">
+                  인물 없음
+                </p>
+              )}
+            </div>
+          </div>
 
-                    {/* Node content */}
-                    <div className="p-3 text-center">
-                      <div
-                        className={`w-10 h-10 rounded-full ${config.iconBg} flex items-center justify-center mx-auto mb-2`}
+          {/* 관계 목록 */}
+          <div className="flex-1 overflow-y-auto min-h-0 border-t border-border/40">
+            <div className="sticky top-0 px-2.5 py-1.5 bg-[#FBFBFF] border-b border-border/40">
+              <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
+                관계 ({edges.length})
+              </p>
+            </div>
+            <div className="divide-y divide-border/30">
+              {edges.map((edge) => (
+                <div
+                  key={edge.id}
+                  className="px-2.5 py-1.5 hover:bg-muted/40 group"
+                >
+                  <div className="flex items-start gap-1">
+                    <div className="flex-1 min-w-0">
+                      <p className="text-[10px] text-muted-foreground truncate">
+                        {getPersonName(edge.sourceId)}{" "}
+                        <span className="font-mono">
+                          {edge.directed !== false ? "→" : "↔"}
+                        </span>{" "}
+                        {getPersonName(edge.targetId)}
+                      </p>
+                      <p className="text-xs font-semibold text-foreground truncate leading-tight">
+                        {edge.label}
+                      </p>
+                      {edge.memo && (
+                        <p className="text-[10px] text-muted-foreground line-clamp-3">{edge.memo}</p>
+                      )}
+                    </div>
+                    <div className="flex gap-0.5 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <button
+                        onClick={() => openEditEdge(edge.id)}
+                        className="p-0.5 rounded"
                       >
-                        {config.icon}
-                      </div>
-                      <p className="text-[13px] font-semibold truncate text-foreground">{node.name}</p>
-                      <span className={`inline-block mt-1 text-[10px] font-medium px-2 py-0.5 rounded-full ${config.color} ${config.bgColor} border ${config.borderColor}`}>
-                        {node.role}
-                      </span>
+                        <Pencil className="h-3 w-3 text-muted-foreground hover:text-primary" />
+                      </button>
+                      <button
+                        onClick={() => handleDeleteEdge(edge.id)}
+                        className="p-0.5 rounded"
+                      >
+                        <Trash2 className="h-3 w-3 text-muted-foreground hover:text-destructive" />
+                      </button>
                     </div>
                   </div>
-                </ContextMenuTrigger>
-                <ContextMenuContent>
-                  <ContextMenuItem onClick={() => openEditPerson(node.id)}>
-                    인물 정보 편집
-                  </ContextMenuItem>
-                  <ContextMenuItem
-                    className="text-destructive"
-                    onClick={() => handleDeletePerson(node.id)}
-                  >
-                    인물 삭제
-                  </ContextMenuItem>
-                </ContextMenuContent>
-              </ContextMenu>
-            );
-          })}
-        </div>
-
-        {/* Loading state (outside transform) */}
-        {loading && (
-          <div className="absolute inset-0 flex items-center justify-center text-muted-foreground bg-background/80 z-20">
-            <div className="text-center">
-              <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto mb-3" />
-              <p className="text-sm">관계도를 불러오는 중...</p>
-              <p className="text-xs mt-1 text-muted-foreground/60">AI가 인물 관계를 분석하고 있습니다</p>
+                </div>
+              ))}
+              {edges.length === 0 && (
+                <p className="text-[11px] text-muted-foreground/60 text-center py-4">
+                  관계 없음
+                </p>
+              )}
             </div>
           </div>
-        )}
-
-        {/* Error state (outside transform) */}
-        {error && !loading && (
-          <div className="absolute inset-0 flex items-center justify-center text-muted-foreground z-20">
-            <div className="text-center">
-              <AlertCircle className="h-12 w-12 mx-auto mb-3 text-destructive opacity-50" />
-              <p className="text-sm text-destructive">{error}</p>
-              <Button
-                size="sm"
-                variant="outline"
-                className="mt-3 bg-transparent"
-                onClick={() => window.location.reload()}
-              >
-                다시 시도
-              </Button>
-            </div>
-          </div>
-        )}
-
-        {/* Empty state hint (outside transform) */}
-        {!loading && !error && nodes.length === 0 && (
-          <div className="absolute inset-0 flex items-center justify-center text-muted-foreground z-20">
-            <div className="text-center">
-              <Users className="h-12 w-12 mx-auto mb-3 opacity-30" />
-              <p className="text-sm">인물을 추가하여 관계도를 구성하세요</p>
-              <Button
-                size="sm"
-                variant="outline"
-                className="mt-3 bg-transparent"
-                onClick={() => setIsAddPersonOpen(true)}
-              >
-                <Plus className="h-4 w-4 mr-2" />
-                첫 번째 인물 추가
-              </Button>
-            </div>
-          </div>
-        )}
-
-        {/* Zoom controls overlay (bottom-right) */}
-        <div className="absolute bottom-4 right-4 z-30 flex items-center gap-0.5 bg-white/90 backdrop-blur-sm rounded-lg border border-border/60 shadow-sm p-1">
-          <Button
-            size="icon"
-            variant="ghost"
-            className="h-7 w-7"
-            onClick={() => {
-              const newZoom = Math.max(zoom - 0.1, 0.3);
-              if (canvasRef.current) {
-                const rect = canvasRef.current.getBoundingClientRect();
-                const cx = rect.width / 2, cy = rect.height / 2;
-                const canvasX = (cx - panOffset.x) / zoom;
-                const canvasY = (cy - panOffset.y) / zoom;
-                setPanOffset({ x: cx - canvasX * newZoom, y: cy - canvasY * newZoom });
-              }
-              setZoom(newZoom);
-            }}
-          >
-            <span className="text-sm font-medium">-</span>
-          </Button>
-          <span className="text-xs font-medium text-muted-foreground w-10 text-center">
-            {Math.round(zoom * 100)}%
-          </span>
-          <Button
-            size="icon"
-            variant="ghost"
-            className="h-7 w-7"
-            onClick={() => {
-              const newZoom = Math.min(zoom + 0.1, 2.0);
-              if (canvasRef.current) {
-                const rect = canvasRef.current.getBoundingClientRect();
-                const cx = rect.width / 2, cy = rect.height / 2;
-                const canvasX = (cx - panOffset.x) / zoom;
-                const canvasY = (cy - panOffset.y) / zoom;
-                setPanOffset({ x: cx - canvasX * newZoom, y: cy - canvasY * newZoom });
-              }
-              setZoom(newZoom);
-            }}
-          >
-            <span className="text-sm font-medium">+</span>
-          </Button>
-          <div className="w-px h-5 bg-border/60 mx-0.5" />
-          <Button
-            size="icon"
-            variant="ghost"
-            className="h-7 w-7"
-            onClick={fitToView}
-            title="전체 보기"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M15 3h6v6" /><path d="M9 21H3v-6" /><path d="M21 3l-7 7" /><path d="M3 21l7-7" />
-            </svg>
-          </Button>
-          <Button
-            size="icon"
-            variant="ghost"
-            className="h-7 w-7"
-            onClick={() => {
-              setZoom(1);
-              setPanOffset({ x: 0, y: 0 });
-            }}
-            title="1:1"
-          >
-            <span className="text-[10px] font-bold">1:1</span>
-          </Button>
         </div>
       </div>
 
-      {/* Help text */}
-      <div className="p-2 border-t border-border/60 bg-[#FBFBFF] text-xs text-muted-foreground flex items-center justify-center gap-4 flex-wrap">
-        <span className="inline-flex items-center gap-1"><Move className="h-3 w-3" /> 드래그: 이동</span>
-        <span className="inline-flex items-center gap-1"><Link2 className="h-3 w-3" /> 보라 점 드래그: 관계 연결</span>
-        <span className="inline-flex items-center gap-1"><MousePointerClick className="h-3 w-3" /> 더블클릭: 편집</span>
-        <span className="inline-flex items-center gap-1"><MousePointer className="h-3 w-3" /> 우클릭: 메뉴</span>
-        <span className="inline-flex items-center gap-1">
-          <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 8v8"/><path d="M8 12h8"/></svg>
-          스크롤: 확대/축소
-        </span>
-        <span className="inline-flex items-center gap-1"><GripVertical className="h-3 w-3" /> 빈 공간/휠클릭: 화면 이동</span>
-      </div>
+      {/* ─ 다이얼로그 모음 ───────────────────────────────────────────────── */}
 
-      {/* Add Person Dialog */}
+      {/* 인물 추가 */}
       <Dialog open={isAddPersonOpen} onOpenChange={setIsAddPersonOpen}>
         <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>새 인물 추가</DialogTitle>
-          </DialogHeader>
+          <DialogHeader><DialogTitle>새 인물 추가</DialogTitle></DialogHeader>
           <div className="space-y-4 py-4">
             <div className="space-y-2">
               <Label>이름</Label>
               <Input
-                value={newPerson.name || ""}
-                onChange={(e) =>
-                  setNewPerson((prev) => ({ ...prev, name: e.target.value }))
-                }
+                value={newPerson.name}
+                onChange={(e) => setNewPerson((p) => ({ ...p, name: e.target.value }))}
                 placeholder="예: 홍OO, 미확인 관리자"
               />
             </div>
             <div className="space-y-2">
               <Label>역할</Label>
               <Select
-                value={newPerson.role || "미확인"}
-                onValueChange={(value) =>
-                  setNewPerson((prev) => ({ ...prev, role: value as PersonRole }))
-                }
+                value={newPerson.role}
+                onValueChange={(v) => setNewPerson((p) => ({ ...p, role: v as PersonRole }))}
               >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
+                <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="피해자">
-                    <div className="flex items-center gap-2">
-                      <div className="w-2 h-2 rounded-full bg-[#6D5EF5]" />
-                      피해자
-                    </div>
-                  </SelectItem>
-                  <SelectItem value="가해자">
-                    <div className="flex items-center gap-2">
-                      <div className="w-2 h-2 rounded-full bg-[#EF4444]" />
-                      가해자
-                    </div>
-                  </SelectItem>
-                  <SelectItem value="증인">
-                    <div className="flex items-center gap-2">
-                      <div className="w-2 h-2 rounded-full bg-[#38BDF8]" />
-                      증인
-                    </div>
-                  </SelectItem>
-                  <SelectItem value="동료">
-                    <div className="flex items-center gap-2">
-                      <div className="w-2 h-2 rounded-full bg-[#F59E0B]" />
-                      동료
-                    </div>
-                  </SelectItem>
-                  <SelectItem value="미확인">
-                    <div className="flex items-center gap-2">
-                      <div className="w-2.5 h-2.5 rounded border border-dashed border-[#94A3B8] bg-slate-50" />
-                      미확인
-                    </div>
-                  </SelectItem>
+                  {ALL_ROLES.map((r) => (
+                    <SelectItem key={r} value={r}><RoleItem role={r} /></SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setIsAddPersonOpen(false)}>
-              취소
+            <Button variant="outline" onClick={() => setIsAddPersonOpen(false)} disabled={isSaving}>취소</Button>
+            <Button onClick={handleAddPerson} disabled={!newPerson.name.trim() || isSaving}>
+              {isSaving ? <><RefreshCw className="h-3.5 w-3.5 mr-1.5 animate-spin" />저장 중…</> : "추가"}
             </Button>
-            <Button onClick={handleAddPerson}>추가</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
-      {/* Edit Person Dialog */}
+      {/* 인물 편집 */}
       <Dialog open={isEditPersonOpen} onOpenChange={setIsEditPersonOpen}>
         <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>인물 정보 편집</DialogTitle>
-          </DialogHeader>
+          <DialogHeader><DialogTitle>인물 정보 편집</DialogTitle></DialogHeader>
           {editingPerson && (
             <div className="space-y-4 py-4">
               <div className="space-y-2">
@@ -1089,9 +867,7 @@ export function RelationshipEditor({
                 <Input
                   value={editingPerson.name}
                   onChange={(e) =>
-                    setEditingPerson((prev) =>
-                      prev ? { ...prev, name: e.target.value } : null
-                    )
+                    setEditingPerson((p) => p ? { ...p, name: e.target.value } : null)
                   }
                 />
               </div>
@@ -1099,90 +875,198 @@ export function RelationshipEditor({
                 <Label>역할</Label>
                 <Select
                   value={editingPerson.role}
-                  onValueChange={(value) =>
-                    setEditingPerson((prev) =>
-                      prev ? { ...prev, role: value as PersonRole } : null
-                    )
+                  onValueChange={(v) =>
+                    setEditingPerson((p) => p ? { ...p, role: v as PersonRole } : null)
                   }
                 >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="피해자">
-                      <div className="flex items-center gap-2">
-                        <div className="w-2 h-2 rounded-full bg-[#6D5EF5]" />
-                        피해자
-                      </div>
-                    </SelectItem>
-                    <SelectItem value="가해자">
-                      <div className="flex items-center gap-2">
-                        <div className="w-2 h-2 rounded-full bg-[#EF4444]" />
-                        가해자
-                      </div>
-                    </SelectItem>
-                    <SelectItem value="증인">
-                      <div className="flex items-center gap-2">
-                        <div className="w-2 h-2 rounded-full bg-[#38BDF8]" />
-                        증인
-                      </div>
-                    </SelectItem>
-                    <SelectItem value="동료">
-                      <div className="flex items-center gap-2">
-                        <div className="w-2 h-2 rounded-full bg-[#F59E0B]" />
-                        동료
-                      </div>
-                    </SelectItem>
-                    <SelectItem value="미확인">
-                      <div className="flex items-center gap-2">
-                        <div className="w-2.5 h-2.5 rounded border border-dashed border-[#94A3B8] bg-slate-50" />
-                        미확인
-                      </div>
-                    </SelectItem>
+                    {ALL_ROLES.map((r) => (
+                      <SelectItem key={r} value={r}><RoleItem role={r} /></SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
               </div>
             </div>
           )}
           <DialogFooter>
-            <Button variant="outline" onClick={() => setIsEditPersonOpen(false)}>
-              취소
+            <Button variant="outline" onClick={() => setIsEditPersonOpen(false)} disabled={isSaving}>취소</Button>
+            <Button onClick={handleUpdatePerson} disabled={isSaving}>
+              {isSaving ? <><RefreshCw className="h-3.5 w-3.5 mr-1.5 animate-spin" />저장 중…</> : "저장"}
             </Button>
-            <Button onClick={handleUpdatePerson}>저장</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
-      {/* Edit Edge Dialog */}
+      {/* 관계 추가 */}
+      <Dialog open={isAddEdgeOpen} onOpenChange={setIsAddEdgeOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader><DialogTitle>새 관계 추가</DialogTitle></DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-2">
+                <Label>출발 인물</Label>
+                <Select
+                  value={newEdgeForm.sourceId}
+                  onValueChange={(v) => setNewEdgeForm((f) => ({ ...f, sourceId: v }))}
+                >
+                  <SelectTrigger><SelectValue placeholder="선택" /></SelectTrigger>
+                  <SelectContent>
+                    {nodes.map((n) => (
+                      <SelectItem key={n.id} value={n.id}>
+                        <span className="flex items-center gap-1.5">
+                          <span
+                            className="w-2 h-2 rounded-full shrink-0"
+                            style={{ background: ROLE_COLOR[n.role] }}
+                          />
+                          {n.name}
+                        </span>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label>도착 인물</Label>
+                <Select
+                  value={newEdgeForm.targetId}
+                  onValueChange={(v) => setNewEdgeForm((f) => ({ ...f, targetId: v }))}
+                >
+                  <SelectTrigger><SelectValue placeholder="선택" /></SelectTrigger>
+                  <SelectContent>
+                    {nodes
+                      .filter((n) => n.id !== newEdgeForm.sourceId)
+                      .map((n) => (
+                        <SelectItem key={n.id} value={n.id}>
+                          <span className="flex items-center gap-1.5">
+                            <span
+                              className="w-2 h-2 rounded-full shrink-0"
+                              style={{ background: ROLE_COLOR[n.role] }}
+                            />
+                            {n.name}
+                          </span>
+                        </SelectItem>
+                      ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label>관계 유형</Label>
+              <Input
+                value={newEdgeForm.label}
+                onChange={(e) => setNewEdgeForm((f) => ({ ...f, label: e.target.value }))}
+                placeholder="예: 상사, 동료, 목격, 폭행, 협박"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>메모 <span className="text-muted-foreground font-normal">(선택)</span></Label>
+              <Textarea
+                value={newEdgeForm.memo}
+                onChange={(e) => setNewEdgeForm((f) => ({ ...f, memo: e.target.value }))}
+                placeholder="관계에 대한 추가 설명"
+                rows={2}
+              />
+            </div>
+            <div className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                id="new-directed"
+                checked={newEdgeForm.directed}
+                onChange={(e) => setNewEdgeForm((f) => ({ ...f, directed: e.target.checked }))}
+                className="rounded border-border"
+              />
+              <Label htmlFor="new-directed" className="text-sm font-normal cursor-pointer">
+                방향성 있는 관계 (화살표 →)
+              </Label>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setIsAddEdgeOpen(false)} disabled={isSaving}>취소</Button>
+            <Button
+              onClick={handleAddEdge}
+              disabled={!newEdgeForm.sourceId || !newEdgeForm.targetId || !newEdgeForm.label.trim() || isSaving}
+            >
+              {isSaving ? <><RefreshCw className="h-3.5 w-3.5 mr-1.5 animate-spin" />저장 중…</> : "추가"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 관계 편집 */}
       <Dialog open={isEditEdgeOpen} onOpenChange={setIsEditEdgeOpen}>
         <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>
-              {newEdgeData ? "새 관계 추가" : "관계 편집"}
-            </DialogTitle>
-          </DialogHeader>
+          <DialogHeader><DialogTitle>관계 편집</DialogTitle></DialogHeader>
           {editingEdge && (
             <div className="space-y-4 py-4">
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-2">
+                  <Label>출발 인물</Label>
+                  <Select
+                    value={editingEdge.sourceId}
+                    onValueChange={(v) =>
+                      setEditingEdge((p) => p ? { ...p, sourceId: v } : null)
+                    }
+                  >
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {nodes.map((n) => (
+                        <SelectItem key={n.id} value={n.id}>
+                          <span className="flex items-center gap-1.5">
+                            <span
+                              className="w-2 h-2 rounded-full shrink-0"
+                              style={{ background: ROLE_COLOR[n.role] }}
+                            />
+                            {n.name}
+                          </span>
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label>도착 인물</Label>
+                  <Select
+                    value={editingEdge.targetId}
+                    onValueChange={(v) =>
+                      setEditingEdge((p) => p ? { ...p, targetId: v } : null)
+                    }
+                  >
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {nodes
+                        .filter((n) => n.id !== editingEdge.sourceId)
+                        .map((n) => (
+                          <SelectItem key={n.id} value={n.id}>
+                            <span className="flex items-center gap-1.5">
+                              <span
+                                className="w-2 h-2 rounded-full shrink-0"
+                                style={{ background: ROLE_COLOR[n.role] }}
+                              />
+                              {n.name}
+                            </span>
+                          </SelectItem>
+                        ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
               <div className="space-y-2">
                 <Label>관계 유형</Label>
                 <Input
                   value={editingEdge.label}
                   onChange={(e) =>
-                    setEditingEdge((prev) =>
-                      prev ? { ...prev, label: e.target.value } : null
-                    )
+                    setEditingEdge((p) => p ? { ...p, label: e.target.value } : null)
                   }
-                  placeholder="예: 상사, 동료, 목격, 갈등, 진술"
+                  placeholder="예: 상사, 동료, 목격, 폭행"
                 />
               </div>
               <div className="space-y-2">
-                <Label>메모 (선택)</Label>
+                <Label>메모 <span className="text-muted-foreground font-normal">(선택)</span></Label>
                 <Textarea
                   value={editingEdge.memo || ""}
                   onChange={(e) =>
-                    setEditingEdge((prev) =>
-                      prev ? { ...prev, memo: e.target.value } : null
-                    )
+                    setEditingEdge((p) => p ? { ...p, memo: e.target.value } : null)
                   }
                   placeholder="관계에 대한 추가 설명"
                   rows={2}
@@ -1191,33 +1075,23 @@ export function RelationshipEditor({
               <div className="flex items-center gap-2">
                 <input
                   type="checkbox"
-                  id="directed"
-                  checked={editingEdge.directed}
+                  id="edit-directed"
+                  checked={editingEdge.directed !== false}
                   onChange={(e) =>
-                    setEditingEdge((prev) =>
-                      prev ? { ...prev, directed: e.target.checked } : null
-                    )
+                    setEditingEdge((p) => p ? { ...p, directed: e.target.checked } : null)
                   }
                   className="rounded border-border"
                 />
-                <Label htmlFor="directed" className="text-sm font-normal">
-                  방향성 있는 관계 (화살표 표시)
+                <Label htmlFor="edit-directed" className="text-sm font-normal cursor-pointer">
+                  방향성 있는 관계 (화살표 →)
                 </Label>
               </div>
             </div>
           )}
           <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => {
-                setIsEditEdgeOpen(false);
-                setNewEdgeData(null);
-              }}
-            >
-              취소
-            </Button>
-            <Button onClick={handleSaveEdge}>
-              {newEdgeData ? "추가" : "저장"}
+            <Button variant="outline" onClick={() => setIsEditEdgeOpen(false)} disabled={isSaving}>취소</Button>
+            <Button onClick={handleUpdateEdge} disabled={isSaving}>
+              {isSaving ? <><RefreshCw className="h-3.5 w-3.5 mr-1.5 animate-spin" />저장 중…</> : "저장"}
             </Button>
           </DialogFooter>
         </DialogContent>

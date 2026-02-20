@@ -465,7 +465,7 @@ class RelationshipService:
 - 의뢰인: {case.client_name or "미상"} ({case.client_role or "역할 미상"})
 
 **타임라인:**
-{timeline_summary[:2000]}  # 너무 길면 잘라냄
+{timeline_summary[:2000]}
 
 위 정보를 바탕으로 다음을 작성해주세요:
 

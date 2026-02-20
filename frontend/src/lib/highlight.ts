@@ -44,8 +44,9 @@ export function highlightKeywords(
   // 1. 원본 텍스트 HTML 이스케이프 (XSS 방지)
   const escapedText = escapeHtml(text);
 
-  // 2. 검색어를 공백으로 분리하고 2글자 이상만 필터링
-  const keywords = query
+  // 2. 검색어에서 따옴표 제거 후 공백으로 분리하고 2글자 이상만 필터링
+  const cleanQuery = query.replace(/^"|"$/g, ""); // 앞뒤 따옴표 제거
+  const keywords = cleanQuery
     .trim()
     .split(/\s+/)
     .filter((keyword) => keyword.length >= 2)
