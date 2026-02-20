@@ -15,7 +15,6 @@ openai==1.10.0
 
 # 문서 처리
 pymupdf==1.24.14  # PDF 텍스트 추출
-easyocr==1.7.2    # 로컬 OCR (한글 지원, Pillow 10 호환)
 pillow==10.3.0    # 이미지 처리
 
 # 벡터 DB
