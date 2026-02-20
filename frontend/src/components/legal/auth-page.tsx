@@ -1,7 +1,6 @@
-"use client";
-
 import React from "react";
 import { useState } from "react";
+import { apiFetch } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -46,10 +45,11 @@ export function AuthPage({ onLogin, exiting = false }: AuthPageProps) {
 
     try {
       if (mode === "login") {
-        const response = await fetch("http://localhost:8000/api/v1/login", {
+        const response = await apiFetch("/api/v1/login", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ email, password }),
+          skipAuth: true,
         });
         const data = await response.json();
 
@@ -59,9 +59,7 @@ export function AuthPage({ onLogin, exiting = false }: AuthPageProps) {
 
         localStorage.setItem("access_token", data.access_token);
 
-        const userResponse = await fetch("http://localhost:8000/api/v1/me", {
-          headers: { Authorization: `Bearer ${data.access_token}` },
-        });
+        const userResponse = await apiFetch("/api/v1/me");
 
         if (userResponse.ok) {
           const userData = await userResponse.json();
@@ -72,7 +70,7 @@ export function AuthPage({ onLogin, exiting = false }: AuthPageProps) {
           throw new Error("사용자 정보를 가져오는데 실패했습니다");
         }
       } else {
-        const response = await fetch("http://localhost:8000/api/v1/signup", {
+        const response = await apiFetch("/api/v1/signup", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -82,6 +80,7 @@ export function AuthPage({ onLogin, exiting = false }: AuthPageProps) {
             role,
             firm_code: firmCode,
           }),
+          skipAuth: true,
         });
         const data = await response.json();
 

@@ -1,7 +1,6 @@
-"use client";
-
 import { useState, useEffect } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { apiFetch } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -77,8 +76,7 @@ export function EvidenceDetailPage() {
 
   // 증거 정보 가져오기
   const fetchEvidence = async () => {
-    const token = localStorage.getItem('access_token');
-    if (!token || !id) {
+    if (!id) {
       setErrorMessage('인증이 필요합니다.');
       setIsLoadingEvidence(false);
       return;
@@ -96,11 +94,7 @@ export function EvidenceDetailPage() {
     setErrorMessage(null);
 
     try {
-      const response = await fetch(`http://localhost:8000/api/v1/evidence/${evidenceIdNum}`, {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
-      });
+      const response = await apiFetch(`/api/v1/evidence/${evidenceIdNum}`);
 
       if (!response.ok) {
         if (response.status === 404) {
@@ -125,18 +119,13 @@ export function EvidenceDetailPage() {
 
   // 사건 정보 가져오기 (옵셔널)
   const fetchCase = async () => {
-    const token = localStorage.getItem('access_token');
-    if (!token || !caseId) return;
+    if (!caseId) return;
 
     const caseIdNum = parseInt(caseId);
     if (isNaN(caseIdNum)) return;
 
     try {
-      const response = await fetch(`http://localhost:8000/api/v1/cases/${caseIdNum}`, {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
-      });
+      const response = await apiFetch(`/api/v1/cases/${caseIdNum}`);
 
       if (response.ok) {
         const data = await response.json();
@@ -150,8 +139,7 @@ export function EvidenceDetailPage() {
 
   // 분석 정보 조회
   const fetchAnalysis = async () => {
-    const token = localStorage.getItem('access_token');
-    if (!token || !id) return;
+    if (!id) return;
 
     const evidenceIdNum = parseInt(id);
     if (isNaN(evidenceIdNum)) return;
@@ -159,14 +147,10 @@ export function EvidenceDetailPage() {
     setIsLoadingAnalysis(true);
     try {
       const url = caseId
-        ? `http://localhost:8000/api/v1/evidence/${evidenceIdNum}/analysis?case_id=${caseId}`
-        : `http://localhost:8000/api/v1/evidence/${evidenceIdNum}/analysis`;
+        ? `/api/v1/evidence/${evidenceIdNum}/analysis?case_id=${caseId}`
+        : `/api/v1/evidence/${evidenceIdNum}/analysis`;
 
-      const response = await fetch(url, {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
-      });
+      const response = await apiFetch(url);
 
       if (response.ok) {
         const data = await response.json();
@@ -197,8 +181,7 @@ export function EvidenceDetailPage() {
 
   // 분석 수행
   const handleAnalyze = async () => {
-    const token = localStorage.getItem('access_token');
-    if (!token || !id) {
+    if (!id) {
       setAnalysisMessage({ type: 'error', text: '로그인이 필요합니다.' });
       setTimeout(() => setAnalysisMessage(null), 3000);
       return;
@@ -215,14 +198,11 @@ export function EvidenceDetailPage() {
     setAnalysisMessage(null);
     try {
       const url = caseId
-        ? `http://localhost:8000/api/v1/evidence/${evidenceIdNum}/analyze?case_id=${caseId}`
-        : `http://localhost:8000/api/v1/evidence/${evidenceIdNum}/analyze`;
+        ? `/api/v1/evidence/${evidenceIdNum}/analyze?case_id=${caseId}`
+        : `/api/v1/evidence/${evidenceIdNum}/analyze`;
 
-      const response = await fetch(url, {
+      const response = await apiFetch(url, {
         method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
       });
 
       if (!response.ok) {
@@ -254,16 +234,11 @@ export function EvidenceDetailPage() {
 
   // 파일 미리보기 URL 가져오기
   const fetchFilePreviewUrl = async () => {
-    const token = localStorage.getItem('access_token');
-    if (!token || !evidence) return;
+    if (!evidence) return;
 
     setIsLoadingPreview(true);
     try {
-      const response = await fetch(`http://localhost:8000/api/v1/evidence/${evidence.evidence_id}/url`, {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
-      });
+      const response = await apiFetch(`/api/v1/evidence/${evidence.evidence_id}/url`);
 
       if (!response.ok) {
         throw new Error('파일 URL 생성 실패');
@@ -280,19 +255,14 @@ export function EvidenceDetailPage() {
 
   // 파일 다운로드
   const handleDownload = async () => {
-    const token = localStorage.getItem('access_token');
-    if (!token || !evidence) {
+    if (!evidence) {
       alert('로그인이 필요합니다.');
       return;
     }
 
     try {
       // Signed URL 가져오기
-      const response = await fetch(`http://localhost:8000/api/v1/evidence/${evidence.evidence_id}/url`, {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
-      });
+      const response = await apiFetch(`/api/v1/evidence/${evidence.evidence_id}/url`);
 
       if (!response.ok) {
         throw new Error('파일 URL 생성 실패');

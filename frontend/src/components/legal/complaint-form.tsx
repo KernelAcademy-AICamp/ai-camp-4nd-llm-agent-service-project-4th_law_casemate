@@ -1,5 +1,3 @@
-"use client";
-
 import { useState } from "react";
 import type { CaseData } from "@/lib/sample-data";
 import { Button } from "@/components/ui/button";

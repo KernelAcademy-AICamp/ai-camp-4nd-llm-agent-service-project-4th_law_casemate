@@ -1,5 +1,3 @@
-"use client";
-
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useNavigate, useOutletContext } from "react-router-dom";
 import { Scale, ArrowUp, FolderOpen, MessageSquare } from "lucide-react";

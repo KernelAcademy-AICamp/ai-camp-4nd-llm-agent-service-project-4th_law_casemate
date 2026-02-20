@@ -1,7 +1,6 @@
-"use client";
-
 import React from "react";
 import { useState, useEffect } from "react";
+import { apiFetch } from "@/lib/api";
 import { useNavigate } from "react-router-dom";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -93,14 +92,7 @@ export function PrecedentsPage({ }: PrecedentsPageProps) {
     const fetchFavorites = async () => {
       setLoading(true);
       try {
-        const token = localStorage.getItem("access_token");
-        if (!token) return;
-
-        const response = await fetch("/api/v1/favorites/precedents", {
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
-        });
+        const response = await apiFetch("/api/v1/favorites/precedents");
 
         if (response.ok) {
           const data = await response.json();
@@ -170,11 +162,8 @@ export function PrecedentsPage({ }: PrecedentsPageProps) {
     }
 
     try {
-      const response = await fetch(`/api/v1/favorites/precedents/${encodeURIComponent(caseNumber)}/toggle`, {
+      const response = await apiFetch(`/api/v1/favorites/precedents/${encodeURIComponent(caseNumber)}/toggle`, {
         method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
       });
 
       if (!response.ok) {
@@ -240,7 +229,7 @@ export function PrecedentsPage({ }: PrecedentsPageProps) {
       if (activeFilters.caseTypes.length > 0) params.append("case_type", activeFilters.caseTypes.join(","));
       if (activeFilters.period) params.append("period", activeFilters.period);
 
-      const response = await fetch(`/api/v1/search/cases?${params.toString()}`);
+      const response = await apiFetch(`/api/v1/search/cases?${params.toString()}`);
 
       if (!response.ok) {
         throw new Error("검색 중 오류가 발생했습니다.");

@@ -224,13 +224,25 @@ async def get_case_detail(
             current_hash = hashlib.sha256(case.description.encode()).hexdigest()
             analysis_stale = cached.description_hash != current_hash
 
-        print(f"✅ 사건 상세 조회 완료: {case.title}, analyzed_at={analyzed_at}, analysis_stale={analysis_stale}")
+        # 캐시가 유효하면 분석 결과도 함께 반환 (프론트에서 /analyze POST 스킵 가능)
+        cached_analysis = None
+        if cached and cached.summary and not analysis_stale:
+            cached_crime = json.loads(cached.crime_names) if cached.crime_names else []
+            cached_analysis = {
+                "summary": cached.summary or "",
+                "facts": cached.facts or "",
+                "claims": cached.claims or "",
+                "crime_names": cached_crime,
+            }
+
+        print(f"✅ 사건 상세 조회 완료: {case.title}, analyzed_at={analyzed_at}, analysis_stale={analysis_stale}, has_cached_analysis={cached_analysis is not None}")
 
         # ORM → CaseResponse dict에 분석 상태 주입
         response = CaseResponse.model_validate(case)
         return response.model_dump() | {
             "analyzed_at": analyzed_at.isoformat() if analyzed_at else None,
             "analysis_stale": analysis_stale,
+            "cached_analysis": cached_analysis,
         }
 
     except HTTPException:
@@ -844,7 +856,7 @@ async def update_case(
         db.commit()
         db.refresh(case)
 
-        # 분석 stale 여부 계산
+        # 분석 stale 여부 계산 (description_hash 비교)
         cached = db.query(CaseAnalysis).filter(CaseAnalysis.case_id == case_id).first()
         analysis_stale = False
         if cached and cached.description_hash and case.description:

@@ -1,7 +1,6 @@
-"use client";
-
 import { useNavigate } from "react-router-dom";
 import React from "react";
+import { apiFetch } from "@/lib/api";
 import { useState, useCallback, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import {
@@ -384,17 +383,8 @@ export function NewCasePage({ }: NewCasePageProps) {
     }
 
     try {
-      const token = localStorage.getItem("access_token");
-      if (!token) return;
-
-      const response = await fetch(
-        `http://localhost:8000/api/v1/evidence/list?category_id=${categoryId}`,
-        {
-          method: "GET",
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
-        }
+      const response = await apiFetch(
+        `/api/v1/evidence/list?category_id=${categoryId}`
       );
 
       if (response.ok) {
@@ -429,15 +419,7 @@ export function NewCasePage({ }: NewCasePageProps) {
   useEffect(() => {
     const fetchCategories = async () => {
       try {
-        const token = localStorage.getItem("access_token");
-        if (!token) return;
-
-        const response = await fetch("http://localhost:8000/api/v1/evidence/categories", {
-          method: "GET",
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
-        });
+        const response = await apiFetch("/api/v1/evidence/categories");
 
         if (response.ok) {
           const data = await response.json();
@@ -482,18 +464,10 @@ export function NewCasePage({ }: NewCasePageProps) {
     setIsSubmitting(true);
 
     try {
-      const token = localStorage.getItem("access_token");
-      if (!token) {
-        alert("로그인이 필요합니다.");
-        navigate("/");
-        return;
-      }
-
-      const response = await fetch("http://localhost:8000/api/v1/cases", {
+      const response = await apiFetch("/api/v1/cases", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({
           title: caseName,
@@ -532,13 +506,10 @@ export function NewCasePage({ }: NewCasePageProps) {
               formData.append("file", uploadedFile.file);
 
               // 파일 업로드
-              const uploadResponse = await fetch(
-                "http://localhost:8000/api/v1/evidence/upload",
+              const uploadResponse = await apiFetch(
+                "/api/v1/evidence/upload",
                 {
                   method: "POST",
-                  headers: {
-                    Authorization: `Bearer ${token}`,
-                  },
                   body: formData,
                 }
               );
@@ -553,13 +524,10 @@ export function NewCasePage({ }: NewCasePageProps) {
                 if (item.description)
                   mappingParams.append("description", item.description);
 
-                await fetch(
-                  `http://localhost:8000/api/v1/evidence/${evidenceId}/link-case-with-details/${caseId}?${mappingParams.toString()}`,
+                await apiFetch(
+                  `/api/v1/evidence/${evidenceId}/link-case-with-details/${caseId}?${mappingParams.toString()}`,
                   {
                     method: "POST",
-                    headers: {
-                      Authorization: `Bearer ${token}`,
-                    },
                   }
                 );
 

@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { apiFetch } from "@/lib/api";
 import { User } from "lucide-react";
 import {
   Dialog,
@@ -50,12 +51,10 @@ export function ProfileDialog({ open, onOpenChange, userInfo, onProfileUpdated }
 
     setLoading(true);
     try {
-      const token = localStorage.getItem("access_token");
-      const res = await fetch("http://localhost:8000/api/v1/me", {
+      const res = await apiFetch("/api/v1/me", {
         method: "PUT",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({ name: name.trim(), role }),
       });

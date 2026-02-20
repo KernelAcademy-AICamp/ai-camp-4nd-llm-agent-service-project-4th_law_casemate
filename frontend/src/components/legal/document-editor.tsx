@@ -1,5 +1,3 @@
-"use client";
-
 import { useState, useRef, useCallback, useEffect } from "react";
 import type { CaseData } from "@/lib/sample-data";
 import { Button } from "@/components/ui/button";
@@ -60,6 +58,7 @@ import type { Editor } from "@tiptap/react";
 import type { LawRefClickData } from "./law-ref-decoration";
 import { ArticlePanel, type ArticleRef } from "./article-panel";
 import { AgentLoadingOverlay, type AgentStep } from "@/components/ui/agent-loading-overlay";
+import { apiFetch } from "@/lib/api";
 
 interface DocumentEditorProps {
   caseData: CaseData;
@@ -68,17 +67,8 @@ interface DocumentEditorProps {
 // AI 생성 가능한 문서 유형 (백엔드 document_api.py의 SYSTEM_PROMPTS 키와 일치해야 함)
 const AI_SUPPORTED_TYPES = ["criminal_complaint", "demand_letter", "civil_complaint"];
 
-const API_BASE = "http://localhost:8000/api/v1/documents";
-
 // Windows col-resize 동일 모양 (←|→) 검정 고정 커서 (stroke 통일)
 const COL_RESIZE_CURSOR = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%23222' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cline x1='12' y1='5' x2='12' y2='19'/%3E%3Cpolyline points='7,9.5 4,12 7,14.5'/%3E%3Cline x1='4' y1='12' x2='10' y2='12'/%3E%3Cpolyline points='17,9.5 20,12 17,14.5'/%3E%3Cline x1='20' y1='12' x2='14' y2='12'/%3E%3C/svg%3E") 12 12, col-resize`;
-
-function getAuthHeaders(): Record<string, string> {
-  const token = localStorage.getItem("access_token");
-  return token
-    ? { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }
-    : { "Content-Type": "application/json" };
-}
 
 const templates = [
   { id: "criminal_complaint", name: "고소장", category: "형사", icon: FileCheck },
@@ -576,9 +566,7 @@ export function DocumentEditor({ caseData }: DocumentEditorProps) {
     if (crimeNames.length > 0) return; // 이미 있으면 스킵
     const fetchCrimeNames = async () => {
       try {
-        const res = await fetch(`${API_BASE}/context/${caseData.id}`, {
-          headers: getAuthHeaders(),
-        });
+        const res = await apiFetch(`/api/v1/documents/context/${caseData.id}`);
         if (!res.ok) return;
         const ctx = await res.json();
         if (ctx.analysis?.crime_names?.length) {
@@ -657,9 +645,7 @@ export function DocumentEditor({ caseData }: DocumentEditorProps) {
   // 문서 목록 불러오기
   const fetchDocuments = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/case/${caseData.id}`, {
-        headers: getAuthHeaders(),
-      });
+      const res = await apiFetch(`/api/v1/documents/case/${caseData.id}`);
       if (!res.ok) return;
       const data = await res.json();
       setDocuments(
@@ -693,9 +679,7 @@ export function DocumentEditor({ caseData }: DocumentEditorProps) {
 
   const handleSelectDocument = async (doc: DocumentItem) => {
     try {
-      const res = await fetch(`${API_BASE}/${doc.id}`, {
-        headers: getAuthHeaders(),
-      });
+      const res = await apiFetch(`/api/v1/documents/${doc.id}`);
       if (!res.ok) throw new Error();
       const data = await res.json();
       setActiveDocId(String(data.id));
@@ -739,9 +723,7 @@ export function DocumentEditor({ caseData }: DocumentEditorProps) {
 
     try {
       // ── Step 0: 사건 기록 분석 중 → DB 컨텍스트 조회 ──
-      const ctxRes = await fetch(`${API_BASE}/context/${caseData.id}`, {
-        headers: getAuthHeaders(),
-      });
+      const ctxRes = await apiFetch(`/api/v1/documents/context/${caseData.id}`);
       if (!ctxRes.ok) throw new Error("사건 데이터를 불러올 수 없습니다.");
 
       // ── Step 1: 당사자 정보 대조 중 ──
@@ -762,9 +744,9 @@ export function DocumentEditor({ caseData }: DocumentEditorProps) {
       setDraftAgentSteps(prev => advanceDraftStep(prev, 3));
       const timer4 = setTimeout(() => setDraftAgentSteps(prev => advanceDraftStep(prev, 4)), 4000);
 
-      const sectionsRes = await fetch(`${API_BASE}/generate-sections`, {
+      const sectionsRes = await apiFetch(`/api/v1/documents/generate-sections`, {
         method: "POST",
-        headers: getAuthHeaders(),
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ case_id: Number(caseData.id) }),
       });
 
@@ -799,9 +781,9 @@ export function DocumentEditor({ caseData }: DocumentEditorProps) {
     try {
       if (activeDocId) {
         // 기존 문서 수정
-        const res = await fetch(`${API_BASE}/${activeDocId}`, {
+        const res = await apiFetch(`/api/v1/documents/${activeDocId}`, {
           method: "PUT",
-          headers: getAuthHeaders(),
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ title: documentTitle, content: documentContent, access_level: accessLevel }),
         });
         if (!res.ok) {
@@ -810,9 +792,9 @@ export function DocumentEditor({ caseData }: DocumentEditorProps) {
         }
       } else {
         // 새 문서 생성
-        const res = await fetch(`${API_BASE}/`, {
+        const res = await apiFetch(`/api/v1/documents/`, {
           method: "POST",
-          headers: getAuthHeaders(),
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             case_id: Number(caseData.id),
             title: documentTitle,
@@ -837,9 +819,8 @@ export function DocumentEditor({ caseData }: DocumentEditorProps) {
 
   const handleDeleteDocument = async (docId: string) => {
     try {
-      await fetch(`${API_BASE}/${docId}`, {
+      await apiFetch(`/api/v1/documents/${docId}`, {
         method: "DELETE",
-        headers: getAuthHeaders(),
       });
       fetchDocuments();
       if (activeDocId === docId) handleNewDocument();
@@ -851,16 +832,14 @@ export function DocumentEditor({ caseData }: DocumentEditorProps) {
   const handleDuplicateDocument = async (doc: DocumentItem) => {
     try {
       // 원본 문서 내용 가져오기
-      const res = await fetch(`${API_BASE}/${doc.id}`, {
-        headers: getAuthHeaders(),
-      });
+      const res = await apiFetch(`/api/v1/documents/${doc.id}`);
       if (!res.ok) return;
       const data = await res.json();
 
       // 복사본 생성
-      const copyRes = await fetch(`${API_BASE}/`, {
+      const copyRes = await apiFetch(`/api/v1/documents/`, {
         method: "POST",
-        headers: getAuthHeaders(),
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           case_id: Number(caseData.id),
           title: `${data.title} (복사본)`,

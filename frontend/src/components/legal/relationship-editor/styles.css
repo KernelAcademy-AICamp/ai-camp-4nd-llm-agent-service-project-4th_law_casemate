@@ -1,0 +1,45 @@
+@import "@xyflow/react/dist/style.css";
+
+/* Container background */
+.relationship-flow .react-flow__pane {
+  background-color: #fbfbff;
+}
+
+/* Hide default edge selection outline */
+.relationship-flow .react-flow__edge.selected .react-flow__edge-path {
+  stroke: #6d5ef5;
+}
+
+/* Node drag cursor */
+.relationship-flow .react-flow__node {
+  cursor: grab;
+}
+
+.relationship-flow .react-flow__node:active {
+  cursor: grabbing;
+}
+
+/* Handle styling overrides */
+.relationship-flow .react-flow__handle {
+  z-index: 10;
+}
+
+/* MiniMap styling */
+.relationship-flow .react-flow__minimap {
+  border: 1px solid hsl(var(--border) / 0.6);
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+}
+
+/* Attribution hide (React Flow free allows removal if you provide attribution elsewhere) */
+.relationship-flow .react-flow__attribution {
+  display: none;
+}
+
+/* Connection line while dragging */
+.relationship-flow .react-flow__connection-line {
+  stroke: #6d5ef5;
+  stroke-width: 2;
+  stroke-dasharray: 5 5;
+}

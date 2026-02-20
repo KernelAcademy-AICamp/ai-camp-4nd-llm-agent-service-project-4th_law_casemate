@@ -445,7 +445,7 @@ class TimeLineService:
 - 의뢰인: {case.client_name or "미상"} ({case.client_role or "역할 미상"})
 
 **증거 자료:**
-{evidence_text[:3000]}  # 너무 길면 잘라냄
+{evidence_text[:3000]}
 
 위 정보를 바탕으로 다음을 작성해주세요:
 
