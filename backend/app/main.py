@@ -1,6 +1,8 @@
 import logging
-from fastapi import FastAPI
+import os
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from tool.database import SessionLocal, init_db
 from sqlalchemy import text
 from app.models.user import User  # User 모델 import
@@ -32,6 +34,14 @@ app.add_middleware(
 # v1 API 라우터 포함
 from app.api.v1 import router as v1_router
 app.include_router(v1_router, prefix="/api/v1")
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger = logging.getLogger(__name__)
+    logger.error(f"Unhandled error: {exc}", exc_info=True)
+    debug = os.getenv("DEBUG", "").lower() in ("true", "1", "yes")
+    detail = str(exc) if debug else "Internal server error"
+    return JSONResponse(status_code=500, content={"detail": detail})
 
 @app.get("/")
 async def root():

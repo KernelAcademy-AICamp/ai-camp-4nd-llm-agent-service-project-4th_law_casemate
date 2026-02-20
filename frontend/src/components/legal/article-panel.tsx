@@ -1,6 +1,5 @@
-"use client";
-
 import { useState, useEffect } from "react";
+import { apiFetch } from "@/lib/api";
 import { Loader2, X, Search } from "lucide-react";
 
 interface ArticleData {
@@ -62,7 +61,7 @@ function DirectArticleCard({
       setLoading(true);
       setError(null);
       try {
-        const response = await fetch("/api/v1/laws/article", {
+        const response = await apiFetch("/api/v1/laws/article", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -131,7 +130,7 @@ function SearchTermCard({
       setLoading(true);
       setError(null);
       try {
-        const response = await fetch("/api/v1/laws/search-term", {
+        const response = await apiFetch("/api/v1/laws/search-term", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ term: searchTerm, limit: 3 }),

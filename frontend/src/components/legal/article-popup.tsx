@@ -1,6 +1,5 @@
-"use client";
-
 import React, { useState, useEffect, useRef } from "react";
+import { apiFetch } from "@/lib/api";
 import { Loader2, X } from "lucide-react";
 
 interface ArticleData {
@@ -82,7 +81,7 @@ export function ArticleLink({
       setError(null);
 
       try {
-        const response = await fetch("/api/v1/laws/article", {
+        const response = await apiFetch("/api/v1/laws/article", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
