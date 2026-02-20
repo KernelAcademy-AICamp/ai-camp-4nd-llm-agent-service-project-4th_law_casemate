@@ -823,7 +823,7 @@ export function CaseDetailPage({
   useEffect(() => {
     const hasOverviewData = overviewData.summary || overviewData.facts || overviewData.claims;
     if (caseData && hasOverviewData) {
-      fetchSimilarCases(); // TODO: Qdrant 설정 후 활성화
+      fetchSimilarCases();
     }
   }, [caseData, overviewData.summary, overviewData.facts, overviewData.claims, fetchSimilarCases]);
 
@@ -2069,10 +2069,10 @@ export function CaseDetailPage({
               {/* 드래그&드롭 / 클릭 업로드 영역 */}
               <div
                 className={`flex items-center justify-center gap-2 rounded-lg border-2 border-dashed py-4 text-sm transition-colors ${isUploading
-                    ? 'border-primary/30 bg-primary/5 text-primary cursor-wait'
-                    : isDragOver
-                      ? 'border-primary bg-primary/5 text-primary cursor-copy'
-                      : 'border-border/60 text-muted-foreground hover:border-primary/40 hover:bg-primary/5 cursor-pointer'
+                  ? 'border-primary/30 bg-primary/5 text-primary cursor-wait'
+                  : isDragOver
+                    ? 'border-primary bg-primary/5 text-primary cursor-copy'
+                    : 'border-border/60 text-muted-foreground hover:border-primary/40 hover:bg-primary/5 cursor-pointer'
                   }`}
                 onClick={() => !isUploading && evidenceFileInputRef.current?.click()}
               >

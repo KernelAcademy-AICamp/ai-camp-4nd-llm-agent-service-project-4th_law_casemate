@@ -269,6 +269,12 @@ class LawAPIClient:
         import re
 
         try:
+            # 법령명 정제: 장(章) 정보 제거
+            # 예: "노동조합 및 노동관계조정법 제4장 쟁의행위" → "노동조합 및 노동관계조정법"
+            law_name_clean = re.sub(r'\s*제\d+장[^제]*$', '', law_name).strip()
+            if law_name_clean != law_name:
+                print(f"법령명 정제: {law_name} → {law_name_clean}")
+                law_name = law_name_clean
             # 1. 법령명으로 검색
             search_result = await self.search_laws(query=law_name, display=10)
 

@@ -20,23 +20,27 @@ export interface SimilarCaseResult {
   score: number;
 }
 
+// 파싱 결과 타입 (텍스트 기반)
+export interface ParsedComparison {
+  case_overview: string;
+  precedent_summary: string;
+  similarities: string;
+  differences: string;
+  strategy_points: string;
+}
+
 // 비교 분석 결과 타입
 export interface ComparisonResult {
   success: boolean;
   analysis: string;
-  parsed: {
-    case_overview: string;
-    precedent_summary: string;
-    similarities: string;
-    differences: string;
-    strategy_points: string;
-  };
+  parsed: ParsedComparison;
   precedent_info: {
     case_number: string;
     case_name: string;
     court_name: string;
     judgment_date: string;
   };
+  prompt_version?: string;
   elapsed_time: number;
   error?: string;
 }

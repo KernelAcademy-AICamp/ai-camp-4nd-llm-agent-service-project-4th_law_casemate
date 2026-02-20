@@ -1,6 +1,6 @@
 """
 판례 검색 서비스
-4단계 검색: 전체 문구 일치 → AND → OR → 하이브리드
+Prefetch + RRF 1회 호출 + Python 우선순위 부스팅
 """
 
 import re
@@ -11,24 +11,23 @@ from qdrant_client.http import models
 
 from app.services.precedent_embedding_service import PrecedentEmbeddingService
 from app.services.precedent_repository import PrecedentRepository, SearchResult
+from app.config import CollectionConfig
 
 logger = logging.getLogger(__name__)
 
 
 class PrecedentSearchService:
-    """판례 4단계 검색 서비스"""
+    """판례 검색 서비스 (Prefetch + RRF + Python 부스팅)"""
 
-    CASES_COLLECTION = "precedents"
+    @property
+    def CASES_COLLECTION(self) -> str:
+        """설정에 따른 컬렉션 이름 반환"""
+        return CollectionConfig.get_precedents_collection()
 
     # 사건번호 패턴
     CASE_NUMBER_PATTERN = re.compile(r'(\d{2,4}[가-힣]{1,2}\d+)')
 
-    # 하이브리드 검색 가중치
-    DENSE_WEIGHT = 0.3
-    SPARSE_WEIGHT = 0.7
-    MIN_SCORE_THRESHOLD = 0.3
-
-    # 섹션 가중치 (하이브리드 검색용)
+    # 섹션 가중치
     SECTION_WEIGHTS = {"판시사항": 1.3, "판결요지": 1.3, "사건명": 1.2}
     DEFAULT_SECTION_WEIGHT = 1.0
 
@@ -129,6 +128,47 @@ class PrecedentSearchService:
     def __init__(self):
         self.embedding_service = PrecedentEmbeddingService()
         self.repository = PrecedentRepository()
+        # 양방향 동의어 사전 구축
+        self.bidirectional_synonyms = self._build_bidirectional_synonyms()
+
+    def _build_bidirectional_synonyms(self) -> Dict[str, List[str]]:
+        """단방향 SYNONYM_MAP을 양방향으로 확장"""
+        result = {}
+
+        # 1. 기존 매핑 복사 (일상어 → 법률용어)
+        for key, values in self.SYNONYM_MAP.items():
+            if key not in result:
+                result[key] = []
+            result[key].extend(v for v in values if v not in result[key])
+
+        # 2. 역방향 매핑 추가 (법률용어 → 일상어)
+        for key, values in self.SYNONYM_MAP.items():
+            for value in values:
+                if value not in result:
+                    result[value] = []
+                if key not in result[value]:
+                    result[value].append(key)
+
+        # 3. 같은 그룹 내 상호 연결 (카카오톡 ↔ 카톡)
+        # 같은 values를 공유하는 키들을 서로 연결
+        value_to_keys: Dict[str, List[str]] = {}
+        for key, values in self.SYNONYM_MAP.items():
+            for value in values:
+                if value not in value_to_keys:
+                    value_to_keys[value] = []
+                if key not in value_to_keys[value]:
+                    value_to_keys[value].append(key)
+
+        for keys_group in value_to_keys.values():
+            if len(keys_group) > 1:
+                for key in keys_group:
+                    for other_key in keys_group:
+                        if key != other_key and other_key not in result.get(key, []):
+                            if key not in result:
+                                result[key] = []
+                            result[key].append(other_key)
+
+        return result
 
     # ==================== 유틸리티 ====================
 
@@ -137,12 +177,12 @@ class PrecedentSearchService:
         return [w for w in query.split() if len(w) >= 2 and w not in self.STOPWORDS]
 
     def _expand_query(self, query: str) -> str:
-        """동의어 사전으로 쿼리 확장"""
+        """양방향 동의어 사전으로 쿼리 확장"""
         words = query.split()
         expanded = list(words)
         for word in words:
-            if word in self.SYNONYM_MAP:
-                expanded.extend(s for s in self.SYNONYM_MAP[word] if s not in expanded)
+            if word in self.bidirectional_synonyms:
+                expanded.extend(s for s in self.bidirectional_synonyms[word] if s not in expanded)
         return " ".join(expanded)
 
     def _is_case_number(self, query: str) -> bool:
@@ -230,6 +270,7 @@ class PrecedentSearchService:
     ) -> Dict[str, Dict[str, Any]]:
         """
         필터 조건으로 scroll 검색 후 사건번호별 중복 제거
+        메타데이터는 PostgreSQL에서 조회
 
         Returns:
             {case_number: {case_name, court_name, judgment_date, content}}
@@ -244,17 +285,26 @@ class PrecedentSearchService:
             with_vectors=False,
         )
 
-        case_data = {}
+        # Qdrant에서 case_number만 추출
+        case_numbers = []
         for point in results[0]:
             payload = point.payload
             case_num = payload.get("case_number", "")
-            if case_num and case_num not in case_data and case_num not in exclude:
-                case_data[case_num] = {
-                    "case_name": payload.get("case_name", ""),
-                    "court_name": payload.get("court_name", ""),
-                    "judgment_date": payload.get("judgment_date", ""),
-                    "content": payload.get("content", ""),
-                }
+            if case_num and case_num not in case_numbers and case_num not in exclude:
+                case_numbers.append(case_num)
+
+        # PostgreSQL에서 메타데이터 일괄 조회
+        metadata_batch = self.repository.get_metadata_batch(case_numbers) if case_numbers else {}
+
+        case_data = {}
+        for case_num in case_numbers:
+            meta = metadata_batch.get(case_num, {})
+            case_data[case_num] = {
+                "case_name": meta.get("case_name", ""),
+                "court_name": meta.get("court_name", ""),
+                "judgment_date": meta.get("judgment_date", ""),
+                "content": "",  # 전문은 별도 조회
+            }
         return case_data
 
     def _to_search_results(
@@ -278,90 +328,6 @@ class PrecedentSearchService:
             for case_num, data in case_data.items()
         ]
         return results[:limit]
-
-    def _search_bm25(
-        self,
-        query: str,
-        limit: int,
-        exclude: Set[str],
-        filters: Optional[Dict[str, str]] = None,
-        text_filter: Optional[models.Filter] = None
-    ) -> List[SearchResult]:
-        """
-        BM25 스코어 기반 검색
-
-        Args:
-            query: 검색 쿼리
-            limit: 결과 개수
-            exclude: 제외할 사건번호
-            filters: 필터 조건 (법원, 사건종류, 기간)
-            text_filter: 텍스트 매칭 필터 (must 또는 should)
-
-        Returns:
-            BM25 점수순 정렬된 SearchResult 리스트
-        """
-        # sparse 임베딩 생성 (BM25)
-        sparse_vec = self.embedding_service.create_sparse(query)
-
-        # 기본 필터 조건 생성 (법원, 사건종류, 기간)
-        base_filter = self._build_filter(filters)
-
-        # 텍스트 필터와 기본 필터 병합
-        if text_filter and base_filter:
-            # text_filter의 must/should 유지하면서 base_filter 추가
-            must_conditions = list(text_filter.must or [])
-            must_conditions.append(base_filter)
-            query_filter = models.Filter(
-                must=must_conditions if must_conditions else None,
-                should=text_filter.should
-            )
-        elif text_filter:
-            query_filter = text_filter
-        else:
-            query_filter = base_filter
-
-        # BM25 검색 (sparse vector)
-        results = self.repository.qdrant_client.query_points(
-            collection_name=self.CASES_COLLECTION,
-            query=sparse_vec,
-            using="sparse",
-            limit=limit * 5,  # 중복 제거 고려
-            query_filter=query_filter,
-            with_payload=True,
-        )
-
-        # 사건번호별 중복 제거 및 점수 유지
-        case_data = {}
-        for point in results.points:
-            payload = point.payload
-            case_num = payload.get("case_number", "")
-            if case_num and case_num not in case_data and case_num not in exclude:
-                case_data[case_num] = {
-                    "case_name": payload.get("case_name", ""),
-                    "court_name": payload.get("court_name", ""),
-                    "judgment_date": payload.get("judgment_date", ""),
-                    "content": payload.get("content", ""),
-                    "score": point.score,  # BM25 점수 보존
-                }
-
-        # SearchResult 변환 (점수순 정렬)
-        search_results = [
-            SearchResult(
-                case_number=case_num,
-                case_name=data["case_name"],
-                court_name=data["court_name"],
-                judgment_date=data["judgment_date"],
-                content=data["content"],
-                section="BM25",
-                score=data["score"],
-            )
-            for case_num, data in case_data.items()
-        ]
-
-        # 점수 내림차순 정렬
-        search_results.sort(key=lambda r: r.score, reverse=True)
-
-        return search_results[:limit]
 
     # ==================== 사건번호 검색 ====================
 
@@ -392,174 +358,6 @@ class PrecedentSearchService:
             "results": [r.to_dict() for r in results]
         }
 
-    # ==================== 4단계 검색 ====================
-
-    def _search_exact_phrase(
-        self, query: str, limit: int, exclude: Set[str], filters: Optional[Dict[str, str]] = None
-    ) -> List[SearchResult]:
-        """1순위: 전체 문구 일치 + BM25 스코어 정렬"""
-        # 전체 문구 포함 필수 조건
-        must_filter = models.Filter(
-            must=[models.FieldCondition(key="content", match=models.MatchText(text=query))]
-        )
-        results = self._search_bm25(query, limit, exclude, filters, text_filter=must_filter)
-        logger.info(f"1순위 전체일치 (BM25): '{query}' → {len(results)}건")
-        return results
-
-    def _search_keywords_and(
-        self, keywords: List[str], limit: int, exclude: Set[str], filters: Optional[Dict[str, str]] = None
-    ) -> List[SearchResult]:
-        """2순위: 키워드 AND (모두 포함) + BM25 스코어 정렬"""
-        if len(keywords) < 2:
-            return []
-
-        # 모든 키워드 포함 필수 조건
-        must_filter = models.Filter(
-            must=[models.FieldCondition(key="content", match=models.MatchText(text=kw)) for kw in keywords]
-        )
-        query_text = " ".join(keywords)
-        results = self._search_bm25(query_text, limit, exclude, filters, text_filter=must_filter)
-        logger.info(f"2순위 AND (BM25): {keywords} → {len(results)}건")
-        return results
-
-    def _search_keywords_or(
-        self, keywords: List[str], limit: int, exclude: Set[str], filters: Optional[Dict[str, str]] = None
-    ) -> List[SearchResult]:
-        """3순위: 키워드 OR (하나라도 포함) + BM25 스코어 정렬"""
-        if not keywords:
-            return []
-
-        # 키워드 중 하나라도 포함 조건
-        should_filter = models.Filter(
-            should=[models.FieldCondition(key="content", match=models.MatchText(text=kw)) for kw in keywords]
-        )
-        query_text = " ".join(keywords)
-        results = self._search_bm25(query_text, limit, exclude, filters, text_filter=should_filter)
-        logger.info(f"3순위 OR (BM25): {keywords} → {len(results)}건")
-        return results
-
-    def _search_hybrid(
-        self, query: str, limit: int, exclude: Set[str], merge_chunks: bool, filters: Optional[Dict[str, str]] = None
-    ) -> List[SearchResult]:
-        """4순위: 동의어 확장 + 하이브리드 검색"""
-        expanded = self._expand_query(query)
-        logger.info(f"4순위 하이브리드: '{expanded}'")
-
-        dense_vec, sparse_vec = self.embedding_service.create_both_parallel(expanded)
-        search_limit = limit * 5 if merge_chunks else limit
-
-        # 필터 조건 생성
-        query_filter = self._build_filter(filters)
-
-        dense_results = self.repository.qdrant_client.query_points(
-            collection_name=self.CASES_COLLECTION,
-            query=dense_vec, using="dense", limit=search_limit,
-            query_filter=query_filter,
-        )
-        sparse_results = self.repository.qdrant_client.query_points(
-            collection_name=self.CASES_COLLECTION,
-            query=sparse_vec, using="sparse", limit=search_limit,
-            query_filter=query_filter,
-        )
-
-        # 점수 결합
-        combined = self._combine_scores(dense_results.points, sparse_results.points)
-
-        # SearchResult 변환
-        results = [
-            SearchResult(
-                case_number=data["payload"].get("case_number", ""),
-                case_name=data["payload"].get("case_name", ""),
-                court_name=data["payload"].get("court_name", ""),
-                judgment_date=data["payload"].get("judgment_date", ""),
-                content=data["payload"].get("content", ""),
-                section="하이브리드",
-                score=data["score"],
-            )
-            for data in combined
-            if data["payload"].get("case_number", "") not in exclude
-        ]
-
-        if merge_chunks:
-            results = self._merge_case_chunks(results)
-
-        return results[:limit]
-
-    def _combine_scores(self, dense_points: List, sparse_points: List) -> List[Dict[str, Any]]:
-        """Dense + Sparse 점수 결합"""
-        combined = {}
-
-        # 정규화용 min/range 계산
-        def get_range(points):
-            if not points:
-                return 0.0, 1.0
-            scores = [p.score for p in points]
-            s_min, s_max = min(scores), max(scores)
-            return s_min, (s_max - s_min) if s_max != s_min else 1.0
-
-        d_min, d_range = get_range(dense_points)
-        s_min, s_range = get_range(sparse_points)
-
-        for point in dense_points:
-            pid = str(point.id)
-            norm = (point.score - d_min) / d_range
-            section = point.payload.get("section", "")
-            weight = self.SECTION_WEIGHTS.get(section, self.DEFAULT_SECTION_WEIGHT)
-            combined[pid] = {
-                "score": norm * self.DENSE_WEIGHT * weight,
-                "payload": point.payload,
-            }
-
-        for point in sparse_points:
-            pid = str(point.id)
-            norm = (point.score - s_min) / s_range
-            section = point.payload.get("section", "")
-            weight = self.SECTION_WEIGHTS.get(section, self.DEFAULT_SECTION_WEIGHT)
-            score = norm * self.SPARSE_WEIGHT * weight
-            if pid in combined:
-                combined[pid]["score"] += score
-            else:
-                combined[pid] = {"score": score, "payload": point.payload}
-
-        # 정렬 및 필터링
-        return sorted(
-            [v for v in combined.values() if v["score"] >= self.MIN_SCORE_THRESHOLD],
-            key=lambda x: x["score"],
-            reverse=True
-        )
-
-    def _merge_case_chunks(self, results: List[SearchResult]) -> List[SearchResult]:
-        """같은 판례의 청크 병합"""
-        case_data = {}
-        for r in results:
-            if r.case_number not in case_data:
-                case_data[r.case_number] = {
-                    "score": r.score,
-                    "case_name": r.case_name,
-                    "court_name": r.court_name,
-                    "judgment_date": r.judgment_date,
-                    "contents": [],
-                }
-            else:
-                case_data[r.case_number]["score"] = max(case_data[r.case_number]["score"], r.score)
-            if r.content and r.content not in case_data[r.case_number]["contents"]:
-                case_data[r.case_number]["contents"].append(r.content)
-
-        merged = [
-            SearchResult(
-                case_number=cn,
-                case_name=d["case_name"],
-                court_name=d["court_name"],
-                judgment_date=d["judgment_date"],
-                content="\n\n".join(d["contents"]),
-                section="전문",
-                score=d["score"],
-            )
-            for cn, d in case_data.items()
-        ]
-        merged.sort(key=lambda x: x.score, reverse=True)
-        return merged
-
     # ==================== 메인 검색 ====================
 
     def search_cases(
@@ -572,12 +370,13 @@ class PrecedentSearchService:
         filters: Optional[Dict[str, str]] = None
     ) -> Dict[str, Any]:
         """
-        판례 4단계 검색 (페이지네이션 지원)
+        판례 검색 (Prefetch + RRF 1회 호출 + Python 우선순위 부스팅)
 
-        1순위: 전체 문구 일치 ("직장 내 괴롭힘")
-        2순위: 키워드 AND ("직장" AND "괴롭힘")
-        3순위: 키워드 OR ("직장" OR "괴롭힘")
-        4순위: 동의어 확장 + 하이브리드 검색
+        우선순위 부스팅:
+        - 전체 문구 일치 → 3배 부스트
+        - 키워드 전부 포함 → 2배 부스트
+        - 키워드 일부 포함 → 1.5배 부스트
+        - 섹션 가중치 적용 (판시사항, 판결요지 등)
 
         Args:
             limit: 반환할 결과 수
@@ -592,38 +391,84 @@ class PrecedentSearchService:
             return self._search_by_case_number(query, limit)
 
         keywords = self._extract_keywords(query)
-        logger.info(f"검색어: '{query}' → 키워드: {keywords}, 필터: {filters}, offset: {offset}, sort: {sort}")
+        expanded_query = self._expand_query(query)
+        logger.info(f"검색어: '{query}' → 키워드: {keywords}, 확장: '{expanded_query}', 필터: {filters}")
 
+        # 임베딩 생성 (확장된 쿼리 사용)
+        dense_vec, sparse_vec = self.embedding_service.create_both_parallel(expanded_query)
+        query_filter = self._build_filter(filters)
+
+        # offset + limit + 1 만큼 검색 (has_more 판단용, 중복 제거 고려해 여유있게)
+        internal_limit = (offset + limit + 1) * 3
+
+        # ★ Qdrant API 1회: Prefetch + RRF Fusion
+        results = self.repository.qdrant_client.query_points(
+            collection_name=self.CASES_COLLECTION,
+            prefetch=[
+                models.Prefetch(query=dense_vec, using="dense", limit=internal_limit),
+                models.Prefetch(query=sparse_vec, using="sparse", limit=internal_limit),
+            ],
+            query=models.FusionQuery(fusion=models.Fusion.RRF),
+            query_filter=query_filter,
+            limit=internal_limit,
+            with_payload=["case_number", "section"],  # 최소 payload만 요청
+        )
+
+        # 사건번호별 중복 제거 (섹션 가중치만 적용)
         found: Set[str] = set()
+        temp_results: List[tuple] = []  # (case_number, section, score)
+
+        for point in results.points:
+            payload = point.payload
+            case_num = payload.get("case_number", "")
+            section = payload.get("section", "")
+            score = point.score
+
+            # 섹션 가중치
+            score *= self.SECTION_WEIGHTS.get(section, self.DEFAULT_SECTION_WEIGHT)
+
+            if case_num and case_num not in found:
+                found.add(case_num)
+                temp_results.append((case_num, section, score))
+
+        # 점수순 재정렬
+        temp_results.sort(key=lambda x: x[2], reverse=True)
+
+        # PostgreSQL에서 메타데이터 + 전문 일괄 조회
+        case_numbers = [r[0] for r in temp_results]
+        metadata_batch = self.repository.get_metadata_batch(case_numbers) if case_numbers else {}
+
+        # ★ Python 우선순위 부스팅 (PostgreSQL 전문 기반)
         all_results: List[SearchResult] = []
+        for case_num, section, score in temp_results:
+            meta = metadata_batch.get(case_num, {})
+            full_content = meta.get("full_content", "")
 
-        # offset + limit + 1 만큼 검색 (has_more 판단용)
-        internal_limit = offset + limit + 1
+            # 우선순위 부스팅 (전문에서 키워드 매칭)
+            if query in full_content:
+                score *= 10.0  # 전체 문구 일치
+            elif keywords and all(kw in full_content for kw in keywords):
+                score *= 5.0  # 키워드 전부 포함
+            elif keywords and any(kw in full_content for kw in keywords):
+                score *= 3.0  # 키워드 일부 포함
 
-        def add_results(results: List[SearchResult]):
-            for r in results:
-                if r.case_number not in found:
-                    found.add(r.case_number)
-                    all_results.append(r)
+            # 미리보기 생성 (검색어 주변 텍스트)
+            preview = self.repository.extract_preview(full_content, query)
 
-        # 1순위: 전체 문구 일치
-        add_results(self._search_exact_phrase(query, internal_limit, found, filters))
+            all_results.append(SearchResult(
+                case_number=case_num,
+                case_name=meta.get("case_name", ""),
+                court_name=meta.get("court_name", ""),
+                judgment_date=meta.get("judgment_date", ""),
+                content=preview,
+                section=section,
+                score=score,
+            ))
 
-        # 2순위: 키워드 AND
-        if len(keywords) >= 2 and len(all_results) < internal_limit:
-            add_results(self._search_keywords_and(keywords, internal_limit, found, filters))
+        # 부스팅 후 재정렬
+        all_results.sort(key=lambda r: r.score, reverse=True)
 
-        # 3순위: 키워드 OR
-        if keywords and len(all_results) < internal_limit:
-            add_results(self._search_keywords_or(keywords, internal_limit, found, filters))
-
-        # 4순위: 하이브리드 (결과 부족 시)
-        expanded_query = None
-        if len(all_results) < internal_limit:
-            expanded_query = self._expand_query(query)
-            add_results(self._search_hybrid(query, internal_limit, found, merge_chunks, filters))
-
-        # 최신순 정렬 (judgment_date 기준 내림차순)
+        # 최신순 정렬 (요청 시)
         if sort == "latest":
             all_results.sort(key=lambda r: r.judgment_date or "", reverse=True)
 
@@ -635,7 +480,7 @@ class PrecedentSearchService:
         return {
             "query": query,
             "keywords": keywords,
-            "expanded_query": expanded_query if expanded_query and expanded_query != query else None,
+            "expanded_query": expanded_query if expanded_query != query else None,
             "filters": filters,
             "sort": sort,
             "total": len(paginated_results),

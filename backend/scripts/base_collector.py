@@ -14,6 +14,7 @@ import hashlib
 import time
 import re
 import asyncio
+import openai
 from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Set, Tuple
@@ -417,32 +418,35 @@ class BaseCaseCollector:
             batch = chunks[i:i + batch_size]
             texts = [c.get('content', '') for c in batch]
 
-            try:
-                # Dense 임베딩 (OpenAI)
-                response = self.openai_client.embeddings.create(
-                    model=EmbeddingConfig.CHUNK_MODEL,
-                    input=texts
-                )
+            for attempt in range(3):
+                try:
+                    # Dense 임베딩 (OpenAI)
+                    response = self.openai_client.embeddings.create(
+                        model=EmbeddingConfig.CHUNK_MODEL,
+                        input=texts
+                    )
 
-                # Sparse 임베딩 (BM25)
-                sparse_embeddings = list(self.sparse_model.embed(texts))
+                    # Sparse 임베딩 (BM25)
+                    sparse_embeddings = list(self.sparse_model.embed(texts))
 
-                for j, chunk in enumerate(batch):
-                    chunk_with_vector = chunk.copy()
-                    chunk_with_vector["dense_vector"] = response.data[j].embedding
+                    for j, chunk in enumerate(batch):
+                        chunk_with_vector = chunk.copy()
+                        chunk_with_vector["dense_vector"] = response.data[j].embedding
 
-                    sparse_emb = sparse_embeddings[j]
-                    chunk_with_vector["sparse_vector"] = {
-                        "indices": sparse_emb.indices.tolist(),
-                        "values": sparse_emb.values.tolist(),
-                    }
-                    results.append(chunk_with_vector)
+                        sparse_emb = sparse_embeddings[j]
+                        chunk_with_vector["sparse_vector"] = {
+                            "indices": sparse_emb.indices.tolist(),
+                            "values": sparse_emb.values.tolist(),
+                        }
+                        results.append(chunk_with_vector)
+                    break  # 성공 시 루프 탈출
 
-            except Exception as e:
-                print(f"    - 임베딩 생성 실패: {e}")
-                continue
-
-            time.sleep(1)
+                except openai.RateLimitError:
+                    print(f"    - Rate limit 도달, 5초 대기 후 재시도 ({attempt + 1}/3)")
+                    time.sleep(5)
+                except Exception as e:
+                    print(f"    - 임베딩 생성 실패: {e}")
+                    break
 
         return results
 
