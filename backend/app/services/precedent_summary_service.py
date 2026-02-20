@@ -7,13 +7,12 @@ import re
 import time
 import logging
 from typing import Optional, Dict, Any
-from qdrant_client.http import models
 
-from tool.qdrant_client import QdrantService
 from app.prompts.summary_prompt import SUMMARY_SYSTEM_PROMPT, PROMPT_VERSION
-from app.services.precedent_embedding_service import get_openai_client, get_sparse_model
+from app.services.precedent_embedding_service import get_openai_client
 from app.services.precedent_summary_validator import get_validator, get_flag_manager, ValidationResult
-from app.config import EmbeddingConfig
+from tool.database import SessionLocal
+from app.models.precedent import PrecedentSummary
 
 logger = logging.getLogger(__name__)
 
@@ -21,15 +20,11 @@ logger = logging.getLogger(__name__)
 class SummaryService:
     """판례 요약 서비스"""
 
-    SUMMARIES_COLLECTION = "precedent_summaries"
-
     # 긴 판례 기준 (청크 개수 대신 문자 수로 판단)
     LONG_CONTENT_THRESHOLD = 30000  # 약 300청크 * 100자
 
     def __init__(self):
         self.openai_client = get_openai_client()  # 싱글톤
-        self.sparse_model = get_sparse_model()    # 싱글톤
-        self.qdrant_service = QdrantService()     # 내부에서 싱글톤 사용
 
     # ==================== 섹션 파싱 ====================
 
@@ -150,7 +145,7 @@ class SummaryService:
                     "content": f"다음 판례 내용을 요약해주세요:\n\n{summary_source}"
                 }
             ],
-            temperature=0.3,
+            temperature=0.1,
             max_tokens=1500,
         )
 
@@ -181,7 +176,7 @@ class SummaryService:
 
     def get_saved_summary(self, case_number: str) -> Optional[str]:
         """
-        저장된 요약 조회
+        저장된 요약 조회 (PostgreSQL)
 
         Args:
             case_number: 사건번호
@@ -190,24 +185,14 @@ class SummaryService:
             저장된 요약 텍스트, 없으면 None
         """
         try:
-            results = self.qdrant_service.client.scroll(
-                collection_name=self.SUMMARIES_COLLECTION,
-                scroll_filter=models.Filter(
-                    must=[
-                        models.FieldCondition(
-                            key="case_number",
-                            match=models.MatchValue(value=case_number)
-                        )
-                    ]
-                ),
-                limit=1,
-                with_payload=True,
-                with_vectors=False,
-            )
+            with SessionLocal() as db:
+                record = db.query(PrecedentSummary).filter(
+                    PrecedentSummary.case_number == case_number
+                ).first()
 
-            if results[0]:
-                return results[0][0].payload.get("summary")
-            return None
+                if record:
+                    return record.summary
+                return None
 
         except Exception as e:
             logger.error(f"요약 조회 실패: {e}")
@@ -220,48 +205,39 @@ class SummaryService:
         case_info: Dict[str, Any] = None,
     ) -> bool:
         """
-        생성된 요약을 Qdrant에 저장 (임베딩 포함)
+        생성된 요약을 PostgreSQL에 저장 (텍스트만, 임베딩 없음)
 
         Args:
             case_number: 사건번호
             summary: 요약 텍스트
-            case_info: 메타데이터 (case_name, court_name, judgment_date 등)
+            case_info: 메타데이터 (현재 미사용)
 
         Returns:
             저장 성공 여부
         """
         try:
-            case_info = case_info or {}
+            with SessionLocal() as db:
+                # 기존 레코드 확인
+                existing = db.query(PrecedentSummary).filter(
+                    PrecedentSummary.case_number == case_number
+                ).first()
 
-            # Dense 임베딩 생성 (text-embedding-3-large)
-            dense_resp = self.openai_client.embeddings.create(
-                model=EmbeddingConfig.SUMMARY_MODEL,
-                input=summary,
-            )
-            dense_vector = dense_resp.data[0].embedding
+                if existing:
+                    # 업데이트
+                    existing.summary = summary
+                    existing.prompt_version = PROMPT_VERSION
+                else:
+                    # 새로 생성
+                    new_record = PrecedentSummary(
+                        case_number=case_number,
+                        summary=summary,
+                        prompt_version=PROMPT_VERSION,
+                    )
+                    db.add(new_record)
 
-            # Sparse 임베딩 생성 (BM25)
-            sparse_emb = list(self.sparse_model.embed([summary]))[0]
-            sparse_vector = {
-                "indices": sparse_emb.indices.tolist(),
-                "values": sparse_emb.values.tolist(),
-            }
-
-            # Qdrant에 저장
-            saved = self.qdrant_service.save_summary(
-                case_number=case_number,
-                summary=summary,
-                prompt_version=PROMPT_VERSION,
-                dense_vector=dense_vector,
-                sparse_vector=sparse_vector,
-                case_name=case_info.get("case_name", ""),
-                court_name=case_info.get("court_name", ""),
-                judgment_date=case_info.get("judgment_date", ""),
-            )
-
-            if saved:
+                db.commit()
                 logger.info(f"요약 저장 완료: {case_number}")
-            return saved
+                return True
 
         except Exception as e:
             logger.error(f"요약 저장 실패 ({case_number}): {e}")

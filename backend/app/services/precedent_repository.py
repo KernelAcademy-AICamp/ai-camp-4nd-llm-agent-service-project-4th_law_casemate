@@ -12,6 +12,7 @@ from qdrant_client.http import models
 from tool.qdrant_client import get_qdrant_client
 from tool.database import SessionLocal
 from app.models.precedent import Precedent
+from app.config import CollectionConfig
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +47,10 @@ class SearchResult:
 class PrecedentRepository:
     """판례 데이터 저장소"""
 
-    CASES_COLLECTION = "precedents"
+    @property
+    def CASES_COLLECTION(self) -> str:
+        """설정에 따른 컬렉션 이름 반환"""
+        return CollectionConfig.get_precedents_collection()
 
     def __init__(self):
         self.qdrant_client = get_qdrant_client()

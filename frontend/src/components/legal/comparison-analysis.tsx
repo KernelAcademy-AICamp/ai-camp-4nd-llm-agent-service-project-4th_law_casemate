@@ -11,7 +11,10 @@ import {
   Gavel,
   type LucideIcon,
 } from "lucide-react";
-import { useSearch, type ComparisonResult } from "@/contexts/search-context";
+import {
+  useSearch,
+  type ComparisonResult,
+} from "@/contexts/search-context";
 import {
   AgentLoadingOverlay,
   type AgentStep,
@@ -144,10 +147,8 @@ export function ComparisonAnalysisContent({
   // 문장 단위로 분리 (줄바꿈 또는 마침표 기준)
   const parseToSentences = (text: string): string[] => {
     if (!text) return [];
-    // 먼저 줄바꿈으로 시도
     const byNewline = text.split("\n").map(line => line.trim()).filter(line => line.length > 0);
     if (byNewline.length > 1) return byNewline;
-    // 줄바꿈이 없으면 마침표로 분리
     return text
       .split(/(?<=[.!?])\s+/)
       .map(sentence => sentence.trim())
@@ -162,8 +163,34 @@ export function ComparisonAnalysisContent({
     );
   };
 
+  // 아이템 컴포넌트
+  const BulletItem = ({
+    text,
+    bulletColor,
+  }: {
+    text: string;
+    bulletColor: string;
+  }) => {
+    return (
+      <div className="flex items-start gap-2">
+        <div className={`w-1.5 h-1.5 rounded-full ${bulletColor} mt-2 shrink-0`} />
+        <p className="text-sm text-muted-foreground leading-relaxed">
+          {formatBoldText(text)}
+        </p>
+      </div>
+    );
+  };
+
   // 불렛 리스트 섹션 컴포넌트
-  const BulletSection = ({ title, icon: Icon, bgColor, iconColor, bulletColor, items, emptyMessage }: SectionConfig) => {
+  const BulletSection = ({
+    title,
+    icon: Icon,
+    bgColor,
+    iconColor,
+    bulletColor,
+    items,
+    emptyMessage,
+  }: SectionConfig) => {
     if (items.length === 0 && !emptyMessage) return null;
 
     return (
@@ -177,10 +204,11 @@ export function ComparisonAnalysisContent({
         <div className="pl-8 space-y-2">
           {items.length > 0 ? (
             items.map((item, idx) => (
-              <div key={idx} className="flex items-start gap-2">
-                <div className={`w-1.5 h-1.5 rounded-full ${bulletColor} mt-2 shrink-0`} />
-                <p className="text-sm text-muted-foreground leading-relaxed">{formatBoldText(item)}</p>
-              </div>
+              <BulletItem
+                key={idx}
+                text={item}
+                bulletColor={bulletColor}
+              />
             ))
           ) : (
             <p className="text-sm text-muted-foreground">{emptyMessage}</p>

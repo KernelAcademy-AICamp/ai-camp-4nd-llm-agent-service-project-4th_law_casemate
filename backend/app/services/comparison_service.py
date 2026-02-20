@@ -3,6 +3,7 @@
 현재 사건과 유사 판례를 비교하여 전략적 인사이트 제공 (RAG)
 """
 
+import re
 import time
 import logging
 from typing import Dict, Any, Optional
@@ -81,7 +82,8 @@ class ComparisonService:
                 "error": f"판례를 찾을 수 없습니다: {target_case_number}",
             }
 
-        # 2. 프롬프트 생성 (V2: 핵심 쟁점 키워드 중심 분석)
+        # 2. V2 프롬프트 생성
+        system_prompt = COMPARISON_SYSTEM_PROMPT_V2
         user_prompt = COMPARISON_USER_TEMPLATE_V2.format(
             origin_facts=origin_facts,
             origin_claims=origin_claims,
@@ -97,19 +99,20 @@ class ComparisonService:
             response = self.openai_client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
-                    {"role": "system", "content": COMPARISON_SYSTEM_PROMPT_V2},
+                    {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
-                temperature=0.3,
+                temperature=0.1,
                 max_tokens=2000,
             )
 
-            analysis = response.choices[0].message.content
+            raw_response = response.choices[0].message.content
 
             elapsed_time = time.time() - start_time
             logger.info(f"비교 분석 완료 - 소요 시간: {elapsed_time:.2f}초")
 
-            # 4. 결과 파싱 (섹션별 분리)
+            # 4. 결과 파싱
+            analysis = raw_response
             parsed = self._parse_analysis(analysis)
 
             return {

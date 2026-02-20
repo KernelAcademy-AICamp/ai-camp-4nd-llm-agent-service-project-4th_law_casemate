@@ -27,7 +27,7 @@ from qdrant_client.http import models
 
 from tool.qdrant_client import get_qdrant_client
 from app.services.precedent_embedding_service import (
-    create_dense_embedding_cached,
+    create_openai_embedding_cached,
     get_sparse_model,
     get_openai_client,
 )
@@ -260,7 +260,7 @@ JSON 형식으로만 출력하라:
 
     def _create_dense_embedding(self, text: str) -> List[float]:
         """Dense 임베딩 생성 (기존 캐싱 함수 재활용)"""
-        return list(create_dense_embedding_cached(text))
+        return list(create_openai_embedding_cached(text))
 
     def _create_sparse_embedding(self, text: str) -> models.SparseVector:
         """Sparse 임베딩 생성 (BM25)"""
@@ -476,6 +476,13 @@ JSON 형식으로만 출력하라:
             조문 정보 딕셔너리 또는 None
         """
         collection = self.COLLECTION
+
+        # 법령명 정제: 장(章) 정보 제거
+        # 예: "노동조합 및 노동관계조정법 제4장 쟁의행위" → "노동조합 및 노동관계조정법"
+        law_name_clean = re.sub(r'\s*제\d+장[^제]*$', '', law_name).strip()
+        if law_name_clean != law_name:
+            logger.info(f"법령명 정제: {law_name} → {law_name_clean}")
+            law_name = law_name_clean
 
         # 조문번호 정규화: "제70조의2" → "70의2", "307" → "307"
         article_num_match = re.match(r"제?(\d+)(?:조)?(?:의(\d+))?", article_number)

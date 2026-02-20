@@ -442,21 +442,15 @@ export function PrecedentDetailPage({ }: PrecedentDetailPageProps) {
           <ArrowLeft className="h-4 w-4 mr-2" />
           돌아가기
         </Button>
-        <div className="flex items-center gap-3">
-          <Badge variant="secondary" className="text-xs font-normal">
-            판례 정보
-          </Badge>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={toggleFavorite}
-            disabled={favoriteLoading}
-            className={`h-8 px-2 ${isFavorite ? "text-yellow-500 hover:text-yellow-600" : "text-muted-foreground hover:text-yellow-500"}`}
-          >
-            <Star className={`h-4 w-4 ${isFavorite ? "fill-current" : ""}`} />
-            <span className="ml-1 text-xs">{isFavorite ? "즐겨찾기됨" : "즐겨찾기"}</span>
-          </Button>
-        </div>
+        <Button
+          variant="ghost"
+          size="icon"
+          onClick={toggleFavorite}
+          disabled={favoriteLoading}
+          className={`h-8 w-8 ${isFavorite ? "text-yellow-500 hover:text-yellow-600" : "text-muted-foreground hover:text-yellow-500"}`}
+        >
+          <Star className={`h-5 w-5 ${isFavorite ? "fill-current" : ""}`} />
+        </Button>
       </div>
 
       {/* Title Section */}
@@ -536,10 +530,10 @@ export function PrecedentDetailPage({ }: PrecedentDetailPageProps) {
                                   // 참조판례 섹션: 사건번호를 링크로 변환
                                   renderWithCaseLinks(cleanedLine)
                                 ) : (
-                                  // 그 외 섹션: 기존 방식 (하이라이트)
+                                  // 그 외 섹션: 검색어 하이라이트
                                   <span
                                     dangerouslySetInnerHTML={{
-                                      __html: isFromSimilarCase ? cleanedLine : highlightKeywords(cleanedLine, searchQuery),
+                                      __html: highlightKeywords(cleanedLine, searchQuery),
                                     }}
                                   />
                                 )}

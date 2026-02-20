@@ -1,8 +1,8 @@
 """
 유사 판례 검색 서비스
-- precedents 컬렉션에서 청크 단위 검색
-- Dense 벡터 검색 + 키워드 필터 + 리랭킹
+- 2단계 검색: BM25 키워드 필터링 → Dense 의미 검색
 - 청크 → 판례 그룹핑
+- Cross-encoder 리랭킹
 - PostgreSQL에서 메타데이터/전문 조회
 """
 
@@ -11,17 +11,18 @@ import logging
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
 
-from qdrant_client.models import Filter, FieldCondition, MatchValue
 from qdrant_client.http import models
+from qdrant_client.models import Filter, FieldCondition, MatchAny
 
 from app.services.precedent_embedding_service import PrecedentEmbeddingService, get_openai_client
 from app.services.precedent_repository import PrecedentRepository
+from app.config import CollectionConfig
 from tool.qdrant_client import get_qdrant_client
-import re
 from app.prompts.query_transform_prompt import (
     QUERY_TRANSFORM_V5_SYSTEM,
     QUERY_TRANSFORM_V5_USER,
 )
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -64,14 +65,18 @@ class PrecedentSimilarService:
     """
     유사 판례 검색 서비스
 
-    - precedents 컬렉션의 청크 임베딩에서 직접 검색
-    - Dense 벡터 검색 + 키워드 필터
-    - 청크 → 판례 그룹핑
-    - 리랭킹으로 최종 순위 결정
+    검색 파이프라인:
+    1. GPT 쿼리 정제 + 키워드 추출
+    2. BM25로 키워드 매칭 판례 필터링
+    3. 필터링된 판례에서 Dense 검색
+    4. 청크 → 판례 그룹핑
+    5. Cross-encoder 리랭킹
     """
 
-    # 검색 대상 컬렉션
-    COLLECTION_PRECEDENTS = "precedents"
+    @property
+    def COLLECTION_PRECEDENTS(self) -> str:
+        """설정에 따른 컬렉션 이름 반환"""
+        return CollectionConfig.get_precedents_collection()
 
     # 검색/리랭킹 설정
     SEARCH_LIMIT = 50  # 각 검색(Dense/Sparse)에서 가져올 수
@@ -86,18 +91,21 @@ class PrecedentSimilarService:
         self.repository = PrecedentRepository()
         self.use_reranking = use_reranking
 
-    # ==================== 쿼리 정제 ====================
+    # ==================== 쿼리 정제 + 키워드 추출 ====================
 
-    def _transform_and_extract(self, user_query: str) -> Dict[str, Any]:
+    def _refine_and_extract(self, user_query: str) -> Dict[str, Any]:
         """
-        GPT를 사용해 쿼리 정제 + 키워드 추출을 한 번에 처리 (V5 프롬프트)
+        GPT를 사용해 쿼리 정제 + 키워드 추출 (V5 프롬프트)
+        - 고유명사 → 법률 주체 변환
+        - 플랫폼 일반화
+        - 법률 키워드 추출
 
         Returns:
             {"query": 정제된 쿼리, "keywords": [키워드 리스트]}
         """
         try:
             logger.info("=" * 60)
-            logger.info("[유사 판례 검색] 쿼리 정제 + 키워드 추출 (V5)")
+            logger.info("[유사 판례 검색] GPT 쿼리 정제 + 키워드 추출 (V5)")
             logger.info(f"[원본 쿼리]\n{user_query[:500]}...")
 
             response = self.openai_client.chat.completions.create(
@@ -138,7 +146,7 @@ class PrecedentSimilarService:
             }
 
         except Exception as e:
-            logger.error(f"쿼리 변환 실패: {e}, 최소 정제 적용")
+            logger.error(f"GPT 쿼리 정제 실패: {e}, 최소 정제 적용")
             return {
                 "query": self._minimal_clean(user_query),
                 "keywords": []
@@ -147,6 +155,7 @@ class PrecedentSimilarService:
     def _minimal_clean(self, text: str) -> str:
         """
         폴백용 최소 정제: 이름 패턴 제거
+        - GPT 호출 실패 시 사용
         """
         # 한글 이름 패턴 (2~4글자 + 조사/호칭)
         cleaned = re.sub(r'[가-힣]{2,4}(씨|님|가|이|은|는|을|를|에게|한테|의)\s?', '', text)
@@ -154,111 +163,134 @@ class PrecedentSimilarService:
         cleaned = re.sub(r'\s+', ' ', cleaned).strip()
         return cleaned[:500]
 
-    # 키워드별 검색 limit
-    SEARCH_PER_KEYWORD = 20
-    # PostgreSQL 키워드 검색 limit
-    KEYWORD_SEARCH_LIMIT = 300
+    # ==================== 2단계 검색: BM25 → Dense ====================
 
-    def _search_hybrid(self, query: str, keywords: List[str] = None) -> Dict[str, Dict[str, Any]]:
+    # BM25 선필터링 설정
+    SPARSE_SCORE_THRESHOLD = 0.5  # BM25 점수 하한값 (이 이상만 필터링)
+    SPARSE_MAX_LIMIT = 1000       # BM25 검색 최대 limit
+
+    def _search_sparse_filter(self, keywords: List[str]) -> set:
         """
-        PostgreSQL 키워드 검색 → Qdrant Dense 벡터 검색
+        1단계: BM25 (Sparse) 검색으로 키워드 매칭된 case_number 필터링
+        - 키워드별 개별 검색 후 결과 합치기
+        - 점수 하한값 이상인 모든 결과를 가져옴
 
-        1단계: PostgreSQL에서 키워드 포함된 판례 case_number 검색
-        2단계: 해당 case_number로 Qdrant Dense 벡터 검색 (의미 유사도)
+        Args:
+            keywords: 법률 키워드 리스트
+
+        Returns:
+            매칭된 case_number set
+        """
+        if not keywords:
+            logger.info("[BM25 필터] 키워드 없음, 필터링 스킵")
+            return set()
+
+        # 키워드별 개별 검색 후 결과 합치기
+        all_case_numbers = set()
+        keyword_results = {}
+
+        for keyword in keywords:
+            sparse_vec = self.embedding_service.create_sparse(keyword)
+
+            # BM25 검색 (하한값 이상 모두 가져오기)
+            results = self.qdrant_client.query_points(
+                collection_name=self.COLLECTION_PRECEDENTS,
+                query=sparse_vec,
+                using="sparse",
+                score_threshold=self.SPARSE_SCORE_THRESHOLD,
+                limit=self.SPARSE_MAX_LIMIT,
+                with_payload=["case_number"],
+            )
+
+            # case_number 추출
+            case_numbers = set()
+            for point in results.points:
+                case_number = point.payload.get("case_number", "")
+                if case_number:
+                    case_numbers.add(case_number)
+
+            keyword_results[keyword] = len(case_numbers)
+            all_case_numbers.update(case_numbers)
+
+        logger.info(f"[BM25 필터] 키워드별 매칭: {keyword_results}, 하한값: {self.SPARSE_SCORE_THRESHOLD}")
+        logger.info(f"[BM25 필터] 전체 합계: {len(all_case_numbers)}개 판례")
+        return all_case_numbers
+
+    def _search_dense_filtered(
+        self,
+        query: str,
+        case_numbers: set
+    ) -> Dict[str, Dict[str, Any]]:
+        """
+        2단계: 필터링된 case_number 내에서 Dense 검색
+
+        Args:
+            query: 정제된 쿼리
+            case_numbers: BM25로 필터링된 case_number set
 
         Returns:
             {chunk_id: {"score": float, "payload": dict}}
         """
-        chunk_scores = {}
+        dense_vec = self.embedding_service.create_dense(query)
 
-        # 섹션 필터 (전문 포함 - MatchText로 부분 매칭)
-        from qdrant_client.models import MatchText, MatchAny
-        section_filter = FieldCondition(key="section", match=MatchText(text="전문"))
-
-        if keywords:
-            # 1단계: PostgreSQL에서 키워드 포함된 case_number 검색 (매칭 수 내림차순)
-            keyword_results = self.repository.search_by_keywords_with_count(
-                keywords=keywords,
-                limit=self.KEYWORD_SEARCH_LIMIT
-            )
-            keyword_case_numbers = [case_number for case_number, _ in keyword_results]
-
-            if keyword_results:
-                top_matches = keyword_results[:5]
-                logger.info(f"[PostgreSQL 키워드 검색] {len(keywords)}개 키워드 → {len(keyword_case_numbers)}개 판례")
-                logger.info(f"[상위 매칭] {top_matches}")
-
-            if not keyword_case_numbers:
-                logger.info("[PostgreSQL 키워드 검색] 매칭된 판례 없음, 전체 검색으로 폴백")
-                # 키워드 매칭 없으면 키워드 없이 검색
-                return self._search_dense_only(query, section_filter)
-
-            # 2단계: 키워드별 개별 Dense 검색 (다양성 확보)
-            case_number_filter = FieldCondition(
-                key="case_number",
-                match=MatchAny(any=keyword_case_numbers)
+        # case_number 필터 생성
+        search_filter = None
+        if case_numbers:
+            search_filter = Filter(
+                must=[
+                    FieldCondition(
+                        key="case_number",
+                        match=MatchAny(any=list(case_numbers))
+                    )
+                ]
             )
 
-            combined_filter = Filter(must=[section_filter, case_number_filter])
-
-            for keyword in keywords:
-                # 키워드 포함 쿼리로 임베딩 생성
-                keyword_query = f"{query} {keyword}"
-                dense_vector = self.embedding_service.create_dense(keyword_query)
-
-                # Dense 벡터 검색 (case_number 필터 적용)
-                results = self.qdrant_client.query_points(
-                    collection_name=self.COLLECTION_PRECEDENTS,
-                    query=dense_vector,
-                    using="dense",
-                    query_filter=combined_filter,
-                    limit=self.SEARCH_PER_KEYWORD,
-                    with_payload=["case_number", "section"],
-                )
-
-                logger.info(f"[키워드 '{keyword}' Dense 검색] {len(results.points)}개 청크")
-
-                for point in results.points:
-                    chunk_id = str(point.id)
-                    # 중복 청크는 더 높은 점수로 유지
-                    if chunk_id not in chunk_scores or point.score > chunk_scores[chunk_id]["score"]:
-                        chunk_scores[chunk_id] = {
-                            "score": point.score,
-                            "payload": point.payload,
-                        }
-        else:
-            # 키워드 없으면 전체 쿼리로 Dense 검색
-            chunk_scores = self._search_dense_only(query, section_filter)
-
-        logger.info(f"[검색 완료] 총 {len(chunk_scores)}개 청크")
-        return chunk_scores
-
-    def _search_dense_only(
-        self,
-        query: str,
-        section_filter: FieldCondition
-    ) -> Dict[str, Dict[str, Any]]:
-        """
-        Dense 벡터만 사용한 검색 (키워드 필터 없음)
-        """
-        chunk_scores = {}
-        dense_vector = self.embedding_service.create_dense(query)
-
+        # Dense 검색 (필터 적용)
         results = self.qdrant_client.query_points(
             collection_name=self.COLLECTION_PRECEDENTS,
-            query=dense_vector,
+            query=dense_vec,
             using="dense",
-            query_filter=Filter(must=[section_filter]),
+            query_filter=search_filter,
             limit=self.SEARCH_LIMIT,
             with_payload=["case_number", "section"],
         )
 
+        chunk_scores = {}
         for point in results.points:
             chunk_id = str(point.id)
             chunk_scores[chunk_id] = {
                 "score": point.score,
                 "payload": point.payload,
             }
+
+        filter_info = f"필터: {len(case_numbers)}개 판례" if case_numbers else "필터 없음"
+        logger.info(f"[Dense 검색] {filter_info} → {len(chunk_scores)}개 청크")
+        return chunk_scores
+
+    def _search_two_stage(
+        self,
+        query: str,
+        keywords: List[str]
+    ) -> Dict[str, Dict[str, Any]]:
+        """
+        2단계 검색: BM25 필터링 → Dense 검색
+
+        Args:
+            query: 정제된 쿼리
+            keywords: 법률 키워드 리스트
+
+        Returns:
+            {chunk_id: {"score": float, "payload": dict}}
+        """
+        # 1단계: BM25로 키워드 매칭 판례 필터링
+        case_numbers = self._search_sparse_filter(keywords)
+
+        # 키워드 매칭 결과가 없으면 필터 없이 Dense 검색
+        if not case_numbers:
+            logger.info("[2단계 검색] BM25 매칭 없음, 전체 Dense 검색으로 폴백")
+
+        # 2단계: 필터링된 판례에서 Dense 검색
+        chunk_scores = self._search_dense_filtered(query, case_numbers)
 
         return chunk_scores
 
@@ -268,7 +300,6 @@ class PrecedentSimilarService:
         self,
         chunk_scores: Dict[str, Dict[str, Any]],
         exclude_case_number: Optional[str] = None,
-        keywords: List[str] = None,
         query: str = ""
     ) -> List[Dict[str, Any]]:
         """
@@ -276,7 +307,7 @@ class PrecedentSimilarService:
 
         - RRF 점수 기반 정렬
         - PostgreSQL에서 메타데이터 + 전문 조회
-        - 전문에서 키워드 매칭 및 미리보기 추출
+        - 미리보기 추출
         """
         cases = {}
 
@@ -292,13 +323,12 @@ class PrecedentSimilarService:
             if case_number not in cases:
                 cases[case_number] = {
                     "case_number": case_number,
-                    "case_name": "",  # PostgreSQL에서 채움
-                    "court_name": "",  # PostgreSQL에서 채움
-                    "judgment_date": "",  # PostgreSQL에서 채움
+                    "case_name": "",
+                    "court_name": "",
+                    "judgment_date": "",
                     "max_score": 0,
-                    "best_chunk": "",  # PostgreSQL에서 채움
+                    "best_chunk": "",
                     "chunk_count": 0,
-                    "matched_keywords": [],
                 }
 
             score = data["score"]
@@ -319,26 +349,12 @@ class PrecedentSimilarService:
                     case_data["court_name"] = meta.get("court_name", "")
                     case_data["judgment_date"] = meta.get("judgment_date", "")
 
-                    # 전문에서 키워드 매칭 확인
-                    full_content = meta.get("full_content", "")
-                    if keywords and full_content:
-                        matched = [kw for kw in keywords if kw in full_content]
-                        case_data["matched_keywords"] = matched
-
                     # 미리보기 추출 (검색어 주변 텍스트)
+                    full_content = meta.get("full_content", "")
                     if full_content:
                         case_data["best_chunk"] = self.repository.extract_preview(
                             full_content, query, context_chars=200
                         )
-
-        # 키워드 필터링: 키워드가 있는 경우, 하나라도 매칭된 결과만 포함
-        if keywords:
-            filtered_cases = {
-                cn: data for cn, data in cases.items()
-                if data["matched_keywords"]  # 키워드 매칭이 있는 경우만
-            }
-            logger.info(f"[키워드 필터링] {len(cases)}개 → {len(filtered_cases)}개 (키워드 매칭된 것만)")
-            cases = filtered_cases
 
         # max_score 기준 정렬
         sorted_cases = sorted(cases.values(), key=lambda x: x["max_score"], reverse=True)
@@ -346,9 +362,6 @@ class PrecedentSimilarService:
         return sorted_cases
 
     # ==================== 리랭킹 ====================
-
-    # 리랭킹에 사용할 청크 수
-    RERANK_CHUNKS = 3
 
     def _rerank(
         self,
@@ -375,22 +388,18 @@ class PrecedentSimilarService:
         # Cross-encoder로 점수 계산
         scores = reranker.predict(pairs)
 
-        # 키워드 가중치 적용하여 최종 점수 계산
-        scored_candidates = []
-        for candidate, rerank_score in zip(candidates, scores):
-            keyword_count = len(candidate.get("matched_keywords", []))
-            keyword_bonus = keyword_count * 0.1  # 키워드당 10% 보너스
-            final_score = float(rerank_score) * (1 + keyword_bonus)
-            scored_candidates.append((candidate, float(rerank_score), final_score))
-
-        # final_score로 정렬
-        scored_candidates.sort(key=lambda x: x[2], reverse=True)
+        # 점수 기준 정렬
+        scored_candidates = [
+            (candidate, float(score))
+            for candidate, score in zip(candidates, scores)
+        ]
+        scored_candidates.sort(key=lambda x: x[1], reverse=True)
 
         # 리랭크 점수 추가하여 반환
         reranked = []
-        for candidate, rerank_score, final_score in scored_candidates[:top_k]:
+        for candidate, rerank_score in scored_candidates[:top_k]:
             candidate["rerank_score"] = rerank_score
-            candidate["final_score"] = final_score
+            candidate["final_score"] = rerank_score  # 단순화: 리랭크 점수 = 최종 점수
             reranked.append(candidate)
 
         return reranked
@@ -404,7 +413,14 @@ class PrecedentSimilarService:
         limit: int = 5
     ) -> Dict[str, Any]:
         """
-        유사 판례 검색 (쿼리 정제 + Dense 검색 + 키워드 필터 + 리랭킹)
+        유사 판례 검색 (2단계: BM25 → Dense + 리랭킹)
+
+        검색 파이프라인:
+        1. GPT 쿼리 정제 + 키워드 추출
+        2. BM25로 키워드 매칭 판례 필터링
+        3. 필터링된 판례에서 Dense 검색
+        4. 청크 → 판례 그룹핑
+        5. Cross-encoder 리랭킹
 
         Args:
             query: 검색 쿼리
@@ -419,22 +435,22 @@ class PrecedentSimilarService:
 
         start_time = time.time()
 
-        # 1. 쿼리 정제 + 키워드 추출 (GPT 1회 호출)
+        # 1. GPT 쿼리 정제 + 키워드 추출 (V5 프롬프트)
         t1 = time.time()
-        transform_result = self._transform_and_extract(query)
-        transformed_query = transform_result["query"]
-        keywords = transform_result["keywords"]
-        logger.info(f"[시간] 1. 쿼리 정제: {time.time() - t1:.2f}초")
+        extract_result = self._refine_and_extract(query)
+        refined_query = extract_result["query"]
+        keywords = extract_result["keywords"]
+        logger.info(f"[시간] 1. 쿼리 정제 + 키워드 추출: {time.time() - t1:.2f}초")
 
-        # 2. Dense + Sparse (BM25) 하이브리드 검색
+        # 2. 2단계 검색: BM25 필터링 → Dense 검색
         t2 = time.time()
-        chunk_scores = self._search_hybrid(transformed_query, keywords)
-        logger.info(f"[시간] 2. 하이브리드 검색: {time.time() - t2:.2f}초")
+        chunk_scores = self._search_two_stage(refined_query, keywords)
+        logger.info(f"[시간] 2. 2단계 검색 (BM25→Dense): {time.time() - t2:.2f}초")
         logger.info(f"검색된 청크 수: {len(chunk_scores)}")
 
         # 3. 청크 → 판례 그룹핑 (PostgreSQL에서 메타데이터 + 미리보기)
         t3 = time.time()
-        grouped_cases = self._group_by_case(chunk_scores, exclude_case_number, keywords, transformed_query)
+        grouped_cases = self._group_by_case(chunk_scores, exclude_case_number, refined_query)
         logger.info(f"[시간] 3. 그룹핑: {time.time() - t3:.2f}초")
         logger.info(f"그룹핑된 판례 수: {len(grouped_cases)}")
 
@@ -442,20 +458,19 @@ class PrecedentSimilarService:
         if self.use_reranking and len(grouped_cases) > 0:
             top_candidates = grouped_cases[:self.RERANK_CANDIDATES]
 
-            # 리랭킹 후보 30개 로그
+            # 리랭킹 후보 로그
             candidates_info = [
                 {
                     "case": c["case_number"],
                     "score": round(c["max_score"], 4),
-                    "keywords": c.get("matched_keywords", []),
                 }
                 for c in top_candidates
             ]
             logger.info(f"[리랭킹 후보 {len(top_candidates)}개] {candidates_info}")
 
             t4 = time.time()
-            logger.info(f"[리랭킹 쿼리] {transformed_query[:100]}...")
-            final_cases = self._rerank(transformed_query, top_candidates, limit)
+            logger.info(f"[리랭킹 쿼리] {refined_query[:100]}...")
+            final_cases = self._rerank(refined_query, top_candidates, limit)
             logger.info(f"[시간] 4. 리랭킹: {time.time() - t4:.2f}초")
             logger.info(f"리랭킹 적용: {len(top_candidates)}개 후보 → {limit}개 선정")
         else:
@@ -478,11 +493,11 @@ class PrecedentSimilarService:
 
         # 디버그 정보
         debug_info = {
-            "transformed_query": transformed_query,
+            "refined_query": refined_query,
             "extracted_keywords": keywords,
             "use_reranking": self.use_reranking,
-            "search_method": "PostgreSQL keyword → Qdrant Dense",
-            "keyword_search_limit": self.KEYWORD_SEARCH_LIMIT,
+            "search_method": "2-Stage (BM25 Filter → Dense)",
+            "embedding_model": "KURE" if self.embedding_service.use_kure else "OpenAI",
             "total_chunks_matched": len(chunk_scores),
             "total_cases_matched": len(grouped_cases),
             "top_scores": [
@@ -490,9 +505,8 @@ class PrecedentSimilarService:
                     "case": c["case_number"],
                     "rerank": round(c.get("rerank_score", 0), 4) if self.use_reranking else None,
                     "final": round(c.get("final_score", 0), 4) if self.use_reranking else None,
-                    "hybrid_score": round(c["max_score"], 4),
+                    "dense_score": round(c["max_score"], 4),
                     "chunks": c["chunk_count"],
-                    "matched_keywords": c.get("matched_keywords", []),
                     "preview": c.get("best_chunk", "")[:100] + "...",
                 }
                 for c in final_cases
