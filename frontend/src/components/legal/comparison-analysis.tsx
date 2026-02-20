@@ -1,6 +1,5 @@
-"use client";
-
 import { useState, useEffect } from "react";
+import { apiFetch } from "@/lib/api";
 import {
   CheckCircle2,
   XCircle,
@@ -88,7 +87,7 @@ export function ComparisonAnalysisContent({
         const timer2 = setTimeout(() => setAgentSteps(prev => advanceStep(prev, 2)), 4000);
         const timer3 = setTimeout(() => setAgentSteps(prev => advanceStep(prev, 3)), 7000);
 
-        const response = await fetch("/api/v1/search/cases/compare", {
+        const response = await apiFetch("/api/v1/search/cases/compare", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",

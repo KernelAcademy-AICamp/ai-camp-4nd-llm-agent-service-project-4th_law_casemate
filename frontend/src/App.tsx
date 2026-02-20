@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { apiFetch } from '@/lib/api'
 import { MainLayout } from '@/components/legal/main-layout'
 import { AuthPage } from '@/components/legal/auth-page'
 import { HomePage } from '@/components/legal/pages/home-page'
@@ -33,11 +34,7 @@ function App() {
 
       try {
         // /api/v1/me 엔드포인트로 사용자 정보 가져오기
-        const response = await fetch('http://localhost:8000/api/v1/me', {
-          headers: {
-            'Authorization': `Bearer ${token}` // 토큰을 헤더에 담아 전송
-          }
-        })
+        const response = await apiFetch('/api/v1/me')
 
         if (response.ok) {
           const userData = await response.json()
@@ -72,11 +69,7 @@ function App() {
     if (!token) return
 
     try {
-      const response = await fetch('http://localhost:8000/api/v1/me', {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
-      })
+      const response = await apiFetch('/api/v1/me')
 
       if (response.ok) {
         const userData = await response.json()

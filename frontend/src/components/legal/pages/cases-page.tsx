@@ -1,6 +1,5 @@
-"use client";
-
 import { useNavigate } from "react-router-dom";
+import { apiFetch } from "@/lib/api";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -65,19 +64,7 @@ export function CasesPage() {
   useEffect(() => {
     const fetchCases = async () => {
       try {
-        const token = localStorage.getItem("access_token");
-        if (!token) {
-          setError("로그인이 필요합니다.");
-          setIsLoading(false);
-          return;
-        }
-
-        const response = await fetch("http://localhost:8000/api/v1/cases", {
-          method: "GET",
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
-        });
+        const response = await apiFetch("/api/v1/cases");
 
         if (!response.ok) {
           if (response.status === 401) {
@@ -168,19 +155,10 @@ export function CasesPage() {
 
     setIsDeleting(true);
     try {
-      const token = localStorage.getItem("access_token");
-      if (!token) {
-        alert("로그인이 필요합니다.");
-        return;
-      }
-
       // 선택된 사건들을 순차적으로 삭제
       const deletePromises = Array.from(selectedCases).map((caseId) =>
-        fetch(`http://localhost:8000/api/v1/cases/${caseId}`, {
+        apiFetch(`/api/v1/cases/${caseId}`, {
           method: "DELETE",
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
         })
       );
 

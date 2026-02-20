@@ -1,5 +1,3 @@
-"use client";
-
 import { useNavigate } from "react-router-dom";
 import { type CaseData, sampleCases } from "@/lib/sample-data";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";

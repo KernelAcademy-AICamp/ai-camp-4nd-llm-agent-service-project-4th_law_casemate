@@ -1,5 +1,3 @@
-"use client";
-
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
@@ -12,6 +10,7 @@ import { Loader2, AlertTriangle } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { ArticleLink } from "@/components/legal/article-popup";
+import { apiFetch } from "@/lib/api";
 
 // API 응답 타입
 interface CaseApiResponse {
@@ -236,18 +235,8 @@ export function CaseDetailPage({
 
     const fetchCase = async () => {
       try {
-        const token = localStorage.getItem("access_token");
-        if (!token) {
-          setCaseError("로그인이 필요합니다.");
-          setIsLoadingCase(false);
-          return;
-        }
-
-        const response = await fetch(`http://localhost:8000/api/v1/cases/${id}`, {
+        const response = await apiFetch(`/api/v1/cases/${id}`, {
           method: "GET",
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
         });
 
         if (!response.ok) {
@@ -288,44 +277,51 @@ export function CaseDetailPage({
         setAnalyzedAt(data.analyzed_at || null);
         setIsLoadingCase(false); // 사건 데이터 로딩 완료 → 페이지 즉시 표시
 
-        // AI 분석: analyzed_at 유무로 분기
-        // - 캐시 있음(analyzed_at 존재) → 오버레이 없이 조용히 로드
-        // - 캐시 없음(첫 분석) → 오버레이 표시 + GPT 호출
+        // AI 분석: cached_analysis 유무로 분기
+        // - 캐시 유효(cached_analysis 존재) → POST 스킵, 캐시 사용
+        // - 캐시 없거나 stale → POST /analyze 호출
         if (data.description) {
-          try {
-            const analyzeResponse = await fetch(`http://localhost:8000/api/v1/cases/${id}/analyze`, {
-              method: "POST",
-              headers: {
-                Authorization: `Bearer ${token}`,
-              },
+          if (data.cached_analysis) {
+            // 캐시 히트: GPT 호출 없이 캐시된 결과 사용
+            const cached = data.cached_analysis;
+            setOverviewData({
+              summary: cached.summary || "",
+              facts: cached.facts || "",
+              claims: cached.claims || "",
+              legalBasis: "",
             });
-
-            if (analyzeResponse.ok) {
-              const analyzed = await analyzeResponse.json();
-              setOverviewData({
-                summary: analyzed.summary || "",
-                facts: analyzed.facts || "",
-                claims: analyzed.claims || "",
-                legalBasis: "",
+            if (cached.crime_names?.length) {
+              setCaseData(prev => prev ? { ...prev, crimeNames: cached.crime_names } : prev);
+            }
+            fetchRelatedLaws();
+          } else {
+            // 캐시 미스: GPT 호출
+            try {
+              const analyzeResponse = await apiFetch(`/api/v1/cases/${id}/analyze`, {
+                method: "POST",
               });
-              // crime_names를 caseData에 주입
-              if (analyzed.crime_names?.length) {
-                setCaseData(prev => prev ? { ...prev, crimeNames: analyzed.crime_names } : prev);
-              }
-              // 분석된 summary + facts로 관련 법령 검색
-              const searchQuery = `${analyzed.summary} ${analyzed.facts}`;
-              if (searchQuery.trim()) {
+
+              if (analyzeResponse.ok) {
+                const analyzed = await analyzeResponse.json();
+                setOverviewData({
+                  summary: analyzed.summary || "",
+                  facts: analyzed.facts || "",
+                  claims: analyzed.claims || "",
+                  legalBasis: "",
+                });
+                if (analyzed.crime_names?.length) {
+                  setCaseData(prev => prev ? { ...prev, crimeNames: analyzed.crime_names } : prev);
+                }
                 fetchRelatedLaws();
               }
+            } catch (analyzeErr) {
+              console.error("사건 분석 실패:", analyzeErr);
+              setOverviewData(prev => ({
+                ...prev,
+                summary: data.description || "",
+              }));
+              fetchRelatedLaws();
             }
-          } catch (analyzeErr) {
-            console.error("사건 분석 실패:", analyzeErr);
-            // 분석 실패 시 description 원본 사용
-            setOverviewData(prev => ({
-              ...prev,
-              summary: data.description || "",
-            }));
-            fetchRelatedLaws();
           }
         }
       } catch (err) {
@@ -348,16 +344,8 @@ export function CaseDetailPage({
     if (!caseData?.id) return;
     setEvidenceLoading(true);
     try {
-      const token = localStorage.getItem('access_token');
-      if (!token) return;
-
-      const response = await fetch(
-        `http://localhost:8000/api/v1/evidence/list?case_id=${caseData.id}`,
-        {
-          headers: {
-            'Authorization': `Bearer ${token}`
-          }
-        }
+      const response = await apiFetch(
+        `/api/v1/evidence/list?case_id=${caseData.id}`
       );
 
       if (response.ok) {
@@ -392,8 +380,7 @@ export function CaseDetailPage({
 
   // 증거 파일 업로드 (직접 선택 또는 드래그&드롭)
   const uploadEvidenceFiles = async (files: FileList | File[]) => {
-    const token = localStorage.getItem('access_token');
-    if (!token || !caseData?.id) return;
+    if (!caseData?.id) return;
 
     setIsUploading(true);
     try {
@@ -401,9 +388,8 @@ export function CaseDetailPage({
         const formData = new FormData();
         formData.append('file', file);
 
-        await fetch(`http://localhost:8000/api/v1/evidence/upload?case_id=${caseData.id}`, {
+        await apiFetch(`/api/v1/evidence/upload?case_id=${caseData.id}`, {
           method: 'POST',
-          headers: { Authorization: `Bearer ${token}` },
           body: formData,
         });
       }
@@ -420,13 +406,11 @@ export function CaseDetailPage({
   // 증거 연결 해제
   const unlinkEvidence = async (evidenceId: string) => {
     if (!caseData?.id) return;
-    const token = localStorage.getItem('access_token');
-    if (!token) return;
 
     try {
-      const response = await fetch(
-        `http://localhost:8000/api/v1/evidence/${evidenceId}/unlink-case/${caseData.id}`,
-        { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } }
+      const response = await apiFetch(
+        `/api/v1/evidence/${evidenceId}/unlink-case/${caseData.id}`,
+        { method: 'DELETE' }
       );
       if (!response.ok) throw new Error('연결 해제 실패');
       await fetchEvidences();
@@ -438,16 +422,14 @@ export function CaseDetailPage({
 
   // AI 분석 결과 저장 (summary, facts, claims)
   const saveSummary = async () => {
-    const token = localStorage.getItem("access_token");
-    if (!token || !id) return;
+    if (!id) return;
 
     setIsSaving(true);
     try {
-      const response = await fetch(`http://localhost:8000/api/v1/cases/${id}/summary`, {
+      const response = await apiFetch(`/api/v1/cases/${id}/summary`, {
         method: "PUT",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({
           summary: overviewData.summary,
@@ -497,8 +479,7 @@ export function CaseDetailPage({
   ];
 
   const refreshAnalysis = async () => {
-    const token = localStorage.getItem("access_token");
-    if (!token || !id) return;
+    if (!id) return;
 
     setIsRefreshing(true);
     const steps = [...ANALYSIS_STEPS];
@@ -509,11 +490,8 @@ export function CaseDetailPage({
       const timer1 = setTimeout(() => setAgentSteps(prev => advanceStep(prev, 1)), 1500);
       const timer2 = setTimeout(() => setAgentSteps(prev => advanceStep(prev, 2)), 4000);
 
-      const response = await fetch(`http://localhost:8000/api/v1/cases/${id}/analyze?force=true`, {
+      const response = await apiFetch(`/api/v1/cases/${id}/analyze?force=true`, {
         method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
       });
 
       clearTimeout(timer1);
@@ -556,8 +534,7 @@ export function CaseDetailPage({
 
   // 사건 정보 저장 (전체 필드)
   const saveDescription = async () => {
-    const token = localStorage.getItem("access_token");
-    if (!token || !id) return;
+    if (!id) return;
 
     setIsSaving(true);
     try {
@@ -577,11 +554,10 @@ export function CaseDetailPage({
         description: editFormData.description || null,
       };
 
-      const response = await fetch(`http://localhost:8000/api/v1/cases/${id}`, {
+      const response = await apiFetch(`/api/v1/cases/${id}`, {
         method: "PUT",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify(body),
       });
@@ -640,7 +616,7 @@ export function CaseDetailPage({
 
     setSimilarCasesLoading(true);
     try {
-      const response = await fetch("/api/v1/search/cases/similar", {
+      const response = await apiFetch("/api/v1/search/cases/similar", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -674,7 +650,7 @@ export function CaseDetailPage({
 
     setTimelineLoading(true);
     try {
-      const response = await fetch(`http://localhost:8000/api/v1/timeline/${caseData.id}`);
+      const response = await apiFetch(`/api/v1/timeline/${caseData.id}`);
       if (!response.ok) {
         throw new Error("타임라인 데이터를 가져오는 중 오류가 발생했습니다.");
       }
@@ -694,7 +670,7 @@ export function CaseDetailPage({
 
     setRelationshipLoading(true);
     try {
-      const response = await fetch(`http://localhost:8000/api/v1/relationships/${caseData.id}`);
+      const response = await apiFetch(`/api/v1/relationships/${caseData.id}`);
       if (!response.ok) {
         throw new Error("관계도 데이터를 가져오는 중 오류가 발생했습니다.");
       }
@@ -724,7 +700,7 @@ export function CaseDetailPage({
     setRelationshipSteps(RELATIONSHIP_STEPS);
 
     const token = localStorage.getItem("access_token");
-    const url = `http://localhost:8000/api/v1/relationships/${caseData.id}/generate-stream?force=true`;
+    const url = `/api/v1/relationships/${caseData.id}/generate-stream?force=true`;
 
     const eventSource = new EventSource(
       `${url}&token=${encodeURIComponent(token || '')}`
@@ -789,7 +765,7 @@ export function CaseDetailPage({
     setTimelineSteps(TIMELINE_STEPS);
 
     const token = localStorage.getItem("access_token");
-    const url = `http://localhost:8000/api/v1/timeline/${caseData.id}/generate-stream?force=true`;
+    const url = `/api/v1/timeline/${caseData.id}/generate-stream?force=true`;
 
     const eventSource = new EventSource(
       `${url}&token=${encodeURIComponent(token || '')}`
@@ -857,7 +833,7 @@ export function CaseDetailPage({
 
     setRelatedLawsLoading(true);
     try {
-      const response = await fetch(`/api/v1/laws/search-by-case/${id}`, {
+      const response = await apiFetch(`/api/v1/laws/search-by-case/${id}`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -1111,7 +1087,7 @@ export function CaseDetailPage({
     if (!editingEvent || !caseData) return;
 
     try {
-      const response = await fetch(`http://localhost:8000/api/v1/timeline/${editingEvent.id}`, {
+      const response = await apiFetch(`/api/v1/timeline/${editingEvent.id}`, {
         method: "PUT",
         headers: {
           "Content-Type": "application/json",
@@ -1151,7 +1127,7 @@ export function CaseDetailPage({
     if (!newEvent.date || !newEvent.title || !caseData) return;
 
     try {
-      const response = await fetch(`http://localhost:8000/api/v1/timeline/${caseData.id}`, {
+      const response = await apiFetch(`/api/v1/timeline/${caseData.id}`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -1204,7 +1180,7 @@ export function CaseDetailPage({
     if (!confirm("이 타임라인 이벤트를 삭제하시겠습니까?")) return;
 
     try {
-      const response = await fetch(`http://localhost:8000/api/v1/timeline/${id}`, {
+      const response = await apiFetch(`/api/v1/timeline/${id}`, {
         method: "DELETE",
       });
 

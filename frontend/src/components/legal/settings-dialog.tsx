@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { apiFetch } from "@/lib/api";
 import { Sun, Moon, Palette, Bell, Lock, Eye, EyeOff } from "lucide-react";
 import {
   Dialog,
@@ -74,12 +75,10 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
 
     setPwLoading(true);
     try {
-      const token = localStorage.getItem("access_token");
-      const res = await fetch("http://localhost:8000/api/v1/change-password", {
+      const res = await apiFetch("/api/v1/change-password", {
         method: "PUT",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({
           current_password: currentPw,

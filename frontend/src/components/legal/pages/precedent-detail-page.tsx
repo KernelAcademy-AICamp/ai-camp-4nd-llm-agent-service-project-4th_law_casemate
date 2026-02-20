@@ -1,6 +1,5 @@
-"use client";
-
 import React, { useState, useEffect } from "react";
+import { apiFetch } from "@/lib/api";
 import { useNavigate, useParams, useLocation, useSearchParams, Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -117,7 +116,7 @@ export function PrecedentDetailPage({ }: PrecedentDetailPageProps) {
       setSummary(null);
 
       try {
-        const response = await fetch(
+        const response = await apiFetch(
           `/api/v1/search/cases/${encodeURIComponent(id)}`
         );
 
@@ -162,7 +161,7 @@ export function PrecedentDetailPage({ }: PrecedentDetailPageProps) {
       setSummaryLoading(true);
 
       try {
-        const response = await fetch("/api/v1/search/summarize", {
+        const response = await apiFetch("/api/v1/search/summarize", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -213,11 +212,7 @@ export function PrecedentDetailPage({ }: PrecedentDetailPageProps) {
       if (!token) return; // 로그인 안 된 경우 스킵
 
       try {
-        const response = await fetch(`/api/v1/favorites/precedents/${encodeURIComponent(id)}/status`, {
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
-        });
+        const response = await apiFetch(`/api/v1/favorites/precedents/${encodeURIComponent(id)}/status`);
         if (response.ok) {
           const data = await response.json();
           setIsFavorite(data.is_favorite);
@@ -239,11 +234,8 @@ export function PrecedentDetailPage({ }: PrecedentDetailPageProps) {
 
     setFavoriteLoading(true);
     try {
-      const response = await fetch(`/api/v1/favorites/precedents/${encodeURIComponent(id)}/toggle`, {
+      const response = await apiFetch(`/api/v1/favorites/precedents/${encodeURIComponent(id)}/toggle`, {
         method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
       });
 
       if (response.ok) {

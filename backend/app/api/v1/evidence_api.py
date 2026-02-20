@@ -255,7 +255,7 @@ async def analyze_evidence_on_link_background(evidence_id: int, case_id: int):
             existing_analysis.legal_relevance = legal_relevance
             existing_analysis.risk_level = risk_level
             existing_analysis.ai_model = "gpt-4o-mini"
-            existing_analysis.created_at = func.now()
+            existing_analysis.created_at = datetime.now()
             db.commit()
             print(f"✅ [백그라운드] 분석 업데이트 완료: analysis_id={existing_analysis.id}")
         else:
@@ -1385,7 +1385,7 @@ async def analyze_evidence(
             existing_analysis.legal_relevance = legal_relevance
             existing_analysis.risk_level = risk_level
             existing_analysis.ai_model = "gpt-4o-mini"
-            existing_analysis.created_at = func.now()
+            existing_analysis.created_at = datetime.now()
             db.commit()
             db.refresh(existing_analysis)
 

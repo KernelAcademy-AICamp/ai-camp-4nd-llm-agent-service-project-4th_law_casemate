@@ -1,5 +1,3 @@
-"use client";
-
 import React from "react";
 import { useState, useCallback, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
@@ -47,6 +45,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useNavigate } from "react-router-dom";
+import { apiFetch } from "@/lib/api";
 interface EvidenceUploadPageProps {
   preSelectedCaseId?: string;
 }
@@ -158,15 +157,8 @@ export function EvidenceUploadPage({}: EvidenceUploadPageProps) {
   // 카테고리 목록 가져오기
   useEffect(() => {
     const fetchCategories = async () => {
-      const token = localStorage.getItem('access_token');
-      if (!token) return;
-
       try {
-        const response = await fetch('http://localhost:8000/api/v1/evidence/categories', {
-          headers: {
-            'Authorization': `Bearer ${token}`
-          }
-        });
+        const response = await apiFetch('/api/v1/evidence/categories');
 
         if (response.ok) {
           const data = await response.json();
@@ -198,24 +190,15 @@ export function EvidenceUploadPage({}: EvidenceUploadPageProps) {
 
   // 초기 데이터 가져오기 함수
   const fetchInitData = useCallback(async () => {
-    console.log('🔍 fetchInitData 호출됨');
-    const token = localStorage.getItem('access_token');
-    console.log('🔑 토큰 존재 여부:', !!token);
-
-    if (!token) {
-      console.log('❌ 토큰이 없어서 파일 목록을 가져올 수 없습니다.');
-      return;
-    }
+    console.log('fetchInitData 호출됨');
 
     setIsLoadingFiles(true);
-    console.log('📡 API 호출 시작: /api/v1/file-manager/init');
+    console.log('API 호출 시작: /api/v1/file-manager/init');
 
     try {
-      const response = await fetch('http://localhost:8000/api/v1/file-manager/init', {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
+      const response = await apiFetch('/api/v1/file-manager/init');
 
-      console.log('📡 API 응답 상태:', response.status, response.ok);
+      console.log('API 응답 상태:', response.status, response.ok);
 
       if (response.ok) {
         const data = await response.json();
@@ -257,12 +240,11 @@ export function EvidenceUploadPage({}: EvidenceUploadPageProps) {
       console.error('통합 API 실패, 개별 API로 fallback:', error);
       // fallback: 개별 API 호출
       try {
-        const headers = { 'Authorization': `Bearer ${token}` };
         const [catRes, fileRes, caseRes, docRes] = await Promise.all([
-          fetch('http://localhost:8000/api/v1/evidence/categories', { headers }),
-          fetch('http://localhost:8000/api/v1/evidence/list', { headers }),
-          fetch('http://localhost:8000/api/v1/cases', { headers }),
-          fetch('http://localhost:8000/api/v1/documents/', { headers }),
+          apiFetch('/api/v1/evidence/categories'),
+          apiFetch('/api/v1/evidence/list'),
+          apiFetch('/api/v1/cases'),
+          apiFetch('/api/v1/documents/'),
         ]);
 
         if (catRes.ok) {
@@ -307,13 +289,8 @@ export function EvidenceUploadPage({}: EvidenceUploadPageProps) {
 
   // 증거 파일만 새로고침 (업로드/삭제 후 사용)
   const fetchEvidences = useCallback(async () => {
-    const token = localStorage.getItem('access_token');
-    if (!token) return;
-
     try {
-      const response = await fetch('http://localhost:8000/api/v1/evidence/list', {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
+      const response = await apiFetch('/api/v1/evidence/list');
 
       if (response.ok) {
         const data = await response.json();
@@ -348,14 +325,9 @@ export function EvidenceUploadPage({}: EvidenceUploadPageProps) {
     }
 
     const fetchCaseDocuments = async () => {
-      const token = localStorage.getItem('access_token');
-      if (!token) return;
-
       setIsLoadingDocuments(true);
       try {
-        const response = await fetch(`http://localhost:8000/api/v1/documents/case/${selectedCaseFolder}`, {
-          headers: { 'Authorization': `Bearer ${token}` }
-        });
+        const response = await apiFetch(`/api/v1/documents/case/${selectedCaseFolder}`);
         if (response.ok) {
           const data = await response.json();
           setCaseDocuments(data.map((d: any) => ({ ...d, case_id: selectedCaseFolder })));
@@ -409,7 +381,6 @@ export function EvidenceUploadPage({}: EvidenceUploadPageProps) {
       setDragOver(false);
 
       const droppedFiles = Array.from(e.dataTransfer.files);
-      const token = localStorage.getItem('access_token');
       let uploadSuccessCount = 0;
 
       // 업로드 시작
@@ -431,11 +402,8 @@ export function EvidenceUploadPage({}: EvidenceUploadPageProps) {
           }
 
           // 백엔드 API 호출
-          const response = await fetch('http://localhost:8000/api/v1/evidence/upload', {
+          const response = await apiFetch('/api/v1/evidence/upload', {
             method: 'POST',
-            headers: {
-              'Authorization': `Bearer ${token}`
-            },
             body: formData
           });
 
@@ -470,7 +438,6 @@ export function EvidenceUploadPage({}: EvidenceUploadPageProps) {
     const selectedFilesInput = e.target.files;
     if (!selectedFilesInput) return;
 
-    const token = localStorage.getItem('access_token');
     const filesArray = Array.from(selectedFilesInput);
     let uploadSuccessCount = 0;
 
@@ -493,11 +460,8 @@ export function EvidenceUploadPage({}: EvidenceUploadPageProps) {
         }
 
         // 백엔드 API 호출
-        const response = await fetch('http://localhost:8000/api/v1/evidence/upload', {
+        const response = await apiFetch('/api/v1/evidence/upload', {
           method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${token}`
-          },
           body: formData
         });
 
@@ -542,23 +506,14 @@ export function EvidenceUploadPage({}: EvidenceUploadPageProps) {
   const confirmDeleteFile = async () => {
     if (!fileToDelete || isDeleting) return;
 
-    const token = localStorage.getItem('access_token');
-    if (!token) {
-      alert('로그인이 필요합니다.');
-      return;
-    }
-
     setIsDeleting(true);
 
     try {
       const evidenceId = fileToDelete.id;
 
       // 백엔드 API 호출하여 파일 삭제
-      const response = await fetch(`http://localhost:8000/api/v1/evidence/delete/${evidenceId}`, {
-        method: 'DELETE',
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
+      const response = await apiFetch(`/api/v1/evidence/delete/${evidenceId}`, {
+        method: 'DELETE'
       });
 
       if (!response.ok) {
@@ -590,19 +545,10 @@ export function EvidenceUploadPage({}: EvidenceUploadPageProps) {
   };
 
   const toggleStar = async (fileId: string) => {
-    const token = localStorage.getItem('access_token');
-    if (!token) {
-      alert('로그인이 필요합니다.');
-      return;
-    }
-
     try {
       // 백엔드 API 호출하여 starred 토글
-      const response = await fetch(`http://localhost:8000/api/v1/evidence/${fileId}/starred`, {
-        method: 'PATCH',
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
+      const response = await apiFetch(`/api/v1/evidence/${fileId}/starred`, {
+        method: 'PATCH'
       });
 
       if (!response.ok) {
@@ -730,17 +676,10 @@ export function EvidenceUploadPage({}: EvidenceUploadPageProps) {
   const linkFileToCase = async () => {
     if (filesToLink.length === 0 || !selectedCaseForLink) return;
 
-    const token = localStorage.getItem('access_token');
-    if (!token) {
-      alert('로그인이 필요합니다.');
-      return;
-    }
-
     try {
       for (const evidenceId of filesToLink) {
-        const response = await fetch(`http://localhost:8000/api/v1/evidence/${evidenceId}/link-case/${selectedCaseForLink}`, {
-          method: 'POST',
-          headers: { 'Authorization': `Bearer ${token}` }
+        const response = await apiFetch(`/api/v1/evidence/${evidenceId}/link-case/${selectedCaseForLink}`, {
+          method: 'POST'
         });
         if (!response.ok) throw new Error(`연결 실패: ${response.statusText}`);
       }
@@ -759,19 +698,9 @@ export function EvidenceUploadPage({}: EvidenceUploadPageProps) {
 
   // 단일 파일 다운로드
   const downloadFile = async (fileId: string, fileName: string) => {
-    const token = localStorage.getItem('access_token');
-    if (!token) {
-      alert('로그인이 필요합니다.');
-      return;
-    }
-
     try {
       // Signed URL 가져오기
-      const response = await fetch(`http://localhost:8000/api/v1/evidence/${fileId}/url`, {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
-      });
+      const response = await apiFetch(`/api/v1/evidence/${fileId}/url`);
 
       if (!response.ok) {
         throw new Error(`URL 생성 실패: ${response.statusText}`);
@@ -808,12 +737,6 @@ export function EvidenceUploadPage({}: EvidenceUploadPageProps) {
 
   // 선택된 파일들 다운로드
   const downloadSelectedFiles = async () => {
-    const token = localStorage.getItem('access_token');
-    if (!token) {
-      alert('로그인이 필요합니다.');
-      return;
-    }
-
     const selectedFilesList = files.filter((f) => selectedFiles.has(f.id));
 
     for (const file of selectedFilesList) {
@@ -854,11 +777,7 @@ export function EvidenceUploadPage({}: EvidenceUploadPageProps) {
 
   // 카테고리 목록 새로고침 (expanded 상태 보존)
   const refreshCategories = async () => {
-    const token = localStorage.getItem('access_token');
-    if (!token) return;
-    const response = await fetch('http://localhost:8000/api/v1/evidence/categories', {
-      headers: { 'Authorization': `Bearer ${token}` }
-    });
+    const response = await apiFetch('/api/v1/evidence/categories');
     if (response.ok) {
       const data = await response.json();
       const categoryFolders: FileFolder[] = data.categories.map((cat: any) => ({
@@ -912,13 +831,10 @@ export function EvidenceUploadPage({}: EvidenceUploadPageProps) {
     setInlineNewFolderParentId(null);
     setInlineNewFolderName("");
 
-    const token = localStorage.getItem('access_token');
-    if (!token) { creatingFolderRef.current = false; return; }
-
     try {
-      const response = await fetch('http://localhost:8000/api/v1/evidence/categories', {
+      const response = await apiFetch('/api/v1/evidence/categories', {
         method: 'POST',
-        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           name,
           parent_id: parentId === 'root' ? null : parseInt(parentId.replace('cat-', '')),
@@ -965,15 +881,12 @@ export function EvidenceUploadPage({}: EvidenceUploadPageProps) {
     setRenamingFolderId(null);
     setRenamingFolderName("");
 
-    const token = localStorage.getItem('access_token');
-    if (!token) { renamingRef.current = false; return; }
-
     const categoryId = parseInt(folderId.replace('cat-', ''));
 
     try {
-      const response = await fetch(`http://localhost:8000/api/v1/evidence/categories/${categoryId}/rename`, {
+      const response = await apiFetch(`/api/v1/evidence/categories/${categoryId}/rename`, {
         method: 'PATCH',
-        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: newName })
       });
       if (!response.ok) throw new Error('이름 변경 실패');
@@ -999,14 +912,10 @@ export function EvidenceUploadPage({}: EvidenceUploadPageProps) {
       : `"${folder.name}" 폴더를 삭제하시겠습니까?\n(파일은 삭제되지 않고 미분류로 이동됩니다)`;
     if (!confirm(msg)) return;
 
-    const token = localStorage.getItem('access_token');
-    if (!token) return;
-
     const categoryId = parseInt(folderId.replace('cat-', ''));
     try {
-      const response = await fetch(`http://localhost:8000/api/v1/evidence/categories/delete/${categoryId}`, {
-        method: 'DELETE',
-        headers: { 'Authorization': `Bearer ${token}` }
+      const response = await apiFetch(`/api/v1/evidence/categories/delete/${categoryId}`, {
+        method: 'DELETE'
       });
       if (!response.ok) throw new Error('삭제 실패');
       await refreshCategories();
@@ -1031,16 +940,13 @@ export function EvidenceUploadPage({}: EvidenceUploadPageProps) {
     const currentFolder = folders.find(f => f.id === folderId);
     if (currentFolder?.parentId === newParentId) return;
 
-    const token = localStorage.getItem('access_token');
-    if (!token) return;
-
     const categoryId = parseInt(folderId.replace('cat-', ''));
     const parentCategoryId = newParentId === 'root' ? null : parseInt(newParentId.replace('cat-', ''));
 
     try {
-      const response = await fetch(`http://localhost:8000/api/v1/evidence/categories/${categoryId}/move`, {
+      const response = await apiFetch(`/api/v1/evidence/categories/${categoryId}/move`, {
         method: 'PATCH',
-        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ parent_id: parentCategoryId })
       });
       if (!response.ok) throw new Error('이동 실패');
