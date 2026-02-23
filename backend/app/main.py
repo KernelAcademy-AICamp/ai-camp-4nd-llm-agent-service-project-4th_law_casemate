@@ -1,5 +1,6 @@
 import logging
 import os
+import asyncio
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,6 +12,7 @@ from app.models.law_firm import LawFirm  # LawFirm 모델 import
 from app.models import evidence  # Evidence 관련 모델들 import
 from app.models import case_document  # CaseDocument 모델 import
 from app.models.precedent import Precedent, PrecedentSummary  # 판례 원문 모델 import
+from app.config import EmbeddingConfig
 
 # 로깅 설정
 logging.basicConfig(
@@ -20,10 +22,33 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
+# 워밍업 핑 태스크 참조 (취소용)
+_warmup_task = None
+
+
+async def warmup_ping_loop():
+    """HF API 워밍업 핑 루프 (슬립 방지)"""
+    from app.services.precedent_embedding_service import warmup_hf_api
+    interval = EmbeddingConfig.WARMUP_INTERVAL_MINUTES * 60
+
+    while True:
+        try:
+            await asyncio.sleep(interval)
+            logger.info("HF API 워밍업 핑 실행...")
+            warmup_hf_api()
+        except asyncio.CancelledError:
+            logger.info("워밍업 핑 태스크 종료")
+            break
+        except Exception as e:
+            logger.warning(f"워밍업 핑 실패: {e}")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """서버 시작/종료 시 실행되는 lifespan 이벤트"""
+    global _warmup_task
+
+    # Startup: 리랭커 모델 warm-up
     from app.services.precedent_similar_service import is_reranking_enabled, get_reranker_model
     if is_reranking_enabled():
         logger.info("서버 시작: 리랭커 모델 warm-up 중...")
@@ -35,7 +60,22 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("서버 시작: 리랭킹 비활성 (USE_RERANKING=false)")
 
+    # HF API 모드일 때만 워밍업 핑 시작
+    if EmbeddingConfig.PRECEDENT_EMBEDDING == "kure_api":
+        logger.info(f"HF API 워밍업 핑 시작 (간격: {EmbeddingConfig.WARMUP_INTERVAL_MINUTES}분)")
+        from app.services.precedent_embedding_service import warmup_hf_api
+        warmup_hf_api()  # 서버 시작 시 즉시 1회 실행
+        _warmup_task = asyncio.create_task(warmup_ping_loop())
+
     yield
+
+    # Shutdown: 워밍업 태스크 취소
+    if _warmup_task:
+        _warmup_task.cancel()
+        try:
+            await _warmup_task
+        except asyncio.CancelledError:
+            pass
 
     logger.info("서버 종료")
 

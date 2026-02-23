@@ -1,12 +1,13 @@
 """
 판례 임베딩 서비스
 Dense(OpenAI/KURE) + Sparse(BM25) 임베딩 생성
-설정에 따라 OpenAI 또는 KURE 모델 사용
+설정에 따라 OpenAI, KURE 로컬, KURE HF API 사용
 """
 
 import os
 import logging
 import threading
+import time
 from typing import List, Tuple
 from functools import lru_cache
 from concurrent.futures import ThreadPoolExecutor
@@ -14,11 +15,31 @@ from openai import OpenAI
 from qdrant_client.http import models
 from fastembed import SparseTextEmbedding
 from dotenv import load_dotenv
+from huggingface_hub import InferenceClient
 
 from app.config import EmbeddingConfig
 
 logger = logging.getLogger(__name__)
 load_dotenv()
+
+# HF InferenceClient 설정
+HF_API_TOKEN = os.getenv("HF_API_TOKEN", "")
+_hf_client = None
+_hf_client_lock = threading.Lock()
+
+
+def get_hf_client():
+    """HuggingFace InferenceClient 싱글톤 (thread-safe)"""
+    global _hf_client
+    if _hf_client is None:
+        with _hf_client_lock:
+            if _hf_client is None:
+                _hf_client = InferenceClient(
+                    provider="hf-inference",
+                    token=HF_API_TOKEN if HF_API_TOKEN else None
+                )
+                logger.info("HuggingFace InferenceClient 초기화 완료")
+    return _hf_client
 
 # ==================== Thread-safe 싱글톤 ====================
 
@@ -78,11 +99,61 @@ def create_openai_embedding_cached(text: str, model: str = "text-embedding-3-sma
 
 
 @lru_cache(maxsize=500)
-def create_kure_embedding_cached(text: str) -> Tuple[float, ...]:
-    """KURE Dense 임베딩 생성 (캐싱됨)"""
+def create_kure_local_embedding_cached(text: str) -> Tuple[float, ...]:
+    """KURE Dense 임베딩 생성 - 로컬 모델 (캐싱됨)"""
     model = get_kure_model()
     embedding = model.encode(text, normalize_embeddings=True)
     return tuple(embedding.tolist())
+
+
+@lru_cache(maxsize=500)
+def create_kure_api_embedding_cached(text: str) -> Tuple[float, ...]:
+    """KURE Dense 임베딩 생성 - HF InferenceClient (캐싱됨)"""
+    max_retries = 3
+    retry_delay = 2
+
+    for attempt in range(max_retries):
+        try:
+            client = get_hf_client()
+            embedding = client.feature_extraction(
+                text,
+                model=EmbeddingConfig.KURE_MODEL
+            )
+            # 결과가 리스트 형태로 반환됨
+            if hasattr(embedding, 'tolist'):
+                return tuple(embedding.tolist())
+            elif isinstance(embedding, list):
+                # [[...]] 또는 [...] 형태
+                if len(embedding) > 0 and isinstance(embedding[0], list):
+                    return tuple(embedding[0])
+                return tuple(embedding)
+            return tuple(embedding)
+
+        except Exception as e:
+            error_msg = str(e)
+            if "503" in error_msg or "loading" in error_msg.lower():
+                logger.warning(f"HF API 모델 로딩 중... (시도 {attempt + 1}/{max_retries})")
+                time.sleep(retry_delay * (attempt + 1))
+                continue
+            elif attempt < max_retries - 1:
+                logger.warning(f"HF API 에러 (시도 {attempt + 1}/{max_retries}): {e}")
+                time.sleep(retry_delay)
+                continue
+            raise ValueError(f"HF API 호출 실패: {e}")
+
+    raise ValueError("HF API 호출 실패: 최대 재시도 횟수 초과")
+
+
+def warmup_hf_api():
+    """HF API 워밍업 (슬립 방지)"""
+    try:
+        client = get_hf_client()
+        client.feature_extraction("ping", model=EmbeddingConfig.KURE_MODEL)
+        logger.info("HF API 워밍업 성공")
+        return True
+    except Exception as e:
+        logger.warning(f"HF API 워밍업 실패: {e}")
+        return False
 
 
 # ==================== 공유 ThreadPoolExecutor ====================
@@ -106,7 +177,10 @@ def get_executor():
 class PrecedentEmbeddingService:
     """
     판례 임베딩 생성 서비스
-    EmbeddingConfig.PRECEDENT_EMBEDDING 설정에 따라 OpenAI 또는 KURE 사용
+    EmbeddingConfig.PRECEDENT_EMBEDDING 설정에 따라:
+    - "openai": OpenAI API
+    - "kure_local": KURE 로컬 모델
+    - "kure_api": KURE HF API (메모리 절약)
     """
 
     # 레거시 호환성을 위해 유지 (EmbeddingConfig 사용 권장)
@@ -120,17 +194,20 @@ class PrecedentEmbeddingService:
         """
         self.sparse_model = get_sparse_model()
         self.executor = get_executor()
-        self.use_kure = EmbeddingConfig.PRECEDENT_EMBEDDING == "kure"
+        self.embedding_mode = EmbeddingConfig.PRECEDENT_EMBEDDING
         self.openai_model = model or EmbeddingConfig.OPENAI_MODEL
 
-        if self.use_kure:
-            logger.info("임베딩 모델: KURE")
+        # 로깅
+        if self.embedding_mode == "kure_api":
+            logger.info("임베딩 모델: KURE (HF API)")
+        elif self.embedding_mode == "kure_local":
+            logger.info("임베딩 모델: KURE (로컬)")
         else:
             logger.info(f"임베딩 모델: OpenAI ({self.openai_model})")
 
     def create_dense(self, text: str) -> List[float]:
         """
-        Dense 임베딩 생성 (설정에 따라 OpenAI 또는 KURE 사용)
+        Dense 임베딩 생성 (설정에 따라 OpenAI, KURE 로컬, KURE API 사용)
 
         Args:
             text: 임베딩할 텍스트
@@ -138,8 +215,10 @@ class PrecedentEmbeddingService:
         Returns:
             임베딩 벡터 (list)
         """
-        if self.use_kure:
-            return list(create_kure_embedding_cached(text))
+        if self.embedding_mode == "kure_api":
+            return list(create_kure_api_embedding_cached(text))
+        elif self.embedding_mode == "kure_local":
+            return list(create_kure_local_embedding_cached(text))
         return list(create_openai_embedding_cached(text, self.openai_model))
 
     def create_sparse(self, text: str) -> models.SparseVector:
@@ -187,8 +266,11 @@ class PrecedentEmbeddingService:
         if not texts:
             return []
 
-        if self.use_kure:
-            # KURE 배치 임베딩
+        if self.embedding_mode == "kure_api":
+            # KURE HF API 배치 (개별 호출)
+            return [list(create_kure_api_embedding_cached(t)) for t in texts]
+        elif self.embedding_mode == "kure_local":
+            # KURE 로컬 배치 임베딩
             model = get_kure_model()
             embeddings = model.encode(texts, normalize_embeddings=True)
             return [emb.tolist() for emb in embeddings]

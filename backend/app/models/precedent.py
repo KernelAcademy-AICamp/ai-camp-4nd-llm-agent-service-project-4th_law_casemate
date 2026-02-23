@@ -6,7 +6,7 @@ Qdrant에서 이전한 판례 메타데이터 + 전문을 저장합니다.
 - PostgreSQL: 원문 조회용 (메타데이터 + 전문)
 """
 
-from sqlalchemy import Column, BigInteger, String, Text, DateTime, Index
+from sqlalchemy import Column, BigInteger, String, Text, DateTime, Index, Float, ForeignKey
 from datetime import datetime
 from tool.database import Base
 
@@ -69,3 +69,22 @@ class PrecedentSummary(Base):
 
     def __repr__(self):
         return f"<PrecedentSummary(case_number={self.case_number}, prompt_version={self.prompt_version})>"
+
+
+class SimilarPrecedent(Base):
+    """
+    유사 판례 비교 분석 저장 테이블
+
+    각 사건(case_id)별로 비교 분석 결과를 저장
+    (유사도 점수는 case_analyses.similar_precedents JSON에 포함)
+    """
+    __tablename__ = "similar_precedents"
+
+    id = Column(BigInteger, primary_key=True, index=True, autoincrement=True)
+    case_id = Column(BigInteger, ForeignKey('cases.id', ondelete='CASCADE'), nullable=False, index=True)
+    case_number = Column(String(100), nullable=False)  # 비교한 판례 사건번호
+    summary = Column(Text, nullable=True)  # 비교 분석 결과
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    def __repr__(self):
+        return f"<SimilarPrecedent(case_id={self.case_id}, case_number={self.case_number})>"

@@ -598,17 +598,19 @@ export function CaseDetailPage({
   };
 
   // 유사 판례 검색 (overviewData 기반)
-  const fetchSimilarCases = useCallback(async () => {
+  const fetchSimilarCases = useCallback(async (forceRefresh = false) => {
     if (!caseData) return;
 
-    // 1. 캐시에 있으면 캐시된 결과 사용
-    const cached = getSimilarCases(caseData.id);
-    if (cached) {
-      setSimilarCases(cached);
-      return;
+    // 1. 강제 새로고침이 아니고 캐시에 있으면 캐시된 결과 사용
+    if (!forceRefresh) {
+      const cached = getSimilarCases(caseData.id);
+      if (cached) {
+        setSimilarCases(cached);
+        return;
+      }
     }
 
-    // 2. 캐시에 없으면 API 호출 (case_id로 DB에서 직접 조회)
+    // 2. 캐시에 없거나 강제 새로고침이면 API 호출
     if (!caseData?.id) return;
 
     // 이미 로딩 중이면 중복 호출 방지
@@ -623,7 +625,8 @@ export function CaseDetailPage({
         },
         body: JSON.stringify({
           case_id: caseData.id,
-          exclude_case_number: null  // 현재 사건은 판례가 아니므로 제외할 필요 없음
+          exclude_case_number: null,  // 현재 사건은 판례가 아니므로 제외할 필요 없음
+          force: forceRefresh  // 새로고침 시 백엔드 캐시도 무시
         }),
       });
 
@@ -2090,15 +2093,27 @@ export function CaseDetailPage({
           {/* Similar Precedents from API */}
           <Card className="border-border/60">
             <CardHeader className="pb-4">
-              <CardTitle className="text-base font-medium flex items-center gap-2">
-                <Scale className="h-4 w-4" />
-                유사 판례
-                {similarCases.length > 0 && (
-                  <Badge variant="secondary" className="text-xs font-normal">
-                    {similarCases.length}건
-                  </Badge>
-                )}
-              </CardTitle>
+              <div className="flex items-center justify-between">
+                <CardTitle className="text-base font-medium flex items-center gap-2">
+                  <Scale className="h-4 w-4" />
+                  유사 판례
+                  {similarCases.length > 0 && (
+                    <Badge variant="secondary" className="text-xs font-normal">
+                      {similarCases.length}건
+                    </Badge>
+                  )}
+                </CardTitle>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8"
+                  onClick={() => fetchSimilarCases(true)}
+                  disabled={similarCasesLoading}
+                  title="유사 판례 새로고침"
+                >
+                  <RefreshCw className={`h-4 w-4 ${similarCasesLoading ? 'animate-spin' : ''}`} />
+                </Button>
+              </div>
             </CardHeader>
             <CardContent>
               {similarCasesLoading ? (

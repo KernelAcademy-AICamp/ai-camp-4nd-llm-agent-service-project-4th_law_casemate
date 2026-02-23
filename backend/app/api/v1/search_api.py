@@ -4,10 +4,11 @@
 """
 
 import asyncio
+import json
 import logging
 from fastapi import APIRouter, Query, HTTPException, Depends
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional
 from sqlalchemy.orm import Session
 
 from app.services.precedent_search_service import PrecedentSearchService
@@ -15,6 +16,7 @@ from app.services.precedent_similar_service import PrecedentSimilarService
 from app.services.precedent_summary_service import SummaryService
 from app.services.comparison_service import ComparisonService
 from app.models.evidence import Case, CaseAnalysis
+from app.models.precedent import SimilarPrecedent
 from app.models.user import User
 from tool.database import get_db
 from tool.security import get_current_user
@@ -35,15 +37,86 @@ class SimilarCasesRequest(BaseModel):
     case_id: Optional[int] = None  # 사건 ID (DB에서 summary, facts, claims 조회)
     query: Optional[str] = None  # 직접 쿼리 (case_id 없을 때 사용)
     exclude_case_number: Optional[str] = None  # 현재 판례 제외
+    force: bool = False  # True면 캐시 무시하고 새로 검색
 
 
 class CompareRequest(BaseModel):
+    case_id: Optional[int] = None  # 사건 ID (비교 분석 결과 저장용)
     origin_facts: str  # 현재 사건의 사실관계
     origin_claims: str  # 현재 사건의 청구내용
     target_case_number: str  # 비교할 유사 판례 사건번호
+    force: bool = False  # True면 캐시 무시하고 새로 분석
 
 
 router = APIRouter(prefix="/search", tags=["search"])
+
+
+def _parse_comparison_json(summary: str) -> dict:
+    """비교 분석 JSON을 parsed 형태로 변환"""
+    try:
+        data = json.loads(summary)
+        return {
+            "case_overview": data.get("case_overview", ""),
+            "precedent_summary": data.get("precedent_summary", ""),
+            "similarities": "\n".join(f"- {item}" for item in data.get("issue_analysis", [])) if isinstance(data.get("issue_analysis"), list) else str(data.get("issue_analysis", "")),
+            "differences": "\n".join(f"- {item}" for item in data.get("differences", [])) if isinstance(data.get("differences"), list) else str(data.get("differences", "")),
+            "strategy_points": "\n".join(f"- {item}" for item in data.get("strategy_points", [])) if isinstance(data.get("strategy_points"), list) else str(data.get("strategy_points", "")),
+        }
+    except json.JSONDecodeError:
+        return {"case_overview": "", "precedent_summary": "", "similarities": "", "differences": "", "strategy_points": ""}
+
+
+def _cleanup_old_comparisons(db: Session, case_id: int, max_count: int = 10):
+    """
+    오래된 비교 분석 정리
+    - 10개 초과 시, 현재 유사 판례 목록에 없는 것 중 오래된 것부터 삭제
+    """
+    try:
+        # 1. 해당 사건의 비교 분석 개수 확인
+        total = db.query(SimilarPrecedent).filter(
+            SimilarPrecedent.case_id == case_id
+        ).count()
+
+        if total <= max_count:
+            return
+
+        # 2. 현재 유사 판례 목록 가져오기
+        case_analysis = db.query(CaseAnalysis).filter(
+            CaseAnalysis.case_id == case_id
+        ).first()
+
+        current_case_numbers = set()
+        if case_analysis and case_analysis.similar_precedents:
+            try:
+                cached = json.loads(case_analysis.similar_precedents)
+                current_case_numbers = {c.get("case_number") for c in cached if c.get("case_number")}
+            except json.JSONDecodeError:
+                pass
+
+        # 3. 현재 목록에 없는 것 중 오래된 것부터 삭제
+        delete_count = total - max_count
+        if current_case_numbers:
+            old_records = db.query(SimilarPrecedent).filter(
+                SimilarPrecedent.case_id == case_id,
+                SimilarPrecedent.case_number.notin_(current_case_numbers)
+            ).order_by(SimilarPrecedent.created_at.asc()).limit(delete_count).all()
+        else:
+            # 현재 목록이 없으면 그냥 오래된 순으로 삭제
+            old_records = db.query(SimilarPrecedent).filter(
+                SimilarPrecedent.case_id == case_id
+            ).order_by(SimilarPrecedent.created_at.asc()).limit(delete_count).all()
+
+        for record in old_records:
+            db.delete(record)
+
+        if old_records:
+            db.commit()
+            logger.info(f"[비교 분석 정리] case_id={case_id}, {len(old_records)}개 삭제")
+
+    except Exception as e:
+        logger.warning(f"[비교 분석 정리] 실패: {e}")
+        db.rollback()
+
 
 # 서비스 인스턴스
 search_service = PrecedentSearchService()
@@ -62,7 +135,6 @@ async def search_cases(
     court_type: Optional[str] = Query(None, description="법원 유형 (대법원, 고등법원, 지방법원)"),
     case_type: Optional[str] = Query(None, description="사건 종류 (민사, 형사, 일반행정, 가사)"),
     period: Optional[str] = Query(None, description="기간 (1y, 3y, 5y, 10y)"),
-    db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """
@@ -200,8 +272,11 @@ async def search_similar_cases(
     - **case_id**: 사건 ID (DB에서 summary, facts, claims 조회)
     - **query**: 직접 쿼리 (case_id 없을 때 사용)
     - **exclude_case_number**: 제외할 판례 사건번호 (현재 보고 있는 판례)
+    - **force**: True면 캐시 무시하고 새로 검색
     """
     try:
+        case_analysis = None
+
         # case_id가 있으면 DB에서 조회
         if request.case_id:
             case = db.query(Case).filter(Case.id == request.case_id).first()
@@ -216,6 +291,15 @@ async def search_similar_cases(
 
             if not case_analysis:
                 raise HTTPException(status_code=404, detail="사건 분석 결과를 찾을 수 없습니다. 먼저 사건 분석을 진행해주세요.")
+
+            # 캐시 확인 (force=False이고 캐시가 있으면 반환)
+            if not request.force and case_analysis.similar_precedents:
+                logger.info(f"[유사 판례 검색] case_id={request.case_id} 캐시 반환")
+                try:
+                    cached = json.loads(case_analysis.similar_precedents)
+                    return {"results": cached, "cached": True}
+                except json.JSONDecodeError:
+                    logger.warning(f"[유사 판례 검색] 캐시 JSON 파싱 실패, 새로 검색")
 
             # summary + facts + claims 조합
             query_parts = []
@@ -240,6 +324,18 @@ async def search_similar_cases(
             exclude_case_number=request.exclude_case_number,
             limit=5,
         )
+
+        # case_id가 있으면 결과를 case_analyses.similar_precedents에 JSON 저장
+        if case_analysis and results.get("results"):
+            try:
+                case_analysis.similar_precedents = json.dumps(results["results"], ensure_ascii=False)
+                db.commit()
+                logger.info(f"[유사 판례 검색] case_id={request.case_id} 결과 캐시 저장 완료")
+            except Exception as e:
+                logger.warning(f"[유사 판례 검색] 캐시 저장 실패: {e}")
+                db.rollback()
+
+        results["cached"] = False
         return results
     except HTTPException:
         raise
@@ -249,15 +345,37 @@ async def search_similar_cases(
 
 
 @router.post("/cases/compare")
-async def compare_cases(request: CompareRequest, current_user: User = Depends(get_current_user)):
+async def compare_cases(
+    request: CompareRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     """
     현재 사건과 유사 판례 비교 분석 (RAG)
 
+    - **case_id**: 사건 ID (비교 분석 결과 저장용)
     - **origin_facts**: 현재 사건의 사실관계
     - **origin_claims**: 현재 사건의 청구내용
     - **target_case_number**: 비교할 유사 판례 사건번호
+    - **force**: True면 캐시 무시하고 새로 분석
     """
     try:
+        # 캐시 확인 (case_id가 있고 force=False일 때)
+        if request.case_id and not request.force:
+            cached = db.query(SimilarPrecedent).filter(
+                SimilarPrecedent.case_id == request.case_id,
+                SimilarPrecedent.case_number == request.target_case_number,
+                SimilarPrecedent.summary.isnot(None),
+            ).first()
+            if cached:
+                logger.info(f"[비교 분석] case_id={request.case_id}, 판례={request.target_case_number} 캐시 반환")
+                return {
+                    "success": True,
+                    "analysis": cached.summary,
+                    "parsed": _parse_comparison_json(cached.summary),
+                    "cached": True,
+                }
+
         # 동기 함수를 스레드 풀에서 실행 (이벤트 루프 블로킹 방지)
         result = await asyncio.to_thread(
             comparison_service.compare,
@@ -269,6 +387,38 @@ async def compare_cases(request: CompareRequest, current_user: User = Depends(ge
         if not result.get("success"):
             raise HTTPException(status_code=404, detail=result.get("error"))
 
+        # case_id가 있으면 비교 분석 결과 저장
+        if request.case_id and result.get("analysis"):
+            try:
+                # 기존 레코드 확인
+                existing = db.query(SimilarPrecedent).filter(
+                    SimilarPrecedent.case_id == request.case_id,
+                    SimilarPrecedent.case_number == request.target_case_number,
+                ).first()
+
+                if existing:
+                    # 기존 레코드 업데이트
+                    existing.summary = result["analysis"]
+                else:
+                    # 새 레코드 생성
+                    new_record = SimilarPrecedent(
+                        case_id=request.case_id,
+                        case_number=request.target_case_number,
+                        summary=result["analysis"],
+                    )
+                    db.add(new_record)
+
+                db.commit()
+                logger.info(f"[비교 분석] case_id={request.case_id}, 판례={request.target_case_number} 저장 완료")
+
+                # 오래된 비교 분석 정리 (10개 초과 시)
+                _cleanup_old_comparisons(db, request.case_id)
+
+            except Exception as e:
+                logger.warning(f"[비교 분석] 저장 실패: {e}")
+                db.rollback()
+
+        result["cached"] = False
         return result
     except HTTPException:
         raise
