@@ -27,9 +27,9 @@ interface SidebarProps {
 
 const navItems = [
   { to: "/", icon: Home, label: "홈", end: true },
-  { to: "/cases", icon: FileText, label: "사건 관리" },
-  { to: "/evidence/upload", icon: FolderOpen, label: "파일 관리" },
-  { to: "/precedents", icon: Landmark, label: "판례 검색" },
+  { to: "/cases", icon: FileText, label: "사건 관리", guide: "nav-cases" },
+  { to: "/evidence/upload", icon: FolderOpen, label: "파일 관리", guide: "nav-evidence" },
+  { to: "/precedents", icon: Landmark, label: "판례 검색", guide: "nav-precedents" },
 ];
 
 export function Sidebar({ collapsed, onToggle, onLogout }: SidebarProps) {
@@ -88,8 +88,8 @@ export function Sidebar({ collapsed, onToggle, onLogout }: SidebarProps) {
         )}
       </div>
 
-      {/* Navigation — 가이드 발광 대상 */}
-      <nav data-guide-target="sidebar-main" className="shrink-0 py-4 px-2 mx-1 rounded-xl">
+      {/* Navigation */}
+      <nav className="shrink-0 py-4 px-2 mx-1 rounded-xl">
         <div className="space-y-1.5">
           {/* Toggle button — inside nav list so other icons stay fixed */}
           {collapsed ? (
@@ -120,12 +120,13 @@ export function Sidebar({ collapsed, onToggle, onLogout }: SidebarProps) {
               <span className="truncate text-sm">사이드바 닫기</span>
             </button>
           )}
-          {navItems.map(({ to, icon: Icon, label }) => {
+          {navItems.map(({ to, icon: Icon, label, guide }) => {
             const active = isItemActive(to);
             const link = (
               <NavLink
                 key={to}
                 to={to}
+                {...(guide ? { "data-guide": guide } : {})}
                 className={cn(
                   "w-full flex items-center rounded-lg text-sm font-medium transition-colors duration-150 py-2.5 px-0",
                   active

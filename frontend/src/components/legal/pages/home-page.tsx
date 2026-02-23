@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useNavigate, useOutletContext } from "react-router-dom";
-import { Scale, ArrowUp, FolderOpen, MessageSquare, HelpCircle, X } from "lucide-react";
+import { Scale, ArrowUp, FolderOpen, MessageSquare, HelpCircle } from "lucide-react";
+import { TutorialOverlay, type TutorialStep } from "@/components/legal/tutorial-overlay";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Tooltip,
@@ -32,6 +33,13 @@ const dummyResponses: Record<string, string> = {
   계약서: "계약서 검토를 도와드리겠습니다.\n\n검토할 계약서를 업로드해 주시거나, 주요 내용을 입력해 주시면 다음 항목을 중심으로 분석합니다:\n\n- **당사자 정보** 및 권리/의무 관계\n- **위험 조항** (면책, 손해배상 제한, 준거법)\n- **해지/해제 조건**\n- **분쟁 해결 방법** (중재/소송)\n\n사건 관리 페이지에서 파일을 첨부할 수도 있습니다.",
   소장: "소장 초안 작성을 도와드리겠습니다.\n\n기본 구조를 안내해 드립니다:\n\n1. **당사자 표시**: 원고/피고 인적사항\n2. **청구취지**: 구체적 청구 내용\n3. **청구원인**: 사실관계 및 법률적 근거\n4. **입증방법**: 증거 목록\n\n어떤 유형의 소송인지 알려주시면 맞춤형 초안을 작성해 드리겠습니다.\n(예: 손해배상, 임금청구, 부당해고 등)",
 };
+
+const tutorialSteps: TutorialStep[] = [
+  { target: "nav-cases", title: "사건 관리", description: "새 사건을 등록하고 AI가 자동으로 분석합니다.", placement: "right" },
+  { target: "nav-evidence", title: "파일 관리", description: "증거, 관련 문서 등 원본 파일을 업로드하고 관리합니다.", placement: "right" },
+  { target: "nav-precedents", title: "판례 검색", description: "키워드로 참고 판례를 검색할 수 있습니다.", placement: "right" },
+  { target: "chat-input", title: "AI 어시스턴트", description: "AI에게 자유롭게 질문하고 법률 업무를 지시하세요.", placement: "top" },
+];
 
 function getDummyResponse(input: string): string {
   const lower = input.toLowerCase();
@@ -182,61 +190,13 @@ export function HomePage() {
   const [greeting] = useState(() =>
     getRandomGreeting(userInfo?.name, userInfo?.role)
   );
-  const [showHelp, setShowHelp] = useState(false);
-  const helpBtnRef = useRef<HTMLButtonElement>(null);
-  const helpPopupRef = useRef<HTMLDivElement>(null);
-  const chatInputRef = useRef<HTMLDivElement>(null);
+  const [showTutorial, setShowTutorial] = useState(false);
 
   const userStartedTyping = input.length > 0 || hasMessages;
   const { hintText, hintDone } = useTypingHint(
     !hasMessages,
     userStartedTyping
   );
-
-  // 도움말 팝업 외부 클릭 시 닫기
-  useEffect(() => {
-    if (!showHelp) return;
-    const handler = (e: MouseEvent) => {
-      const target = e.target as Node;
-      if (
-        helpPopupRef.current && !helpPopupRef.current.contains(target) &&
-        helpBtnRef.current && !helpBtnRef.current.contains(target)
-      ) {
-        setShowHelp(false);
-      }
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, [showHelp]);
-
-  // 도움말 가이드 애니메이션 시퀀스
-  useEffect(() => {
-    if (!showHelp) return;
-    const timers: ReturnType<typeof setTimeout>[] = [];
-
-    // Step 1: 사이드바 기능 아이콘 발광 (2회, 1.6s × 2 = 3.2s)
-    const sidebarMain = document.querySelector('[data-guide-target="sidebar-main"]');
-    if (sidebarMain) {
-      sidebarMain.classList.add("guide-pulse");
-      timers.push(setTimeout(() => sidebarMain.classList.remove("guide-pulse"), 3200));
-    }
-
-    // Step 2: 사이드바 발광 종료 0.5초 후 채팅창 발광 (2회, 3.2s)
-    timers.push(setTimeout(() => {
-      if (chatInputRef.current) {
-        chatInputRef.current.classList.add("guide-glow-soft");
-        timers.push(setTimeout(() => {
-          chatInputRef.current?.classList.remove("guide-glow-soft");
-        }, 3200));
-      }
-    }, 3700));
-
-    return () => {
-      timers.forEach(clearTimeout);
-      sidebarMain?.classList.remove("guide-pulse");
-      chatInputRef.current?.classList.remove("guide-glow-soft");
-    };
-  }, [showHelp]);
 
   const scrollToBottom = useCallback(() => {
     if (scrollRef.current) {
@@ -332,7 +292,7 @@ export function HomePage() {
 
           {/* Chat Input */}
           <div className="w-full relative mb-12">
-            <div ref={chatInputRef} className="w-full flex items-end gap-2 bg-card border border-border/50 rounded-2xl px-4 py-3 shadow-sm focus-within:border-primary/40 focus-within:shadow-md transition-all">
+            <div data-guide="chat-input" className="w-full flex items-end gap-2 bg-card border border-border/50 rounded-2xl px-4 py-3 shadow-sm focus-within:border-primary/40 focus-within:shadow-md transition-all">
               <div className="flex-1 relative">
                 <textarea
                   ref={textareaRef}
@@ -371,9 +331,8 @@ export function HomePage() {
             <Tooltip>
               <TooltipTrigger asChild>
                 <button
-                  ref={helpBtnRef}
                   type="button"
-                  onClick={() => setShowHelp((v) => !v)}
+                  onClick={() => setShowTutorial(true)}
                   className="absolute top-1/2 -translate-y-1/2 w-10 h-10 rounded-full flex items-center justify-center transition-colors hover:bg-muted/60"
                   style={{ color: 'var(--text-light)', right: '-3rem' }}
                 >
@@ -383,25 +342,9 @@ export function HomePage() {
               <TooltipContent side="right" sideOffset={4} className="bg-[var(--card)] text-[var(--text-muted)] border border-[var(--soft-border)] shadow-sm">도움말</TooltipContent>
             </Tooltip>
 
-            {/* Help popup */}
-            {showHelp && (
-              <div ref={helpPopupRef} className="absolute right-0 top-full mt-2 w-80 bg-card rounded-xl border border-border/60 shadow-lg p-5 z-50 animate-in fade-in slide-in-from-top-2 duration-200">
-                <div className="flex items-center justify-between mb-3">
-                  <span className="text-[13px] font-semibold text-foreground">좌측 사이드바</span>
-                  <button type="button" onClick={() => setShowHelp(false)} className="text-muted-foreground/50 hover:text-muted-foreground transition-colors">
-                    <X className="h-4 w-4" />
-                  </button>
-                </div>
-                <div className="space-y-2 text-[13px] text-muted-foreground leading-relaxed">
-                  <p><span className="font-medium text-foreground">①</span> <strong className="text-foreground">사건 관리</strong> - 새 사건 등록 & AI 분석</p>
-                  <p><span className="font-medium text-foreground">②</span> <strong className="text-foreground">파일 관리</strong> — 증거 · 관련 문서 등 원본 파일 관리</p>
-                  <p><span className="font-medium text-foreground">③</span> <strong className="text-foreground">판례 검색</strong> — 참고 판례 검색</p>
-                </div>
-                <div className="border-t border-border/40 mt-3 pt-3 text-[13px] leading-relaxed">
-                  <p className="font-semibold text-foreground mb-1.5">채팅 에이전트</p>
-                  <p className="text-muted-foreground">AI 어시스턴트에게 자유롭게 지시하세요.</p>
-                </div>
-              </div>
+            {/* Tutorial overlay */}
+            {showTutorial && (
+              <TutorialOverlay steps={tutorialSteps} onClose={() => setShowTutorial(false)} />
             )}
           </div>
 
