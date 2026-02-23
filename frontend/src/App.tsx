@@ -13,6 +13,7 @@ import { PrecedentDetailPage } from '@/components/legal/pages/precedent-detail-p
 import { NewCasePage } from '@/components/legal/pages/new-case-page'
 import { EvidenceUploadPage } from '@/components/legal/pages/evidence-upload-page'
 import { SearchProvider } from '@/contexts/search-context'
+import { ChatProvider } from '@/contexts/chat-context'
 import './App.css'
 
 function App() {
@@ -118,6 +119,7 @@ function App() {
   return (
     <BrowserRouter>
       <SearchProvider>
+      <ChatProvider>
       <Routes>
         {/* Public Route */}
         <Route
@@ -151,6 +153,7 @@ function App() {
           <AuthPage onLogin={() => {}} exiting={authAnimating} />
         </div>
       )}
+      </ChatProvider>
       </SearchProvider>
     </BrowserRouter>
   )

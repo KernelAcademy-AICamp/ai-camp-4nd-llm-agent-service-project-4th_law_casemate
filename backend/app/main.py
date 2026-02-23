@@ -35,8 +35,18 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("서버 시작: 리랭킹 비활성 (USE_RERANKING=false)")
 
+    # Agent checkpointer 초기화
+    from app.home_agent.checkpointer import get_checkpointer, close_checkpointer
+    try:
+        await get_checkpointer()
+        logger.info("Agent checkpointer 초기화 완료")
+    except Exception as e:
+        logger.warning(f"Agent checkpointer 초기화 실패 (첫 요청 시 초기화됨): {e}")
+
     yield
 
+    # Agent checkpointer 종료
+    await close_checkpointer()
     logger.info("서버 종료")
 
 

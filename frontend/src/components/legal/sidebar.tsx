@@ -18,6 +18,7 @@ import {
   TooltipContent,
 } from "@/components/ui/tooltip";
 import { SettingsDialog } from "@/components/legal/settings-dialog";
+import { useChat } from "@/contexts/chat-context";
 
 interface SidebarProps {
   collapsed: boolean;
@@ -36,6 +37,7 @@ export function Sidebar({ collapsed, onToggle, onLogout }: SidebarProps) {
   const location = useLocation();
   const navigate = useNavigate();
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const { resetChat } = useChat();
   const isCasesActive =
     location.pathname.startsWith("/cases") ||
     location.pathname === "/new-case" ||
@@ -127,6 +129,7 @@ export function Sidebar({ collapsed, onToggle, onLogout }: SidebarProps) {
                 key={to}
                 to={to}
                 {...(guide ? { "data-guide": guide } : {})}
+                onClick={to === "/" ? () => resetChat() : undefined}
                 className={cn(
                   "w-full flex items-center rounded-lg text-sm font-medium transition-colors duration-150 py-2.5 px-0",
                   active

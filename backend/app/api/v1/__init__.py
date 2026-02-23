@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from . import auth_api, evidence_api, timeline_api, search_api, case_api, search_laws, relationship_api, document_api, file_manager_api, precedent_favorites_api
+from . import auth_api, evidence_api, timeline_api, search_api, case_api, search_laws, relationship_api, document_api, file_manager_api, precedent_favorites_api, agent_api
 
 router = APIRouter()
 
@@ -25,3 +25,5 @@ router.include_router(document_api.router, prefix="/documents")
 router.include_router(file_manager_api.router, prefix="/file-manager")
 # precedent_favorites_api 라우터 포함 (prefix: /favorites/precedents)
 router.include_router(precedent_favorites_api.router, prefix="/favorites/precedents")
+# agent_api 라우터 포함 (prefix: /agent)
+router.include_router(agent_api.router, prefix="/agent")
