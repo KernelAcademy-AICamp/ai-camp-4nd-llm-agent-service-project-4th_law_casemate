@@ -63,7 +63,6 @@ class TimeLineService:
         ).all()
 
         if existing_timelines:
-            print(f"[Timeline Generation] ⚠️  이미 존재함 (중복 생성 방지): {len(existing_timelines)}개")
             logger.info(f"[Timeline Generation] 이미 존재함 (중복 생성 방지): {len(existing_timelines)}개")
             return existing_timelines
 
@@ -244,13 +243,8 @@ class TimeLineService:
         evidence_text = self._format_evidences(evidences, evidence_mappings)
 
         # 증거 텍스트 로그 (확인용)
-        print(f"\n{'='*80}")
-        print(f"[증거 텍스트 확인]")
-        print(f"{'='*80}")
-        print(f"증거 개수: {len(evidences)}")
-        print(f"증거 텍스트 길이: {len(evidence_text)} characters")
-        print(f"증거 텍스트 미리보기 (처음 500자):\n{evidence_text[:500]}")
-        print(f"{'='*80}\n")
+        logger.debug(f"[증거 텍스트 확인] 증거 개수: {len(evidences)}, 텍스트 길이: {len(evidence_text)} characters")
+        logger.debug(f"[증거 텍스트 미리보기]\n{evidence_text[:500]}")
 
         # LLM 프롬프트 생성 (의뢰인 정보 포함)
         prompt = create_timeline_prompt(
@@ -262,12 +256,7 @@ class TimeLineService:
             client_role=client_role or "원고"
         )
 
-        print(f"\n{'='*80}")
-        print(f"[LLM 프롬프트 전체]")
-        print(f"{'='*80}")
-        print(f"프롬프트 길이: {len(prompt)} characters")
-        print(f"\n{prompt}")
-        print(f"{'='*80}\n")
+        logger.debug(f"[LLM 프롬프트 전체] 길이: {len(prompt)} characters\n{prompt}")
 
         logger.info(f"[LLM] 프롬프트 생성 완료: {len(prompt)} characters")
 
