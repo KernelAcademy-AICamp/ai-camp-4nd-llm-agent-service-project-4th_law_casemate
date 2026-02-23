@@ -1,6 +1,9 @@
+import logging
 from fastapi import UploadFile
 from openai import AsyncOpenAI
 import os
+
+logger = logging.getLogger(__name__)
 
 class STTService:
     """OpenAI Whisper API를 사용한 음성-텍스트 변환 서비스"""
@@ -45,5 +48,5 @@ class STTService:
             return transcript.text
 
         except Exception as e:
-            print(f"❌ OpenAI Whisper API 호출 실패: {str(e)}")
+            logger.error(f"OpenAI Whisper API 호출 실패: {str(e)}")
             raise e
