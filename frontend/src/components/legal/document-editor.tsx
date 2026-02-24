@@ -64,6 +64,10 @@ import { apiFetch } from "@/lib/api";
 interface DocumentEditorProps {
   caseData: CaseData;
   similarCases?: SimilarCaseResult[];
+  /** URL 파라미터로 전달된 초기 템플릿 타입 */
+  initialTemplateType?: string;
+  /** URL 파라미터로 전달된 자동 생성 여부 */
+  autoGenerate?: boolean;
 }
 
 // AI 생성 가능한 문서 유형 (백엔드 document_api.py의 SYSTEM_PROMPTS 키와 일치해야 함)
@@ -532,7 +536,12 @@ function advanceDraftStep(steps: AgentStep[], idx: number): AgentStep[] {
   }));
 }
 
-export function DocumentEditor({ caseData, similarCases }: DocumentEditorProps) {
+export function DocumentEditor({
+  caseData,
+  similarCases,
+  initialTemplateType,
+  autoGenerate,
+}: DocumentEditorProps) {
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
   const [activeDocId, setActiveDocId] = useState<string | null>(null);
   const [documentTitle, setDocumentTitle] = useState("새 문서");
@@ -778,6 +787,37 @@ export function DocumentEditor({ caseData, similarCases }: DocumentEditorProps) 
       }, 300);
     }
   };
+
+  // 자동 생성 트리거 (URL 파라미터로 전달된 경우)
+  const autoGenerateTriggered = useRef(false);
+  useEffect(() => {
+    if (autoGenerateTriggered.current) return;
+    if (!initialTemplateType) return;
+
+    // 템플릿 선택
+    const template = templates.find((t) => t.id === initialTemplateType);
+    if (template) {
+      setActiveDocId(null);
+      setSelectedTemplate(initialTemplateType);
+      setDocumentTitle(`${template.name} - ${caseData.name}`);
+      setIsSaved(false);
+      setContentSource("template");
+      setLeftTab("templates");
+
+      if (initialTemplateType === "criminal_complaint") {
+        setDocumentContent(templateContents[initialTemplateType] || "");
+      }
+
+      // autoGenerate가 true이고 AI 지원 타입이면 자동 생성 트리거
+      if (autoGenerate && AI_SUPPORTED_TYPES.includes(initialTemplateType)) {
+        autoGenerateTriggered.current = true;
+        // 약간의 딜레이 후 생성 시작 (UI 렌더링 대기)
+        setTimeout(() => {
+          handleGenerateDraft();
+        }, 500);
+      }
+    }
+  }, [initialTemplateType, autoGenerate, caseData.name]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleSave = async () => {
     try {

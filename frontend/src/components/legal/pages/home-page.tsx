@@ -7,13 +7,13 @@ import {
   TooltipTrigger,
   TooltipContent,
 } from "@/components/ui/tooltip";
-
-// ── Types ──
-interface Message {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-}
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import { apiFetch } from "@/lib/api";
+import type { ChatMessage, ChatResponse } from "@/types/chat";
+import { ChatCardRenderer } from "@/components/chat/ChatCard";
+import { ExpandableCardList } from "@/components/chat/ExpandableCardList";
+import { SuggestionChips } from "@/components/chat/SuggestionChips";
 
 // ── Constants ──
 const hintPhrases = [
@@ -26,20 +26,6 @@ const TYPING_SPEED = 58; // ms per character
 const PAUSE_AFTER_COMPLETE = 2000; // ms pause after phrase is fully typed
 const FINAL_HINT = "AI 사건 분석, 초안 작성, 유사 판례 검색 등을 도와드립니다.";
 
-const dummyResponses: Record<string, string> = {
-  분석: "사건의 주요 쟁점을 분석해 드리겠습니다.\n\n1. **계약 위반 여부**: 당사자 간 계약서 제3조의 이행 의무 충족 여부가 핵심입니다.\n2. **손해배상 범위**: 직접 손해와 간접 손해의 인과관계를 입증해야 합니다.\n3. **시효 문제**: 청구권 소멸시효(3년)의 기산점 확인이 필요합니다.\n\n추가 정보를 입력해 주시면 더 상세한 분석이 가능합니다.",
-  판례: "유사 판례를 검색하고 있습니다.\n\n**대법원 2023다12345** - 계약 불이행에 따른 손해배상 청구 사건\n- 판결 요지: 계약상 의무 불이행 시 통상손해와 특별손해를 구분하여 배상 범위를 산정\n- 시사점: 예견 가능성 입증이 특별손해 인정의 핵심\n\n**서울고등법원 2022나56789** - 용역계약 해지 분쟁\n- 판결 요지: 일방적 해지 시 신뢰이익 보호 원칙 적용",
-  계약서: "계약서 검토를 도와드리겠습니다.\n\n검토할 계약서를 업로드해 주시거나, 주요 내용을 입력해 주시면 다음 항목을 중심으로 분석합니다:\n\n- **당사자 정보** 및 권리/의무 관계\n- **위험 조항** (면책, 손해배상 제한, 준거법)\n- **해지/해제 조건**\n- **분쟁 해결 방법** (중재/소송)\n\n사건 관리 페이지에서 파일을 첨부할 수도 있습니다.",
-  소장: "소장 초안 작성을 도와드리겠습니다.\n\n기본 구조를 안내해 드립니다:\n\n1. **당사자 표시**: 원고/피고 인적사항\n2. **청구취지**: 구체적 청구 내용\n3. **청구원인**: 사실관계 및 법률적 근거\n4. **입증방법**: 증거 목록\n\n어떤 유형의 소송인지 알려주시면 맞춤형 초안을 작성해 드리겠습니다.\n(예: 손해배상, 임금청구, 부당해고 등)",
-};
-
-function getDummyResponse(input: string): string {
-  const lower = input.toLowerCase();
-  for (const [keyword, response] of Object.entries(dummyResponses)) {
-    if (lower.includes(keyword)) return response;
-  }
-  return `말씀하신 내용을 확인했습니다.\n\n"${input}"\n\n해당 요청에 대해 분석을 진행하겠습니다. 사건 관리 페이지에서 관련 사건을 선택하시면 더 정확한 결과를 받으실 수 있습니다.\n\n추가 질문이 있으시면 언제든지 물어보세요.`;
-}
 
 // ── Typing Hint Hook ──
 function useTypingHint(active: boolean, userStartedTyping: boolean) {
@@ -173,9 +159,10 @@ function getRandomGreeting(name?: string, role?: string): string {
 export function HomePage() {
   const navigate = useNavigate();
   const { userInfo } = useOutletContext<OutletContextType>();
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [isTyping, setIsTyping] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const hasMessages = messages.length > 0;
@@ -248,12 +235,22 @@ export function HomePage() {
     scrollToBottom();
   }, [messages, isTyping, scrollToBottom]);
 
-  const sendMessage = useCallback(
-    (text: string) => {
+  // 제안 클릭 처리
+  const handleSuggestionClick = useCallback(
+    (suggestion: string) => {
+      sendMessageToApi(suggestion);
+    },
+    []
+  );
+
+  const sendMessageToApi = useCallback(
+    async (text: string) => {
       const trimmed = text.trim();
       if (!trimmed || isTyping) return;
 
-      const userMsg: Message = {
+      setError(null);
+
+      const userMsg: ChatMessage = {
         id: Date.now().toString(),
         role: "user",
         content: trimmed,
@@ -266,18 +263,62 @@ export function HomePage() {
         textareaRef.current.style.height = "auto";
       }
 
-      setTimeout(() => {
-        const assistantMsg: Message = {
+      try {
+        const res = await apiFetch("/api/v1/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            message: trimmed,
+            context: {
+              current_page: "/",
+              case_id: null,
+              precedent_id: null,
+            },
+          }),
+        });
+
+        if (!res.ok) {
+          throw new Error("채팅 요청에 실패했습니다.");
+        }
+
+        const data: ChatResponse = await res.json();
+        console.log("[Chat] API 응답:", data);
+
+        // navigate 액션이면 바로 이동
+        if (data.action?.type === "navigate" && data.action.url) {
+          console.log("[Chat] navigate 실행:", data.action.url);
+          setIsTyping(false);
+          navigate(data.action.url);
+          return;
+        }
+
+        const assistantMsg: ChatMessage = {
           id: (Date.now() + 1).toString(),
           role: "assistant",
-          content: getDummyResponse(trimmed),
+          content: data.response,
+          intent: data.intent,
+          cards: data.cards ?? undefined,
+          action: data.action ?? undefined,
+          suggestions: data.suggestions ?? undefined,
         };
         setMessages((prev) => [...prev, assistantMsg]);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "오류가 발생했습니다.");
+        // 에러 시에도 메시지 표시
+        const errorMsg: ChatMessage = {
+          id: (Date.now() + 1).toString(),
+          role: "assistant",
+          content: "죄송합니다. 요청을 처리하지 못했어요. 다시 시도해주세요.",
+        };
+        setMessages((prev) => [...prev, errorMsg]);
+      } finally {
         setIsTyping(false);
-      }, 1500);
+      }
     },
-    [isTyping]
+    [isTyping, navigate]
   );
+
+  const sendMessage = sendMessageToApi;
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -458,37 +499,64 @@ export function HomePage() {
       {/* Messages */}
       <ScrollArea className="flex-1 relative z-10" ref={scrollRef}>
         <div className="max-w-3xl mx-auto px-4 py-6 space-y-4">
-          {messages.map((msg) => (
-            <div
-              key={msg.id}
-              className={
-                msg.role === "user" ? "flex justify-end" : "flex justify-start gap-3"
-              }
-            >
-              {msg.role === "assistant" && (
-                <div
-                  className="shrink-0 w-8 h-8 rounded-xl flex items-center justify-center mt-0.5"
-                  style={{
-                    background: "linear-gradient(135deg, #6D5EF5, #A78BFA)",
-                  }}
-                >
-                  <Scale className="h-4 w-4 text-white" />
-                </div>
-              )}
+          {messages.map((msg, idx) => (
+            <div key={msg.id} className="space-y-3">
               <div
                 className={
-                  msg.role === "user"
-                    ? "max-w-[75%] px-4 py-3 rounded-2xl rounded-br-md text-sm text-primary-foreground whitespace-pre-wrap leading-relaxed"
-                    : "max-w-[75%] px-4 py-3 rounded-2xl rounded-tl-md bg-card border border-border/40 text-sm text-card-foreground whitespace-pre-wrap leading-relaxed"
-                }
-                style={
-                  msg.role === "user"
-                    ? { background: "linear-gradient(135deg, #6D5EF5, #8B7AF7)" }
-                    : undefined
+                  msg.role === "user" ? "flex justify-end" : "flex justify-start gap-3"
                 }
               >
-                {msg.content}
+                {msg.role === "assistant" && (
+                  <div
+                    className="shrink-0 w-8 h-8 rounded-xl flex items-center justify-center mt-0.5"
+                    style={{
+                      background: "linear-gradient(135deg, #6D5EF5, #A78BFA)",
+                    }}
+                  >
+                    <Scale className="h-4 w-4 text-white" />
+                  </div>
+                )}
+                <div
+                  className={
+                    msg.role === "user"
+                      ? "max-w-[75%] px-4 py-3 rounded-2xl rounded-br-md text-sm text-primary-foreground whitespace-pre-wrap leading-relaxed"
+                      : "max-w-[75%] px-4 py-3 rounded-2xl rounded-tl-md bg-card border border-border/40 text-sm text-card-foreground leading-relaxed prose prose-sm prose-slate dark:prose-invert max-w-none"
+                  }
+                  style={
+                    msg.role === "user"
+                      ? { background: "linear-gradient(135deg, #6D5EF5, #8B7AF7)" }
+                      : undefined
+                  }
+                >
+                  {msg.role === "assistant" ? (
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                      {msg.content}
+                    </ReactMarkdown>
+                  ) : (
+                    msg.content
+                  )}
+                </div>
               </div>
+
+              {/* 리치 카드 렌더링 */}
+              {msg.role === "assistant" && msg.cards && msg.cards.length > 0 && (
+                <div className="ml-11">
+                  <ExpandableCardList cards={msg.cards} initialCount={3} />
+                </div>
+              )}
+
+              {/* 제안 칩 렌더링 (마지막 AI 메시지에만) */}
+              {msg.role === "assistant" &&
+                msg.suggestions &&
+                msg.suggestions.length > 0 &&
+                idx === messages.length - 1 && (
+                  <div className="ml-11">
+                    <SuggestionChips
+                      suggestions={msg.suggestions}
+                      onSelect={handleSuggestionClick}
+                    />
+                  </div>
+                )}
             </div>
           ))}
 

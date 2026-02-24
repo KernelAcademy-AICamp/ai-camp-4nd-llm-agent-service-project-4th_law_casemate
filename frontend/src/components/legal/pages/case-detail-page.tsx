@@ -182,8 +182,8 @@ export function CaseDetailPage({
     legalBasis: "",
   });
 
-  // 메인 탭 상태
-  const [activeTab, setActiveTab] = useState<string>("overview");
+  // 메인 탭 상태 (URL ?tab= 파라미터로 초기값 설정)
+  const [activeTab, setActiveTab] = useState<string>(initialTab);
 
   // 서브 탭 상태: "analysis" (AI 분석) | "original" (원문 보기)
   const [detailSubTab, setDetailSubTab] = useState<"analysis" | "original">("analysis");
@@ -821,6 +821,13 @@ export function CaseDetailPage({
       fetchTimeline();
     }
   }, [caseData, fetchTimeline]);
+
+  // 관계도 데이터 가져오기 (URL ?tab=relations로 직접 접근 시)
+  useEffect(() => {
+    if (activeTab === "relations" && relationshipData.persons.length === 0 && caseData) {
+      fetchRelationships();
+    }
+  }, [activeTab, caseData, relationshipData.persons.length, fetchRelationships]);
 
   // 유사 판례 검색 (overviewData 설정 후에만 실행)
   useEffect(() => {
@@ -2539,7 +2546,12 @@ export function CaseDetailPage({
         {/* ===== 문서 작성 탭 ===== */}
         <TabsContent value="documents" className="mt-8">
           {caseData ? (
-            <DocumentEditor caseData={caseData} similarCases={similarCases} />
+            <DocumentEditor
+              caseData={caseData}
+              similarCases={similarCases}
+              initialTemplateType={searchParams.get("type") || undefined}
+              autoGenerate={searchParams.get("autoGenerate") === "true"}
+            />
           ) : (
             <div className="flex flex-col items-center justify-center h-[600px] text-muted-foreground">
               <video src="/assets/loading-card.mp4" autoPlay loop muted playsInline className="h-20 w-20 mb-3" style={{ mixBlendMode: 'multiply', opacity: 0.3 }} />
