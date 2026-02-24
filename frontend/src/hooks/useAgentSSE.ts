@@ -21,6 +21,12 @@ export interface ToolResult {
   status: "loading" | "done" | "error";
 }
 
+export interface SuggestionItem {
+  text: string;
+  type: "question" | "action";
+  action?: { navigate: string };
+}
+
 export type AgentPhase = "idle" | "routing" | "planning" | "executing" | "generating" | "done";
 
 /**
@@ -37,6 +43,7 @@ export function useAgentSSE() {
   const [phase, setPhase] = useState<AgentPhase>("idle");
   const [isStreaming, setIsStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [suggestions, setSuggestions] = useState<SuggestionItem[]>([]);
   const abortRef = useRef<AbortController | null>(null);
 
   const send = useCallback(async (message: string, threadId?: string) => {
@@ -51,6 +58,7 @@ export function useAgentSSE() {
     setPhase("idle");
     setIsStreaming(true);
     setError(null);
+    setSuggestions([]);
 
     const token = localStorage.getItem("access_token");
 
@@ -198,6 +206,10 @@ export function useAgentSSE() {
         );
         break;
 
+      case "suggestions":
+        setSuggestions((data.items as SuggestionItem[]) || []);
+        break;
+
       case "error":
         setError(data.message as string);
         break;
@@ -216,6 +228,7 @@ export function useAgentSSE() {
     phase,
     isStreaming,
     error,
+    suggestions,
     send,
     abort,
   };

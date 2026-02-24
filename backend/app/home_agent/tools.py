@@ -28,24 +28,55 @@ def create_tools(user_id: int, law_firm_id: int):
     def list_cases() -> str:
         """사용자의 사건 목록을 조회합니다.
 
-        사건 ID, 제목, 의뢰인, 상대방, 사건 유형, 상태를 반환합니다.
+        사건 ID, 제목, 의뢰인, 상대방, 사건 유형, 상태, 증거 수, 분석 여부, 등록일(created_at)을 반환합니다.
         사건 분석이나 타임라인 생성 전에 어떤 사건이 있는지 확인할 때 사용하세요.
+        증거 유무, 분석 여부, 등록일 기준 질문(이번 달/이번 주 등록된 사건, 가장 최근 사건 등)도 이 결과만으로 답할 수 있습니다.
         """
+        from sqlalchemy import func as sa_func, text as sql_text
+
         db = SessionLocal()
         try:
-            cases = (
-                db.query(Case)
-                .filter(Case.law_firm_id == law_firm_id)
+            # 사건별 증거 수 서브쿼리
+            evidence_count_sq = (
+                db.query(
+                    CaseEvidenceMapping.case_id,
+                    sa_func.count(CaseEvidenceMapping.evidence_id).label("evidence_count"),
+                )
+                .group_by(CaseEvidenceMapping.case_id)
+                .subquery()
+            )
+            # 사건별 분석 존재 여부 서브쿼리
+            analysis_sq = (
+                db.query(CaseAnalysis.case_id)
+                .filter(CaseAnalysis.summary.isnot(None))
+                .subquery()
+            )
+
+            from sqlalchemy.orm import aliased
+            rows = (
+                db.query(
+                    Case,
+                    sa_func.coalesce(evidence_count_sq.c.evidence_count, 0).label("evidence_count"),
+                    analysis_sq.c.case_id.label("has_analysis_id"),
+                )
+                .outerjoin(evidence_count_sq, Case.id == evidence_count_sq.c.case_id)
+                .outerjoin(analysis_sq, Case.id == analysis_sq.c.case_id)
+                .filter(
+                    Case.law_firm_id == law_firm_id,
+                    Case.availability == "o",
+                )
                 .order_by(Case.created_at.desc())
                 .limit(20)
                 .all()
             )
-            if not cases:
+            if not rows:
                 return _structured_return("등록된 사건이 없습니다.", [])
 
             data = []
             lines = []
-            for c in cases:
+            for c, ev_count, has_analysis_id in rows:
+                has_analysis = has_analysis_id is not None
+                created_str = c.created_at.strftime("%Y-%m-%d") if c.created_at else "미지정"
                 data.append({
                     "id": c.id,
                     "title": c.title,
@@ -53,15 +84,22 @@ def create_tools(user_id: int, law_firm_id: int):
                     "opponent_name": c.opponent_name or "미지정",
                     "case_type": c.case_type or "미지정",
                     "status": c.status or "미지정",
+                    "evidence_count": ev_count,
+                    "has_analysis": has_analysis,
+                    "created_at": created_str,
                 })
+                analysis_mark = "분석완료" if has_analysis else "미분석"
                 lines.append(
                     f"- [사건 #{c.id}] {c.title}"
                     f" | 의뢰인: {c.client_name or '미지정'}"
                     f" | 상대방: {c.opponent_name or '미지정'}"
                     f" | 유형: {c.case_type or '미지정'}"
                     f" | 상태: {c.status or '미지정'}"
+                    f" | 증거: {ev_count}건"
+                    f" | {analysis_mark}"
+                    f" | 등록: {created_str}"
                 )
-            text = f"총 {len(cases)}건의 사건:\n" + "\n".join(lines)
+            text = f"총 {len(rows)}건의 사건:\n" + "\n".join(lines)
             return _structured_return(text, data)
         except Exception as e:
             raise ToolException(f"사건 목록 조회 실패: {e}")

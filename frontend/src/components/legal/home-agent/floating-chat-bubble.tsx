@@ -1,5 +1,6 @@
 import { useNavigate } from "react-router-dom";
 import { MessageSquare, Loader2 } from "lucide-react";
+import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { useChat } from "@/contexts/chat-context";
 
 /**
@@ -16,31 +17,62 @@ export function FloatingChatBubble() {
   const preview = agent.isStreaming
     ? "답변 작성 중..."
     : lastMessage?.role === "assistant"
-      ? lastMessage.content.slice(0, 30) + (lastMessage.content.length > 30 ? "..." : "")
+      ? lastMessage.content.slice(0, 60) + (lastMessage.content.length > 60 ? "..." : "")
       : "대화 진행 중";
 
   return (
-    <button
-      onClick={() => navigate("/")}
-      className="fixed bottom-6 right-6 z-50 flex items-center gap-3 pl-4 pr-5 py-3 rounded-full shadow-lg hover:shadow-xl transition-all hover:scale-105 active:scale-95"
-      style={{
-        background: "linear-gradient(135deg, #6D5EF5, #8B7AF7)",
-      }}
-    >
-      <div className="relative">
-        {agent.isStreaming ? (
-          <Loader2 className="h-5 w-5 text-white animate-spin" />
-        ) : (
-          <MessageSquare className="h-5 w-5 text-white" />
-        )}
-        {/* 메시지 수 배지 */}
-        <span className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-white text-[9px] font-bold text-primary flex items-center justify-center">
-          {messages.length}
-        </span>
-      </div>
-      <span className="text-white text-xs font-medium max-w-[140px] truncate">
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <div className="fixed bottom-6 right-6 z-50 flex flex-col items-center">
+          {/* 구체 본체 */}
+          <button
+            onClick={() => navigate("/")}
+            className={`
+              w-14 h-14 rounded-full
+              flex items-center justify-center
+              transition-all duration-200
+              hover:scale-110 active:scale-95
+              hover:-translate-y-0.5
+              ${agent.isStreaming ? "animate-pulse" : ""}
+            `}
+            style={{
+              background: "linear-gradient(145deg, #6D5EF5 0%, #8B7AF7 50%, #A78BFA 100%)",
+              boxShadow:
+                "0 4px 12px rgba(109, 94, 245, 0.35)," +
+                "0 12px 28px -4px rgba(79, 70, 229, 0.3)," +
+                "0 0 0 1px rgba(255, 255, 255, 0.1) inset",
+            }}
+          >
+          <div className="relative">
+            {agent.isStreaming ? (
+              <Loader2 className="h-6 w-6 text-white animate-spin" />
+            ) : (
+              <MessageSquare className="h-6 w-6 text-white" />
+            )}
+            <span
+              className="absolute -top-2 -right-2 w-5 h-5 rounded-full bg-white text-[10px] font-bold flex items-center justify-center shadow-sm"
+              style={{ color: "#6D5EF5" }}
+            >
+              {messages.length}
+            </span>
+          </div>
+        </button>
+
+          {/* 바닥 그림자 */}
+          <div
+            className="mt-1"
+            style={{
+              width: 40,
+              height: 8,
+              borderRadius: "50%",
+              background: "radial-gradient(ellipse, rgba(15, 23, 42, 0.18) 0%, rgba(15, 23, 42, 0.06) 50%, transparent 80%)",
+            }}
+          />
+        </div>
+      </TooltipTrigger>
+      <TooltipContent side="left" sideOffset={8} className="max-w-[200px]">
         {preview}
-      </span>
-    </button>
+      </TooltipContent>
+    </Tooltip>
   );
 }

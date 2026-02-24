@@ -1,5 +1,5 @@
 import { useNavigate } from "react-router-dom";
-import { FileText, ExternalLink } from "lucide-react";
+import { FileText, ExternalLink, Paperclip, FlaskConical, Calendar } from "lucide-react";
 
 interface CaseItem {
   id: number;
@@ -8,6 +8,9 @@ interface CaseItem {
   opponent_name: string;
   case_type: string;
   status: string;
+  evidence_count?: number;
+  has_analysis?: boolean;
+  created_at?: string;
 }
 
 interface Props {
@@ -54,7 +57,27 @@ export function CaseListRenderer({ data }: Props) {
                 <span>의뢰인: {c.client_name}</span>
                 <span>상대방: {c.opponent_name}</span>
               </div>
-              <span className="text-[10px] text-muted-foreground/70 mt-1 inline-block">{c.case_type}</span>
+              <div className="flex items-center gap-3 mt-1">
+                <span className="text-[10px] text-muted-foreground/70">{c.case_type}</span>
+                {c.created_at && (
+                  <span className="flex items-center gap-0.5 text-[10px] text-muted-foreground/70">
+                    <Calendar className="h-2.5 w-2.5" />
+                    {c.created_at}
+                  </span>
+                )}
+                {c.evidence_count != null && (
+                  <span className="flex items-center gap-0.5 text-[10px] text-muted-foreground/70">
+                    <Paperclip className="h-2.5 w-2.5" />
+                    증거 {c.evidence_count}건
+                  </span>
+                )}
+                {c.has_analysis != null && (
+                  <span className={`flex items-center gap-0.5 text-[10px] ${c.has_analysis ? "text-green-600" : "text-muted-foreground/50"}`}>
+                    <FlaskConical className="h-2.5 w-2.5" />
+                    {c.has_analysis ? "분석완료" : "미분석"}
+                  </span>
+                )}
+              </div>
             </div>
           </div>
         </div>

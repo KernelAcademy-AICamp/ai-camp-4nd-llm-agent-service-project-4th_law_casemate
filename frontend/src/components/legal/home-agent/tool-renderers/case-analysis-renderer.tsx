@@ -1,4 +1,6 @@
 import { useNavigate } from "react-router-dom";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { FileText, AlertCircle, Gavel, Tag, ExternalLink } from "lucide-react";
 
 interface AnalysisData {
@@ -24,7 +26,7 @@ export function CaseAnalysisRenderer({ data, caseId }: Props) {
   const sections = [
     { icon: FileText, label: "요약", content: d.summary, color: "#6D5EF5" },
     { icon: AlertCircle, label: "사실관계", content: d.facts, color: "#F59E0B" },
-    { icon: Gavel, label: "주장사항", content: d.claims, color: "#3B82F6" },
+    { icon: Gavel, label: "청구사항", content: d.claims, color: "#3B82F6" },
   ];
 
   return (
@@ -44,8 +46,15 @@ export function CaseAnalysisRenderer({ data, caseId }: Props) {
             <s.icon className="h-3.5 w-3.5" style={{ color: s.color }} />
             <span className="text-xs font-semibold text-foreground">{s.label}</span>
           </div>
-          <div className="px-3 py-2.5 text-xs text-card-foreground leading-relaxed whitespace-pre-wrap">
-            {s.content}
+          <div className="px-3 py-2.5 text-xs text-card-foreground leading-relaxed
+            prose prose-xs dark:prose-invert max-w-none
+            prose-p:my-1 prose-p:text-xs prose-p:text-card-foreground
+            prose-strong:text-foreground prose-strong:font-semibold
+            prose-li:text-xs prose-li:my-0.5
+            prose-ul:my-1 prose-ol:my-1
+            prose-headings:text-xs prose-headings:font-semibold prose-headings:my-1
+          ">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{s.content}</ReactMarkdown>
           </div>
         </div>
       ))}

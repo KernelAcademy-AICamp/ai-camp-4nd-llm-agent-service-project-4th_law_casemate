@@ -80,7 +80,7 @@ def _get_generator_llm():
     global _generator_llm
     if _generator_llm is None:
         _generator_llm = ChatOpenAI(
-            model="gpt-4o-mini", temperature=0.3, request_timeout=30
+            model="gpt-4o", temperature=0.4, request_timeout=45
         )
     return _generator_llm
 
@@ -111,6 +111,11 @@ def agent_node(state: dict, tools) -> dict:
     messages = _sanitize_messages(state["messages"])
     llm = _get_agent_llm(tools)
     response = llm.invoke([SystemMessage(content=AGENT_SYSTEM_PROMPT)] + messages)
+
+    # Guard: per-case 도구 N×1 반복 호출 차단
+    if hasattr(response, "tool_calls") and response.tool_calls:
+        response = _guard_repeated_tool_calls(response, messages)
+
     return {"messages": [response]}
 
 
@@ -205,6 +210,51 @@ def route_after_grader(state: dict) -> str:
     # relevant든 irrelevant든 Agent로 돌려보냄
     # Agent가 추가 도구 필요 여부를 직접 판단
     return "agent"
+
+
+# ── 도구 반복 호출 가드 ────────────────────────────────────────
+
+# case_id를 인자로 받는 도구 — 같은 도구를 여러 case_id로 반복 호출하면 차단
+_PER_CASE_TOOLS = {
+    "get_case_evidence", "analyze_case",
+    "generate_timeline", "generate_relationship",
+}
+
+
+def _guard_repeated_tool_calls(response: AIMessage, messages: list) -> AIMessage:
+    """같은 per-case 도구를 여러 case_id에 반복 호출하는 N×1 패턴 감지 시 차단.
+
+    예: get_case_evidence(1), get_case_evidence(2), get_case_evidence(3)...
+    list_cases가 이미 evidence_count/has_analysis를 포함하므로 개별 호출 불필요.
+    """
+    # 대화 이력에서 이미 호출된 per-case 도구 추적: {tool_name: {case_id, ...}}
+    called: dict[str, set[int]] = {}
+    for msg in messages:
+        if hasattr(msg, "tool_calls") and msg.tool_calls:
+            for tc in msg.tool_calls:
+                name = tc.get("name", "")
+                if name in _PER_CASE_TOOLS:
+                    cid = tc.get("args", {}).get("case_id")
+                    if cid is not None:
+                        called.setdefault(name, set()).add(cid)
+
+    # 현재 응답의 tool_calls 중 반복 패턴 검사
+    for tc in response.tool_calls:
+        name = tc.get("name", "")
+        cid = tc.get("args", {}).get("case_id")
+        if name in _PER_CASE_TOOLS and cid is not None:
+            existing = called.get(name, set())
+            if existing and cid not in existing:
+                # 이미 다른 case_id로 같은 도구를 호출한 적 있음 → N×1 패턴
+                logger.warning(
+                    f"[Guard] {name}(case_id={cid}) 반복 호출 차단 "
+                    f"— 이미 case_id={existing}에서 호출됨. list_cases 집계로 대체."
+                )
+                return AIMessage(
+                    content="수집 완료. list_cases 결과의 evidence_count, has_analysis 정보로 답변을 작성합니다."
+                )
+
+    return response
 
 
 # ── 메시지 정합성 헬퍼 ────────────────────────────────────────

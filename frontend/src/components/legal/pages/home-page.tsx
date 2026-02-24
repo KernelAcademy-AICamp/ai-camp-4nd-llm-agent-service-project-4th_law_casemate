@@ -8,6 +8,7 @@ import { useChat } from "@/contexts/chat-context";
 import { AgentResultsPanel } from "@/components/legal/home-agent/agent-results-panel";
 import { AgentStepsList } from "@/components/legal/home-agent/agent-steps-list";
 import { MarkdownMessage } from "@/components/legal/home-agent/markdown-message";
+import { SuggestionChips } from "@/components/legal/home-agent/suggestion-chips";
 
 // ── Types ──
 interface OutletContextType {
@@ -162,8 +163,12 @@ export function HomePage() {
   }, [agent.isStreaming, agent.streamingText, finalizeAssistantMessage]);
 
   const scrollToBottom = useCallback(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    // Radix ScrollArea: 실제 스크롤 가능한 요소는 Root가 아닌 Viewport
+    const viewport = scrollRef.current?.querySelector<HTMLDivElement>(
+      "[data-radix-scroll-area-viewport]"
+    );
+    if (viewport) {
+      viewport.scrollTop = viewport.scrollHeight;
     }
   }, []);
 
@@ -204,12 +209,24 @@ export function HomePage() {
 
       addUserMessage(trimmed);
       setInput("");
+      // 새 메시지 전송 시 패널 즉시 닫기 (도구 결과 오면 다시 열림)
+      setPanelOpen(false);
       if (textareaRef.current) textareaRef.current.style.height = "auto";
 
       agent.send(trimmed);
     },
     [agent, addUserMessage]
   );
+
+  // 판례번호/법조문 클릭 → 우측 패널 열기
+  const handleLegalRefClick = useCallback(() => {
+    if (agent.toolResults.length > 0 && !panelOpen) {
+      if (containerRef.current) {
+        setPanelWidth(containerRef.current.offsetWidth * DEFAULT_PANEL_RATIO);
+      }
+      setPanelOpen(true);
+    }
+  }, [agent.toolResults.length, panelOpen]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -394,7 +411,7 @@ export function HomePage() {
         {/* Messages */}
         <ScrollArea className="flex-1" ref={scrollRef}>
           <div className="max-w-3xl mx-auto px-4 py-6 space-y-4">
-            {messages.map((msg) => (
+            {messages.map((msg, idx) => (
               <div key={msg.id}>
                 {msg.role === "user" ? (
                   <div className="flex justify-end">
@@ -406,17 +423,26 @@ export function HomePage() {
                     </div>
                   </div>
                 ) : (
-                  <div className="flex justify-start gap-3">
-                    {assistantIcon}
-                    <div className="max-w-[75%] flex flex-col gap-1">
-                      {msg.steps && msg.steps.length > 0 && (
-                        <AgentStepsList steps={msg.steps} />
-                      )}
-                      <div className="px-4 py-3 rounded-2xl rounded-tl-md bg-card border border-border/40">
-                        <MarkdownMessage content={msg.content} />
+                  <>
+                    <div className="flex justify-start gap-3">
+                      {assistantIcon}
+                      <div className="max-w-[75%] flex flex-col gap-1">
+                        {msg.steps && msg.steps.length > 0 && (
+                          <AgentStepsList steps={msg.steps} />
+                        )}
+                        <div className="px-4 py-3 rounded-2xl rounded-tl-md bg-card border border-border/40">
+                          <MarkdownMessage content={msg.content} onLegalRefClick={handleLegalRefClick} />
+                        </div>
                       </div>
                     </div>
-                  </div>
+                    {msg.suggestions && msg.suggestions.length > 0 && idx === messages.length - 1 && !agent.isStreaming && (
+                      <SuggestionChips
+                        suggestions={msg.suggestions}
+                        onQuestionClick={sendMessage}
+                        disabled={agent.isStreaming}
+                      />
+                    )}
+                  </>
                 )}
               </div>
             ))}
@@ -432,7 +458,7 @@ export function HomePage() {
 
                   {agent.streamingText ? (
                     <div className="px-4 py-3 rounded-2xl rounded-tl-md bg-card border border-border/40">
-                      <MarkdownMessage content={agent.streamingText} />
+                      <MarkdownMessage content={agent.streamingText} onLegalRefClick={handleLegalRefClick} />
                       <span className="inline-block w-1.5 h-4 bg-primary/60 animate-pulse ml-0.5 align-text-bottom" />
                     </div>
                   ) : agent.steps.length === 0 ? (

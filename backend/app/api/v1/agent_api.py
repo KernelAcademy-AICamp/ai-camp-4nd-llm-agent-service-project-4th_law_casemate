@@ -8,6 +8,7 @@ POST /api/v1/agent/chat → Server-Sent Events 스트리밍
   tool_start → {"id": "run_id", "tool": "name", "input": {...}, "message": "한글 설명"}
   tool_end   → {"id": "run_id", "tool": "name", "result": "text", "structured": {...}, "summary": "한글 요약"}
   token      → {"content": "text"}  (generator 노드에서만)
+  suggestions → {"items": [{"text": "...", "type": "question"|"action", "action"?: {...}}]}
   done       → {}
   error      → {"message": "..."}
 """
@@ -30,17 +31,13 @@ router = APIRouter(tags=["agent"])
 
 STATUS_MESSAGES = {
     "router": "질문을 분석하고 있습니다...",
-    "agent": "업무 계획을 수립하고 있습니다...",
     "tools": "도구를 실행하고 있습니다...",
-    "grader": "결과를 검증하고 있습니다...",
     "generator": "답변을 작성하고 있습니다...",
 }
 
 STATUS_STEPS = {
     "router": "routing",
-    "agent": "planning",
     "tools": "executing",
-    "grader": "executing",
     "generator": "generating",
 }
 
@@ -106,6 +103,42 @@ def _parse_structured(tool_name: str, raw_output: str) -> dict | None:
     return None
 
 
+def _generate_suggestions(
+    tool_history: list[str],
+    tool_structured: dict[str, dict | None],
+) -> list[dict]:
+    """도구 실행 이력 기반 후속 질문/액션 생성 (LLM 호출 없음)"""
+    suggestions: list[dict] = []
+
+    # 미등록 사건 → 등록 유도
+    if "list_cases" in tool_history:
+        lc_data = tool_structured.get("list_cases")
+        if lc_data and isinstance(lc_data.get("data"), list) and len(lc_data["data"]) == 0:
+            suggestions.append({
+                "text": "새 사건을 등록하시겠습니까?",
+                "type": "action",
+                "action": {"navigate": "/new-case"},
+            })
+            return suggestions
+
+    last_tool = tool_history[-1] if tool_history else None
+
+    TOOL_SUGGESTIONS: dict[str, list[str]] = {
+        "list_cases": ["사건 분석해줘", "증거 현황 알려줘"],
+        "analyze_case": ["유사 판례 찾아줘", "타임라인 만들어줘", "관계도 만들어줘"],
+        "search_precedents": ["판례 요약해줘", "판례 비교해줘"],
+        "generate_timeline": ["관계도도 만들어줘"],
+        "generate_relationship": ["타임라인도 만들어줘"],
+        "get_case_evidence": ["증거 분석 요약해줘", "사건 분석해줘"],
+        "search_laws": ["유사 판례도 찾아줘"],
+    }
+
+    for text in TOOL_SUGGESTIONS.get(last_tool, []):
+        suggestions.append({"text": text, "type": "question"})
+
+    return suggestions[:3]
+
+
 class AgentChatRequest(BaseModel):
     message: str
     thread_id: str | None = None
@@ -132,6 +165,9 @@ async def agent_chat(
         current_node = ""
         # tool run_id → tool_name 매핑
         tool_run_ids: dict[str, str] = {}
+        # suggestions 생성용 도구 이력 추적
+        tool_history: list[str] = []
+        tool_structured: dict[str, dict | None] = {}
 
         try:
             tools = create_tools(user_id=user_id, law_firm_id=law_firm_id)
@@ -198,6 +234,10 @@ async def agent_chat(
                     structured = _parse_structured(tool_name, output_str)
                     summary = _tool_end_summary(tool_name, output_str, structured)
 
+                    # suggestions 생성용 이력 추적
+                    tool_history.append(tool_name)
+                    tool_structured[tool_name] = structured
+
                     yield _sse_event("tool_end", {
                         "id": run_id,
                         "tool": tool_name,
@@ -205,6 +245,12 @@ async def agent_chat(
                         "structured": structured,
                         "summary": summary,
                     })
+
+            # done 직전: 도구를 사용한 경우에만 suggestions 이벤트 발행
+            if tool_history:
+                suggestions = _generate_suggestions(tool_history, tool_structured)
+                if suggestions:
+                    yield _sse_event("suggestions", {"items": suggestions})
 
             yield _sse_event("done", {})
 
@@ -261,6 +307,8 @@ async def agent_chat(
                             output_str = str(output)
                             structured = _parse_structured(tool_name, output_str)
                             summary = _tool_end_summary(tool_name, output_str, structured)
+                            tool_history.append(tool_name)
+                            tool_structured[tool_name] = structured
                             yield _sse_event("tool_end", {
                                 "id": run_id,
                                 "tool": tool_name,
@@ -268,6 +316,10 @@ async def agent_chat(
                                 "structured": structured,
                                 "summary": summary,
                             })
+                    if tool_history:
+                        suggestions = _generate_suggestions(tool_history, tool_structured)
+                        if suggestions:
+                            yield _sse_event("suggestions", {"items": suggestions})
                     yield _sse_event("done", {})
                 except Exception as retry_err:
                     logger.error(f"[Agent] 재시도도 실패: {retry_err}", exc_info=True)
