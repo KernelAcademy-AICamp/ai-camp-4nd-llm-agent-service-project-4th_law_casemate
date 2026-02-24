@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, useCallback, type ReactNode } from "react";
-import { useAgentSSE, type StepEvent, type ToolResult, type AgentPhase, type SuggestionItem } from "@/hooks/useAgentSSE";
+import { useAgentSSE, type StepEvent, type ToolResult, type AgentPhase, type SuggestionItem, type CitationSource } from "@/hooks/useAgentSSE";
 
 // ── Types ──
 export interface ChatMessage {
@@ -9,6 +9,7 @@ export interface ChatMessage {
   steps?: StepEvent[];
   toolResults?: ToolResult[];
   suggestions?: SuggestionItem[];
+  citations?: CitationSource[];
 }
 
 interface ChatContextValue {
@@ -26,6 +27,7 @@ interface ChatContextValue {
     isStreaming: boolean;
     error: string | null;
     suggestions: SuggestionItem[];
+    citations: CitationSource[];
     send: (message: string, threadId?: string) => Promise<void>;
     abort: () => void;
   };
@@ -55,10 +57,11 @@ export function ChatProvider({ children }: { children: ReactNode }) {
           steps: agent.steps.length > 0 ? [...agent.steps] : undefined,
           toolResults: agent.toolResults.length > 0 ? [...agent.toolResults] : undefined,
           suggestions: agent.suggestions.length > 0 ? [...agent.suggestions] : undefined,
+          citations: agent.citations.length > 0 ? [...agent.citations] : undefined,
         },
       ]);
     }
-  }, [agent.streamingText, agent.steps, agent.toolResults, agent.suggestions]);
+  }, [agent.streamingText, agent.steps, agent.toolResults, agent.suggestions, agent.citations]);
 
   const resetChat = useCallback(() => {
     agent.abort();

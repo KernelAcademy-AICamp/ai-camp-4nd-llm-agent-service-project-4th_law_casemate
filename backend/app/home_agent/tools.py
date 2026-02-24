@@ -2,12 +2,13 @@
 에이전트 도구 정의 — 기존 백엔드 서비스를 @tool로 래핑
 
 create_tools(user_id, law_firm_id)를 호출하면
-해당 사용자 전용 도구 세트(8개)를 반환한다.
+해당 사용자 전용 도구 세트(10개)를 반환한다.
 
 반환 형식: JSON 문자열 {"text": "LLM용 마크다운", "data": 구조화 데이터}
 """
 
 import json
+import re
 import logging
 from langchain_core.tools import tool, ToolException
 from tool.database import SessionLocal
@@ -25,12 +26,15 @@ def create_tools(user_id: int, law_firm_id: int):
     """사용자별 도구 세트 생성 (클로저로 user_id/law_firm_id 캡처)"""
 
     @tool
-    def list_cases() -> str:
+    def list_cases(search_query: str = "") -> str:
         """사용자의 사건 목록을 조회합니다.
 
         사건 ID, 제목, 의뢰인, 상대방, 사건 유형, 상태, 증거 수, 분석 여부, 등록일(created_at)을 반환합니다.
         사건 분석이나 타임라인 생성 전에 어떤 사건이 있는지 확인할 때 사용하세요.
         증거 유무, 분석 여부, 등록일 기준 질문(이번 달/이번 주 등록된 사건, 가장 최근 사건 등)도 이 결과만으로 답할 수 있습니다.
+
+        Args:
+            search_query: 검색어 (의뢰인명, 상대방명, 사건 제목에서 검색). 빈 문자열이면 전체 조회.
         """
         from sqlalchemy import func as sa_func, text as sql_text
 
@@ -53,7 +57,9 @@ def create_tools(user_id: int, law_firm_id: int):
             )
 
             from sqlalchemy.orm import aliased
-            rows = (
+            from sqlalchemy import or_
+
+            query = (
                 db.query(
                     Case,
                     sa_func.coalesce(evidence_count_sq.c.evidence_count, 0).label("evidence_count"),
@@ -65,11 +71,23 @@ def create_tools(user_id: int, law_firm_id: int):
                     Case.law_firm_id == law_firm_id,
                     Case.availability == "o",
                 )
-                .order_by(Case.created_at.desc())
-                .limit(20)
-                .all()
             )
+
+            # 검색어가 있으면 의뢰인/상대방/제목에서 필터링
+            if search_query and search_query.strip():
+                search_term = f"%{search_query.strip()}%"
+                query = query.filter(
+                    or_(
+                        Case.client_name.ilike(search_term),
+                        Case.opponent_name.ilike(search_term),
+                        Case.title.ilike(search_term),
+                    )
+                )
+
+            rows = query.order_by(Case.created_at.desc()).limit(20).all()
             if not rows:
+                if search_query and search_query.strip():
+                    return _structured_return(f"'{search_query}'에 해당하는 사건을 찾지 못했습니다.", [])
                 return _structured_return("등록된 사건이 없습니다.", [])
 
             data = []
@@ -245,7 +263,9 @@ def create_tools(user_id: int, law_firm_id: int):
 
     @tool
     def search_precedents(query: str, limit: int = 5) -> str:
-        """판례를 키워드로 검색합니다. 유사 판례를 찾을 때 사용하세요.
+        """판례만 검색합니다. 사용자가 명시적으로 "판례 찾아줘"라고 요청할 때만 사용하세요.
+
+        주의: 일반 법률 질문(성립 요건, 차이점, 처벌 기준 등)에는 이 도구 대신 rag_search를 사용하세요.
 
         Args:
             query: 검색 키워드 (예: "사기죄 공소시효", "교통사고 손해배상")
@@ -361,16 +381,49 @@ def create_tools(user_id: int, law_firm_id: int):
 
     @tool
     def search_laws(query: str, limit: int = 8) -> str:
-        """법령을 키워드로 검색합니다. 관련 법조문을 찾을 때 사용하세요.
+        """법령만 검색합니다. 사용자가 명시적으로 특정 조문을 요청할 때만 사용하세요.
+
+        사용 예시: "형법 제307조 찾아줘", "민법 750조 알려줘"
+
+        주의: 일반 법률 질문(성립 요건, 차이점, 처벌 기준 등)에는 이 도구 대신 rag_search를 사용하세요.
 
         Args:
-            query: 검색 키워드 (예: "사기죄", "민법 손해배상", "주거침입")
+            query: 검색 키워드 (예: "형법 제307조", "민법 750조")
             limit: 반환할 결과 수 (기본값: 8)
         """
         from app.services.search_laws_service import SearchLawsService
 
         try:
             service = SearchLawsService()
+
+            # 특정 조문 패턴 감지: "형법 제307조", "민법 750조" 등
+            article_pattern = re.match(
+                r'^([가-힣]+(?:법|령|규칙))\s*제?(\d+(?:의\d+)?)\s*조?',
+                query.strip()
+            )
+
+            if article_pattern:
+                # 정확한 조문 조회
+                law_name = article_pattern.group(1)
+                article_number = article_pattern.group(2)
+                logger.info(f"[search_laws] 정확한 조문 조회: {law_name} 제{article_number}조")
+
+                article = service.get_article(law_name, article_number)
+
+                if article:
+                    data = [{
+                        "law_name": article.get("law_name", law_name),
+                        "article_number": article.get("article_number", article_number),
+                        "article_title": article.get("article_title", ""),
+                        "content": article.get("content", ""),
+                    }]
+                    text = f"## {law_name} 제{article_number}조 {article.get('article_title', '')}\n\n{article.get('content', '')}"
+                    return _structured_return(text, data)
+                else:
+                    # 정확한 조문 없으면 벡터 검색으로 폴백
+                    logger.info(f"[search_laws] 정확한 조문 없음, 벡터 검색으로 폴백")
+
+            # 벡터 검색 (일반 키워드 검색)
             result = service.search_laws(query=query, limit=limit)
 
             items = result.get("results", [])
@@ -471,6 +524,86 @@ def create_tools(user_id: int, law_firm_id: int):
         finally:
             db.close()
 
+    @tool
+    async def rag_search(query: str, keyword: str = "", precedent_limit: int = 5, law_limit: int = 3) -> str:
+        """[기본 검색 도구] 판례와 법령을 병렬로 검색합니다.
+
+        ⚠️ 대부분의 법률 질문에 이 도구를 사용하세요:
+        - "~뭐야?", "~나요?", "~어떻게 돼?" 형태의 질문
+        - 성립 요건, 차이점, 처벌 기준, 양형 기준 질문
+        - 예: "명예훼손죄 성립 요건이 뭐야?", "사기죄와 횡령죄 차이가 뭐야?"
+
+        search_laws, search_precedents는 사용자가 명시적으로 요청할 때만 사용하세요.
+
+        Args:
+            query: 사용자 질문 전체
+            keyword: 핵심 검색 키워드 (예: "명예훼손죄", "사기죄")
+            precedent_limit: 판례 검색 개수 (기본값: 5)
+            law_limit: 법령 검색 개수 (기본값: 3)
+        """
+        from app.services.rag_service import RAGService
+
+        try:
+            rag_service = RAGService()
+            rag_context = await rag_service.retrieve(
+                query=query,
+                keyword=keyword if keyword else None,
+                sources=["precedent", "law"],
+                precedent_limit=precedent_limit,
+                law_limit=law_limit
+            )
+
+            if not rag_context.sources:
+                return _structured_return(
+                    f"'{keyword or query}'에 대한 관련 자료를 찾지 못했습니다.",
+                    {"precedents": [], "laws": []}
+                )
+
+            precedents = []
+            laws = []
+            lines = ["## RAG 검색 결과\n"]
+
+            for source in rag_context.sources:
+                if source.type == "precedent":
+                    precedents.append({
+                        "case_number": source.id,
+                        "case_name": source.title,
+                        "court": source.metadata.get("court", ""),
+                        "judgment_date": source.metadata.get("date", ""),
+                        "content_snippet": source.content[:500],
+                    })
+                elif source.type == "law":
+                    laws.append({
+                        "law_name": source.metadata.get("law_name", ""),
+                        "article_number": source.metadata.get("article_number", ""),
+                        "article_title": source.metadata.get("article_title", ""),
+                        "content": source.content[:400],
+                    })
+
+            if precedents:
+                lines.append(f"### 판례 ({len(precedents)}건)\n")
+                for i, p in enumerate(precedents, 1):
+                    lines.append(
+                        f"**{i}. {p['case_number']}**\n"
+                        f"- 사건명: {p['case_name']}\n"
+                        f"- 법원: {p['court']} | 선고일: {p['judgment_date']}\n"
+                        f"- 내용: {p['content_snippet']}\n"
+                    )
+
+            if laws:
+                lines.append(f"\n### 법령 ({len(laws)}건)\n")
+                for i, law in enumerate(laws, 1):
+                    lines.append(
+                        f"**{i}. {law['law_name']} 제{law['article_number']}조** {law['article_title']}\n"
+                        f"{law['content']}\n"
+                    )
+
+            text = "\n".join(lines)
+            return _structured_return(text, {"precedents": precedents, "laws": laws})
+
+        except Exception as e:
+            raise ToolException(f"RAG 검색 실패: {e}")
+
     return [
         list_cases,
         analyze_case,
@@ -481,4 +614,5 @@ def create_tools(user_id: int, law_firm_id: int):
         compare_precedent,
         search_laws,
         get_case_evidence,
+        rag_search,
     ]

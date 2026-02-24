@@ -1,13 +1,13 @@
 """
-5-Node 에이전트 노드 정의
+4-Node 에이전트 노드 정의
 
-Router  → 쿼리 분류 (general/simple/complex)
-Agent   → 도구 선택 (ReAct)
-Tools   → 도구 실행 (ToolNode)
-Grader  → 결과 관련성 평가 (Corrective RAG)
-Generator → 최종 답변 생성 (Self-RAG + IRAC)
+Router    → 쿼리 분류 (general/simple/complex)
+Agent     → 도구 선택 (ReAct) + simple 직접 답변
+Tools     → 도구 실행 (ToolNode)
+Generator → 최종 답변 생성 (Self-RAG + IRAC) - complex만
 """
 
+import json
 import re
 import logging
 from typing import Literal
@@ -19,7 +19,6 @@ from pydantic import BaseModel, Field
 from app.home_agent.prompts import (
     ROUTER_SYSTEM_PROMPT,
     AGENT_SYSTEM_PROMPT,
-    GRADER_SYSTEM_PROMPT,
     GENERATOR_SYSTEM_PROMPT,
     GENERAL_SYSTEM_PROMPT,
 )
@@ -35,17 +34,10 @@ class RouteDecision(BaseModel):
     )
 
 
-class GradeResult(BaseModel):
-    score: Literal["relevant", "irrelevant"] = Field(
-        description="Whether the tool result is relevant to the question"
-    )
-
-
 # ── LLM 인스턴스 ─────────────────────────────────────────────
 
 _router_llm = None
 _agent_llm = None
-_grader_llm = None
 _generator_llm = None
 
 
@@ -65,15 +57,6 @@ def _get_agent_llm(tools):
             model="gpt-4o-mini", temperature=0.3, request_timeout=30
         ).bind_tools(tools)
     return _agent_llm
-
-
-def _get_grader_llm():
-    global _grader_llm
-    if _grader_llm is None:
-        _grader_llm = ChatOpenAI(
-            model="gpt-4o-mini", temperature=0, request_timeout=15
-        ).with_structured_output(GradeResult)
-    return _grader_llm
 
 
 def _get_generator_llm():
@@ -109,8 +92,13 @@ def router_node(state: dict) -> dict:
 def agent_node(state: dict, tools) -> dict:
     """도구 선택 및 호출 계획 (ReAct)"""
     messages = _sanitize_messages(state["messages"])
+
+    # Agent에게는 도구 결과 데이터를 전달하지 않음 (복사 방지)
+    # "[N건 조회됨]" 같은 최소 정보만 전달
+    llm_messages = _strip_tool_data_for_agent(messages)
+
     llm = _get_agent_llm(tools)
-    response = llm.invoke([SystemMessage(content=AGENT_SYSTEM_PROMPT)] + messages)
+    response = llm.invoke([SystemMessage(content=AGENT_SYSTEM_PROMPT)] + llm_messages)
 
     # Guard: per-case 도구 N×1 반복 호출 차단
     if hasattr(response, "tool_calls") and response.tool_calls:
@@ -119,46 +107,8 @@ def agent_node(state: dict, tools) -> dict:
     return {"messages": [response]}
 
 
-def grader_node(state: dict) -> dict:
-    """도구 결과의 관련성 평가 (Corrective RAG)"""
-    messages = state["messages"]
-
-    # 마지막 HumanMessage(원래 질문) 찾기
-    last_human = next(
-        (m for m in reversed(messages) if isinstance(m, HumanMessage)), None
-    )
-    if not last_human:
-        return {"grader_score": "relevant", "retry_count": state.get("retry_count", 0)}
-
-    # 마지막 ToolMessage(도구 결과) 찾기
-    tool_messages = [m for m in messages if isinstance(m, ToolMessage)]
-    if not tool_messages:
-        return {"grader_score": "relevant", "retry_count": state.get("retry_count", 0)}
-
-    last_tool = tool_messages[-1]
-
-    # 생성 도구는 grading 스킵 (결과 자체가 답이므로)
-    skip_tools = {"generate_timeline", "generate_relationship"}
-    if last_tool.name in skip_tools:
-        return {"grader_score": "relevant", "retry_count": state.get("retry_count", 0)}
-
-    llm = _get_grader_llm()
-    result = llm.invoke([
-        SystemMessage(content=GRADER_SYSTEM_PROMPT),
-        HumanMessage(content=f"사용자 질문: {last_human.content}\n\n도구 결과: {last_tool.content[:2000]}"),
-    ])
-
-    score = result.score
-    retry_count = state.get("retry_count", 0)
-    if score == "irrelevant":
-        retry_count += 1
-    logger.info(f"[Grader] 판정: {score} (재시도: {retry_count})")
-
-    return {"grader_score": score, "retry_count": retry_count}
-
-
 def generator_node(state: dict) -> dict:
-    """최종 답변 생성 (Self-RAG + IRAC)"""
+    """최종 답변 생성 (Self-RAG + IRAC + Citation Filtering)"""
     messages = _sanitize_messages(state["messages"])
     route = state.get("route", "general")
 
@@ -168,15 +118,23 @@ def generator_node(state: dict) -> dict:
     else:
         system = GENERATOR_SYSTEM_PROMPT
 
+    # ToolMessage에서 text 필드 제거 (LLM이 복사하는 것 방지)
+    llm_messages = _strip_tool_text_for_llm(messages)
+
     llm = _get_generator_llm()
-    response = llm.invoke([SystemMessage(content=system)] + messages)
+    response = llm.invoke([SystemMessage(content=system)] + llm_messages)
 
     # Self-RAG: 인용 검증 (도구 결과가 있을 때만)
     tool_messages = [m for m in messages if isinstance(m, ToolMessage)]
     if tool_messages and route != "general":
         response = _verify_citations(response, tool_messages)
 
-    return {"messages": [response]}
+    # Citation Filtering: 실제 인용된 출처만 추출
+    cited_sources = []
+    if tool_messages and route != "general":
+        cited_sources = _extract_cited_sources(response.content, tool_messages)
+
+    return {"messages": [response], "cited_sources": cited_sources}
 
 
 # ── 조건부 엣지 함수 ──────────────────────────────────────────
@@ -190,26 +148,33 @@ def route_after_router(state: dict) -> str:
 
 
 def route_after_agent(state: dict) -> str:
-    """Agent 출력 후 분기: tool_calls 있으면 tools로, 없으면 generator로"""
+    """Agent 출력 후 분기:
+    - tool_calls 있으면 → tools
+    - simple이고 tool_calls 없으면 → end (Agent가 직접 답변)
+    - complex이고 tool_calls 없으면 → generator
+    """
     messages = state["messages"]
     last = messages[-1]
+    route = state.get("route")
+
     if hasattr(last, "tool_calls") and last.tool_calls:
         return "tools"
+
+    # tool_calls가 없음 → 답변 완료
+    if route == "simple":
+        return "end"  # Simple은 Agent 답변으로 종료
+    return "generator"  # Complex는 Generator로
+
+
+def route_after_tools(state: dict) -> str:
+    """Tools 실행 후 분기:
+    - simple → agent (Agent가 결과 보고 직접 답변)
+    - complex → generator (Generator가 최종 답변 생성)
+    """
+    route = state.get("route")
+    if route == "simple":
+        return "agent"
     return "generator"
-
-
-def route_after_grader(state: dict) -> str:
-    """Grader 판정 후 분기: Agent로 돌려보내 멀티홉 허용.
-    Agent가 더 이상 도구가 필요 없다고 판단하면 tool_calls 없이 응답 → generator로 감."""
-    retry_count = state.get("retry_count", 0)
-
-    # 재시도 한계 초과 시 강제 종료
-    if retry_count >= 3:
-        return "generator"
-
-    # relevant든 irrelevant든 Agent로 돌려보냄
-    # Agent가 추가 도구 필요 여부를 직접 판단
-    return "agent"
 
 
 # ── 도구 반복 호출 가드 ────────────────────────────────────────
@@ -291,10 +256,141 @@ def _sanitize_messages(messages: list) -> list:
     return result
 
 
+# ── LLM 전달용 메시지 정리 ───────────────────────────────────
+
+def _strip_tool_data_for_agent(messages: list) -> list:
+    """Agent용: ToolMessage 내용을 최소화 (결과 건수만 전달)
+
+    Agent는 도구 결과 데이터가 필요 없음.
+    "N건 검색됨" 정도만 알면 됨.
+    전체 데이터는 우측 패널에 표시됨.
+    """
+    result = []
+    for msg in messages:
+        if isinstance(msg, ToolMessage):
+            summary = "[실행 완료]"
+            try:
+                parsed = json.loads(msg.content)
+                if isinstance(parsed, dict) and "data" in parsed:
+                    data = parsed["data"]
+                    if isinstance(data, list):
+                        summary = f"[{len(data)}건 조회됨]"
+                    elif isinstance(data, dict):
+                        summary = "[분석 완료]"
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+            result.append(ToolMessage(
+                content=summary,
+                tool_call_id=msg.tool_call_id,
+                name=msg.name,
+            ))
+        else:
+            result.append(msg)
+    return result
+
+
+def _strip_tool_text_for_llm(messages: list) -> list:
+    """Generator용: ToolMessage의 text 필드만 제거 (data는 유지)
+
+    Generator는 인용/출처를 위해 data가 필요함.
+    """
+    result = []
+    for msg in messages:
+        if isinstance(msg, ToolMessage):
+            try:
+                parsed = json.loads(msg.content)
+                if isinstance(parsed, dict) and "text" in parsed and "data" in parsed:
+                    # text 제거, data만 유지
+                    new_content = json.dumps(parsed["data"], ensure_ascii=False)
+                    result.append(ToolMessage(
+                        content=new_content,
+                        tool_call_id=msg.tool_call_id,
+                        name=msg.name,
+                    ))
+                    continue
+            except (json.JSONDecodeError, TypeError):
+                pass
+        result.append(msg)
+    return result
+
+
 # ── 기타 헬퍼 ────────────────────────────────────────────────
 
 _CASE_NUMBER_RE = re.compile(r'\d{2,4}[가-힣]{1,2}\d+')
 _LAW_ARTICLE_RE = re.compile(r'([가-힣]+(?:법|령|규칙))\s*제(\d+)조')
+
+
+def _extract_cited_sources(answer: str, tool_messages: list[ToolMessage]) -> list[dict]:
+    """
+    LLM 응답에서 실제 인용된 출처만 추출
+
+    Returns:
+        [{"type": "precedent", "id": "2007도8155"}, {"type": "law", "id": "형법 제307조"}, ...]
+    """
+    cited = []
+    seen = set()
+
+    for msg in tool_messages:
+        try:
+            # structured data 파싱 시도
+            parsed = json.loads(msg.content)
+            data = parsed.get("data") if isinstance(parsed, dict) else None
+        except (json.JSONDecodeError, TypeError):
+            data = None
+            parsed = None
+
+        # rag_search 결과 처리
+        if msg.name == "rag_search" and data:
+            # 판례 확인
+            for p in data.get("precedents", []):
+                case_num = p.get("case_number", "")
+                if case_num and case_num in answer and case_num not in seen:
+                    cited.append({"type": "precedent", "id": case_num})
+                    seen.add(case_num)
+
+            # 법령 확인
+            for law in data.get("laws", []):
+                law_name = law.get("law_name", "")
+                article_num = law.get("article_number", "")
+                law_id = f"{law_name} 제{article_num}조"
+
+                # 다양한 형식 매칭
+                patterns = [
+                    f"{law_name} 제{article_num}조",
+                    f"{law_name} {article_num}조",
+                    f"제{article_num}조",
+                ]
+                if any(p in answer for p in patterns) and law_id not in seen:
+                    cited.append({"type": "law", "id": law_id})
+                    seen.add(law_id)
+
+        # search_precedents 결과 처리
+        elif msg.name == "search_precedents" and data and isinstance(data, list):
+            for p in data:
+                case_num = p.get("case_number", "")
+                if case_num and case_num in answer and case_num not in seen:
+                    cited.append({"type": "precedent", "id": case_num})
+                    seen.add(case_num)
+
+        # search_laws 결과 처리
+        elif msg.name == "search_laws" and data and isinstance(data, list):
+            for law in data:
+                law_name = law.get("law_name", "")
+                article_num = law.get("article_number", "")
+                law_id = f"{law_name} 제{article_num}조"
+
+                patterns = [
+                    f"{law_name} 제{article_num}조",
+                    f"{law_name} {article_num}조",
+                    f"제{article_num}조",
+                ]
+                if any(p in answer for p in patterns) and law_id not in seen:
+                    cited.append({"type": "law", "id": law_id})
+                    seen.add(law_id)
+
+    logger.info(f"[Citation] 인용된 출처: {cited}")
+    return cited
 
 
 def _verify_citations(response: AIMessage, tool_messages: list[ToolMessage]) -> AIMessage:

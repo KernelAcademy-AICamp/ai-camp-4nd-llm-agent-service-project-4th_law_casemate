@@ -27,7 +27,83 @@ export interface SuggestionItem {
   action?: { navigate: string };
 }
 
+export interface CitationSource {
+  type: "precedent" | "law";
+  id: string;
+}
+
 export type AgentPhase = "idle" | "routing" | "planning" | "executing" | "generating" | "done";
+
+/**
+ * 인용된 출처만 남기도록 toolResults 필터링
+ */
+function filterToolResultsByCitations(
+  toolResults: ToolResult[],
+  citations: CitationSource[]
+): ToolResult[] {
+  const citedPrecedentIds = new Set(
+    citations.filter((c) => c.type === "precedent").map((c) => c.id)
+  );
+  const citedLawIds = new Set(
+    citations.filter((c) => c.type === "law").map((c) => c.id)
+  );
+
+  return toolResults.map((tr) => {
+    const structured = tr.structured as { text?: string; data?: unknown } | null;
+    if (!structured?.data) return tr;
+
+    // rag_search 결과 필터링
+    if (tr.tool === "rag_search") {
+      const data = structured.data as {
+        precedents?: { case_number?: string }[];
+        laws?: { law_name?: string; article_number?: string }[];
+      };
+
+      const filteredPrecedents = data.precedents?.filter((p) =>
+        citedPrecedentIds.has(p.case_number || "")
+      );
+      const filteredLaws = data.laws?.filter((law) => {
+        const lawId = `${law.law_name || ""} 제${law.article_number || ""}조`;
+        return citedLawIds.has(lawId);
+      });
+
+      return {
+        ...tr,
+        structured: {
+          ...structured,
+          data: { precedents: filteredPrecedents || [], laws: filteredLaws || [] },
+        },
+      };
+    }
+
+    // search_precedents 결과 필터링
+    if (tr.tool === "search_precedents") {
+      const data = structured.data as { case_number?: string }[];
+      const filtered = data.filter((p) =>
+        citedPrecedentIds.has(p.case_number || "")
+      );
+      return {
+        ...tr,
+        structured: { ...structured, data: filtered },
+      };
+    }
+
+    // search_laws 결과 필터링
+    if (tr.tool === "search_laws") {
+      const data = structured.data as { law_name?: string; article_number?: string }[];
+      const filtered = data.filter((law) => {
+        const lawId = `${law.law_name || ""} 제${law.article_number || ""}조`;
+        return citedLawIds.has(lawId);
+      });
+      return {
+        ...tr,
+        structured: { ...structured, data: filtered },
+      };
+    }
+
+    return tr;
+  });
+}
 
 /**
  * POST SSE 연결 훅 — 3채널 분리 상태 모델
@@ -44,6 +120,7 @@ export function useAgentSSE() {
   const [isStreaming, setIsStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [suggestions, setSuggestions] = useState<SuggestionItem[]>([]);
+  const [citations, setCitations] = useState<CitationSource[]>([]);
   const abortRef = useRef<AbortController | null>(null);
 
   const send = useCallback(async (message: string, threadId?: string) => {
@@ -59,6 +136,7 @@ export function useAgentSSE() {
     setIsStreaming(true);
     setError(null);
     setSuggestions([]);
+    setCitations([]);
 
     const token = localStorage.getItem("access_token");
 
@@ -210,6 +288,17 @@ export function useAgentSSE() {
         setSuggestions((data.items as SuggestionItem[]) || []);
         break;
 
+      case "citations": {
+        const citedSources = (data.sources as CitationSource[]) || [];
+        setCitations(citedSources);
+
+        // 인용된 출처만 남기도록 toolResults 필터링
+        if (citedSources.length > 0) {
+          setToolResults((prev) => filterToolResultsByCitations(prev, citedSources));
+        }
+        break;
+      }
+
       case "error":
         setError(data.message as string);
         break;
@@ -229,6 +318,7 @@ export function useAgentSSE() {
     isStreaming,
     error,
     suggestions,
+    citations,
     send,
     abort,
   };

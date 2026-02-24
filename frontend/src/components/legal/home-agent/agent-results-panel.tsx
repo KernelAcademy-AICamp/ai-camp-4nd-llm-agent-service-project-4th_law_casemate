@@ -29,6 +29,7 @@ const TOOL_META: Record<string, { label: string; icon: React.ElementType; color:
   compare_precedent: { label: "판례 비교", icon: GitBranch, color: "#EC4899" },
   search_laws: { label: "법령 검색", icon: Search, color: "#14B8A6" },
   get_case_evidence: { label: "증거 현황", icon: Files, color: "#F97316" },
+  rag_search: { label: "RAG 검색", icon: Search, color: "#8B5CF6" },
 };
 
 function getToolRenderer(tr: ToolResult) {
@@ -60,6 +61,25 @@ function getToolRenderer(tr: ToolResult) {
         return <EvidenceListRenderer data={data as Record<string, unknown>[]} caseId={tr.input?.case_id as number | undefined} />;
       case "summarize_precedent":
         return <PrecedentSummaryRenderer data={data as Record<string, string>} />;
+      case "rag_search": {
+        const ragData = data as { precedents?: Record<string, unknown>[]; laws?: Record<string, unknown>[] };
+        return (
+          <div className="space-y-4">
+            {ragData.precedents && ragData.precedents.length > 0 && (
+              <div>
+                <h4 className="text-xs font-semibold text-muted-foreground mb-2">판례 ({ragData.precedents.length}건)</h4>
+                <PrecedentListRenderer data={ragData.precedents} />
+              </div>
+            )}
+            {ragData.laws && ragData.laws.length > 0 && (
+              <div>
+                <h4 className="text-xs font-semibold text-muted-foreground mb-2">법령 ({ragData.laws.length}건)</h4>
+                <LawListRenderer data={ragData.laws} />
+              </div>
+            )}
+          </div>
+        );
+      }
     }
   }
 
@@ -102,6 +122,15 @@ export function AgentResultsPanel({ toolResults, onClose }: AgentResultsPanelPro
           const Icon = meta.icon;
           const isActive = idx === currentTab;
 
+          // 도구별 탭 라벨 결정
+          let tabLabel = meta.label;
+          if (tr.tool === "summarize_precedent" && tr.structured) {
+            const data = (tr.structured as { data?: { case_number?: string } }).data;
+            if (data?.case_number) {
+              tabLabel = data.case_number;
+            }
+          }
+
           return (
             <button
               key={tr.id}
@@ -117,7 +146,7 @@ export function AgentResultsPanel({ toolResults, onClose }: AgentResultsPanelPro
               ) : (
                 <Icon className="h-3 w-3" style={{ color: isActive ? undefined : meta.color }} />
               )}
-              {meta.label}
+              {tabLabel}
             </button>
           );
         })}

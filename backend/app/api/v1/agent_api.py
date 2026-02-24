@@ -8,6 +8,7 @@ POST /api/v1/agent/chat → Server-Sent Events 스트리밍
   tool_start → {"id": "run_id", "tool": "name", "input": {...}, "message": "한글 설명"}
   tool_end   → {"id": "run_id", "tool": "name", "result": "text", "structured": {...}, "summary": "한글 요약"}
   token      → {"content": "text"}  (generator 노드에서만)
+  citations  → {"sources": [{"type": "precedent"|"law", "id": "..."}]}  (실제 인용된 출처만)
   suggestions → {"items": [{"text": "...", "type": "question"|"action", "action"?: {...}}]}
   done       → {}
   error      → {"message": "..."}
@@ -31,12 +32,14 @@ router = APIRouter(tags=["agent"])
 
 STATUS_MESSAGES = {
     "router": "질문을 분석하고 있습니다...",
+    "agent": "도구를 선택하고 있습니다...",
     "tools": "도구를 실행하고 있습니다...",
     "generator": "답변을 작성하고 있습니다...",
 }
 
 STATUS_STEPS = {
     "router": "routing",
+    "agent": "thinking",
     "tools": "executing",
     "generator": "generating",
 }
@@ -51,6 +54,7 @@ TOOL_MESSAGES = {
     "compare_precedent": "판례를 비교 분석하고 있습니다...",
     "search_laws": "관련 법령을 검색하고 있습니다...",
     "get_case_evidence": "증거 현황을 조회하고 있습니다...",
+    "rag_search": "판례와 법령을 검색하고 있습니다...",
 }
 
 
@@ -88,6 +92,7 @@ def _tool_end_summary(tool_name: str, result_text: str, structured: dict | None)
         "compare_precedent": "판례 비교를 완료했습니다",
         "search_laws": "법령 검색을 완료했습니다",
         "get_case_evidence": "증거 현황을 조회했습니다",
+        "rag_search": "판례와 법령 검색을 완료했습니다",
     }
     return fallback.get(tool_name, "처리를 완료했습니다")
 
@@ -183,8 +188,7 @@ async def agent_chat(
             input_data = {
                 "messages": [HumanMessage(content=request.message)],
                 "route": None,
-                "grader_score": None,
-                "retry_count": 0,
+                "cited_sources": [],
             }
 
             async for event in graph.astream_events(input_data, config, version="v2"):
@@ -200,9 +204,11 @@ async def agent_chat(
                             "message": STATUS_MESSAGES[node_name],
                         })
 
-                # ── LLM 토큰 → generator 노드에서만 전송 ──
+                # ── LLM 토큰 → generator 또는 agent 노드에서 전송 ──
                 elif kind == "on_chat_model_stream":
-                    if current_node == "generator":
+                    # generator: complex 최종 답변
+                    # agent: simple 최종 답변 (도구 결과 후 직접 응답)
+                    if current_node in ("generator", "agent"):
                         chunk = event["data"]["chunk"]
                         content = chunk.content
                         if content:
@@ -246,6 +252,15 @@ async def agent_chat(
                         "summary": summary,
                     })
 
+            # 최종 상태에서 cited_sources 추출
+            try:
+                final_state = await graph.aget_state(config)
+                cited_sources = final_state.values.get("cited_sources", [])
+                if cited_sources:
+                    yield _sse_event("citations", {"sources": cited_sources})
+            except Exception as cite_err:
+                logger.warning(f"[Agent] cited_sources 추출 실패: {cite_err}")
+
             # done 직전: 도구를 사용한 경우에만 suggestions 이벤트 발행
             if tool_history:
                 suggestions = _generate_suggestions(tool_history, tool_structured)
@@ -267,8 +282,7 @@ async def agent_chat(
                     fresh_input = {
                         "messages": [HumanMessage(content=request.message)],
                         "route": None,
-                        "grader_score": None,
-                        "retry_count": 0,
+                        "cited_sources": [],
                     }
                     yield _sse_event("status", {"step": "routing", "message": "재처리 중입니다..."})
                     async for event in graph.astream_events(fresh_input, fresh_config, version="v2"):
@@ -282,7 +296,7 @@ async def agent_chat(
                                     "message": STATUS_MESSAGES[node_name],
                                 })
                         elif kind == "on_chat_model_stream":
-                            if current_node == "generator":
+                            if current_node in ("generator", "agent"):
                                 chunk = event["data"]["chunk"]
                                 content = chunk.content
                                 if content:
@@ -316,6 +330,15 @@ async def agent_chat(
                                 "structured": structured,
                                 "summary": summary,
                             })
+                    # 최종 상태에서 cited_sources 추출
+                    try:
+                        final_state = await graph.aget_state(fresh_config)
+                        cited_sources = final_state.values.get("cited_sources", [])
+                        if cited_sources:
+                            yield _sse_event("citations", {"sources": cited_sources})
+                    except Exception as cite_err:
+                        logger.warning(f"[Agent] cited_sources 추출 실패 (재시도): {cite_err}")
+
                     if tool_history:
                         suggestions = _generate_suggestions(tool_history, tool_structured)
                         if suggestions:

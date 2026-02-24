@@ -137,9 +137,26 @@ export function HomePage() {
   const [panelWidth, setPanelWidth] = useState(0);
   const isDraggingRef = useRef(false);
   const panelAutoOpenedRef = useRef(false);
+  // 선택된 메시지 ID (이전 대화의 도구 결과 보기용)
+  const [selectedMessageId, setSelectedMessageId] = useState<string | null>(null);
 
   const userStartedTyping = input.length > 0 || hasMessages;
   const { hintText } = useTypingHint(!hasMessages, userStartedTyping);
+
+  // 패널에 표시할 toolResults 결정
+  const panelToolResults = (() => {
+    // 스트리밍 중이면 현재 agent.toolResults
+    if (agent.isStreaming && agent.toolResults.length > 0) {
+      return agent.toolResults;
+    }
+    // 선택된 메시지가 있으면 해당 메시지의 toolResults
+    if (selectedMessageId) {
+      const selectedMsg = messages.find(m => m.id === selectedMessageId);
+      return selectedMsg?.toolResults || [];
+    }
+    // 기본: 현재 agent.toolResults
+    return agent.toolResults;
+  })();
 
   // 첫 tool_start 시 우측 패널 자동 오픈
   useEffect(() => {
@@ -217,7 +234,8 @@ export function HomePage() {
 
       addUserMessage(trimmed);
       setInput("");
-      // 새 메시지 전송 시 패널 즉시 닫기 (도구 결과 오면 다시 열림)
+      // 새 메시지 전송 시 선택 초기화 및 패널 즉시 닫기 (도구 결과 오면 다시 열림)
+      setSelectedMessageId(null);
       setPanelOpen(false);
       if (textareaRef.current) textareaRef.current.style.height = "auto";
 
@@ -401,7 +419,7 @@ export function HomePage() {
             <TooltipContent side="bottom" sideOffset={4}>대화를 초기화하고 처음으로</TooltipContent>
           </Tooltip>
 
-          {agent.toolResults.length > 0 && (
+          {(agent.toolResults.length > 0 || messages.some(m => m.toolResults && m.toolResults.length > 0)) && (
             <button
               onClick={() => {
                 if (!panelOpen && containerRef.current) {
@@ -432,14 +450,36 @@ export function HomePage() {
                   </div>
                 ) : (
                   <>
-                    <div className="flex justify-start gap-3">
+                    <div
+                      className={`flex justify-start gap-3 ${msg.toolResults && msg.toolResults.length > 0 ? "cursor-pointer" : ""
+                        }`}
+                      onClick={() => {
+                        if (msg.toolResults && msg.toolResults.length > 0) {
+                          setSelectedMessageId(selectedMessageId === msg.id ? null : msg.id);
+                          if (!panelOpen && containerRef.current) {
+                            setPanelWidth(containerRef.current.offsetWidth * DEFAULT_PANEL_RATIO);
+                            setPanelOpen(true);
+                          }
+                        }
+                      }}
+                    >
                       {assistantIcon}
                       <div className="max-w-[75%] flex flex-col gap-1">
                         {msg.steps && msg.steps.length > 0 && (
                           <AgentStepsList steps={msg.steps} />
                         )}
-                        <div className="px-4 py-3 rounded-2xl rounded-tl-md bg-card border border-border/40">
+                        <div
+                          className={`px-4 py-3 rounded-2xl rounded-tl-md bg-card border transition-colors ${selectedMessageId === msg.id
+                              ? "border-primary/60 ring-1 ring-primary/30"
+                              : "border-border/40 hover:border-border/60"
+                            }`}
+                        >
                           <MarkdownMessage content={msg.content} onLegalRefClick={handleLegalRefClick} />
+                          {msg.toolResults && msg.toolResults.length > 0 && (
+                            <div className="mt-2 pt-2 border-t border-border/30 text-xs text-muted-foreground">
+                              📊 도구 {msg.toolResults.length}개 실행됨 · 결과 패널 열기
+                            </div>
+                          )}
                         </div>
                       </div>
                     </div>
@@ -506,11 +546,14 @@ export function HomePage() {
       )}
 
       {/* Right: Results Panel */}
-      {panelOpen && (
+      {panelOpen && panelToolResults.length > 0 && (
         <div style={{ width: panelWidth, flexShrink: 0 }}>
           <AgentResultsPanel
-            toolResults={agent.toolResults}
-            onClose={() => setPanelOpen(false)}
+            toolResults={panelToolResults}
+            onClose={() => {
+              setPanelOpen(false);
+              setSelectedMessageId(null);
+            }}
           />
         </div>
       )}

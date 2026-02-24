@@ -24,7 +24,7 @@ export function AgentBubble({ isProcessing, toolCount, onClick }: AgentBubblePro
       <span className="text-sm font-medium text-white">
         {isProcessing
           ? "AI 어쏘가 업무를 처리하고 있습니다."
-          : `처리 완료 (${toolCount}건) — 클릭하여 결과 보기`}
+          : `처리 완료 (${toolCount}건) — 결과 패널 열기`}
       </span>
     </button>
   );
