@@ -38,5 +38,12 @@ passlib==1.7.4             # Password hashing utilities
 bcrypt==4.0.1              # Bcrypt hashing (compatible with passlib 1.7.4)
 python-jose[cryptography]==3.3.0  # JWT token creation and verification
 
+# LangGraph 에이전트
+langgraph>=0.2.60
+langchain-core>=0.3.29
+langchain-openai>=0.3.0
+langgraph-checkpoint-sqlite>=2.0.0
+aiosqlite>=0.20.0
+
 # 유틸리티 (migration scripts 전용, 런타임 불필요)
 # pip install tqdm  ← scripts/ 실행 시에만 수동 설치

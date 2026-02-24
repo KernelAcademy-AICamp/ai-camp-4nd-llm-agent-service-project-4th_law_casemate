@@ -67,6 +67,14 @@ async def lifespan(app: FastAPI):
         warmup_hf_api()  # 서버 시작 시 즉시 1회 실행
         _warmup_task = asyncio.create_task(warmup_ping_loop())
 
+    # Agent checkpointer 초기화
+    from app.home_agent.checkpointer import get_checkpointer, close_checkpointer
+    try:
+        await get_checkpointer()
+        logger.info("Agent checkpointer 초기화 완료")
+    except Exception as e:
+        logger.warning(f"Agent checkpointer 초기화 실패 (첫 요청 시 초기화됨): {e}")
+
     yield
 
     # Shutdown: 워밍업 태스크 취소
@@ -77,6 +85,8 @@ async def lifespan(app: FastAPI):
         except asyncio.CancelledError:
             pass
 
+    # Agent checkpointer 종료
+    await close_checkpointer()
     logger.info("서버 종료")
 
 

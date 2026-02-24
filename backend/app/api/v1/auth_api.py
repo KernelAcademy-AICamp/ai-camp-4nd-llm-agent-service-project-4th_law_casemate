@@ -1,7 +1,9 @@
+import io
 import re
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, field_validator
+from PIL import Image
 from app.models.user import User
 from tool.database import SessionLocal
 from tool.security import get_password_hash, verify_password, create_access_token, get_current_user
@@ -237,6 +239,8 @@ def update_profile(
 
 ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp"}
 ALLOWED_IMAGE_EXTENSIONS = {"jpg", "jpeg", "png", "webp"}
+AVATAR_MAX_SIZE = 256  # 프로필 사진 최대 크기 (px)
+AVATAR_QUALITY = 80    # JPEG 압축 품질
 
 
 @router.post("/me/avatar", response_model=UserOut)
@@ -252,8 +256,6 @@ async def upload_avatar(
     file_extension = file.filename.split(".")[-1].lower() if file.filename and "." in file.filename else "jpg"
     if file_extension not in ALLOWED_IMAGE_EXTENSIONS:
         raise HTTPException(status_code=400, detail="지원하지 않는 파일 확장자입니다. (jpg, png, webp만 가능)")
-    unique_filename = f"{uuid.uuid4()}.{file_extension}"
-    file_path = f"avatars/{current_user.id}/{unique_filename}"
 
     try:
         file_content = await file.read()
@@ -261,6 +263,24 @@ async def upload_avatar(
         # 아바타 파일 크기 제한 (5MB)
         if len(file_content) > 5 * 1024 * 1024:
             raise HTTPException(status_code=413, detail="이미지 크기가 5MB를 초과했습니다")
+
+        # 리사이징 + JPEG 압축
+        img = Image.open(io.BytesIO(file_content))
+        if img.mode in ("RGBA", "P"):
+            img = img.convert("RGB")
+        # 중앙 기준 정사각형 크롭
+        w, h = img.size
+        side = min(w, h)
+        left = (w - side) // 2
+        top = (h - side) // 2
+        img = img.crop((left, top, left + side, top + side))
+        img = img.resize((AVATAR_MAX_SIZE, AVATAR_MAX_SIZE), Image.LANCZOS)
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=AVATAR_QUALITY)
+        file_content = buf.getvalue()
+
+        unique_filename = f"{uuid.uuid4()}.jpg"
+        file_path = f"avatars/{current_user.id}/{unique_filename}"
 
         sb = _get_supabase()
 
@@ -280,7 +300,7 @@ async def upload_avatar(
         sb.storage.from_("Evidences").upload(
             path=file_path,
             file=file_content,
-            file_options={"content-type": file.content_type}
+            file_options={"content-type": "image/jpeg"}
         )
 
         # Signed URL 생성 (1년 = 31536000초)

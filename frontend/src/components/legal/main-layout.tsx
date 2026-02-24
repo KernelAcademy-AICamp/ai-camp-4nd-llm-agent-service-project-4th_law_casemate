@@ -13,6 +13,7 @@ import { User, LogOut, Scale } from "lucide-react";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import { ProfileDialog } from "@/components/legal/profile-dialog";
+import { FloatingChatBubble } from "@/components/legal/home-agent/floating-chat-bubble";
 
 interface MainLayoutProps {
   onLogout: () => void;
@@ -151,6 +152,9 @@ export function MainLayout({ onLogout, userInfo }: MainLayoutProps) {
             <Outlet context={{ userInfo: localUserInfo }} />
           </main>
         </div>
+
+        {/* 홈 이외 페이지에서 채팅 버블 표시 */}
+        {!isHomePage && <FloatingChatBubble />}
       </div>
     </TooltipProvider>
   );
