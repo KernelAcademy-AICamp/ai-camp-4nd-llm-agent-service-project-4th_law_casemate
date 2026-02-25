@@ -22,6 +22,7 @@ from app.home_agent.prompts import (
     GENERATOR_SYSTEM_PROMPT,
     GENERAL_SYSTEM_PROMPT,
 )
+from app.config import AgentConfig
 
 logger = logging.getLogger(__name__)
 
@@ -35,9 +36,10 @@ class RouteDecision(BaseModel):
 
 
 # ── LLM 인스턴스 ─────────────────────────────────────────────
+# Base LLM은 캐시, tools 바인딩은 매 요청마다 새로 수행
 
 _router_llm = None
-_agent_llm = None
+_agent_base_llm = None
 _generator_llm = None
 
 
@@ -45,25 +47,26 @@ def _get_router_llm():
     global _router_llm
     if _router_llm is None:
         _router_llm = ChatOpenAI(
-            model="gpt-4o-mini", temperature=0, request_timeout=15
+            model=AgentConfig.ROUTER_MODEL, temperature=0, request_timeout=15
         ).with_structured_output(RouteDecision)
     return _router_llm
 
 
 def _get_agent_llm(tools):
-    global _agent_llm
-    if _agent_llm is None:
-        _agent_llm = ChatOpenAI(
-            model="gpt-4o-mini", temperature=0.3, request_timeout=30
-        ).bind_tools(tools)
-    return _agent_llm
+    """Base LLM은 캐시하되, tools 바인딩은 매번 새로 수행 (유저별 도구 격리)"""
+    global _agent_base_llm
+    if _agent_base_llm is None:
+        _agent_base_llm = ChatOpenAI(
+            model=AgentConfig.AGENT_MODEL, temperature=0.3, request_timeout=30
+        )
+    return _agent_base_llm.bind_tools(tools)
 
 
 def _get_generator_llm():
     global _generator_llm
     if _generator_llm is None:
         _generator_llm = ChatOpenAI(
-            model="gpt-4o", temperature=0.4, request_timeout=45
+            model=AgentConfig.GENERATOR_MODEL, temperature=0.4, request_timeout=45
         )
     return _generator_llm
 

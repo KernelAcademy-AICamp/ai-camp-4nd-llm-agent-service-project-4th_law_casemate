@@ -173,20 +173,20 @@ export function useAgentSSE() {
         for (const part of parts) {
           const lines = part.split("\n");
           let eventType = "";
-          let dataStr = "";
+          const dataLines: string[] = [];
 
           for (const line of lines) {
             if (line.startsWith("event: ")) {
               eventType = line.slice(7).trim();
             } else if (line.startsWith("data: ")) {
-              dataStr = line.slice(6);
+              dataLines.push(line.slice(6));
             }
           }
 
-          if (!eventType || !dataStr) continue;
+          if (!eventType || dataLines.length === 0) continue;
 
           try {
-            const data = JSON.parse(dataStr);
+            const data = JSON.parse(dataLines.join("\n"));
             handleEvent(eventType, data);
           } catch {
             // JSON 파싱 실패 무시

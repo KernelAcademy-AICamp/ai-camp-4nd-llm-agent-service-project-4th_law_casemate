@@ -219,14 +219,6 @@ export function HomePage() {
     document.body.style.userSelect = "none";
   }, [panelWidth]);
 
-  // 제안 클릭 처리
-  const handleSuggestionClick = useCallback(
-    (suggestion: string) => {
-      sendMessage(suggestion);
-    },
-    []
-  );
-
   const sendMessage = useCallback(
     async (text: string) => {
       const trimmed = text.trim();

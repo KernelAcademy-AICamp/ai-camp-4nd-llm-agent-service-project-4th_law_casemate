@@ -3,6 +3,15 @@
 임베딩 모델, 컬렉션 설정 등을 한 곳에서 관리
 """
 
+import os
+
+
+class AgentConfig:
+    """홈 에이전트 LLM 설정 — 환경변수로 모델 교체 가능"""
+    ROUTER_MODEL = os.getenv("AGENT_ROUTER_MODEL", "gpt-4o-mini")
+    AGENT_MODEL = os.getenv("AGENT_TOOL_MODEL", "gpt-4o-mini")
+    GENERATOR_MODEL = os.getenv("AGENT_GENERATOR_MODEL", "gpt-4o")
+
 
 class EmbeddingConfig:
     """임베딩 모델 설정"""

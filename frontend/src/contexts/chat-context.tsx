@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useCallback, type ReactNode } from "react";
+import { createContext, useContext, useState, useCallback, useRef, type ReactNode } from "react";
 import { useAgentSSE, type StepEvent, type ToolResult, type AgentPhase, type SuggestionItem, type CitationSource } from "@/hooks/useAgentSSE";
 
 // ── Types ──
@@ -38,8 +38,10 @@ const ChatContext = createContext<ChatContextValue | null>(null);
 export function ChatProvider({ children }: { children: ReactNode }) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const agent = useAgentSSE();
+  const finalizedRef = useRef(false);
 
   const addUserMessage = useCallback((text: string) => {
+    finalizedRef.current = false; // 새 메시지 시작 → finalize 허용
     setMessages((prev) => [
       ...prev,
       { id: `user-${Date.now()}`, role: "user", content: text },
@@ -47,7 +49,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const finalizeAssistantMessage = useCallback(() => {
+    if (finalizedRef.current) return; // 이미 확정됨 → 중복 방지
     if (agent.streamingText) {
+      finalizedRef.current = true;
       setMessages((prev) => [
         ...prev,
         {
@@ -64,6 +68,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   }, [agent.streamingText, agent.steps, agent.toolResults, agent.suggestions, agent.citations]);
 
   const resetChat = useCallback(() => {
+    finalizedRef.current = false;
     agent.abort();
     setMessages([]);
   }, [agent]);

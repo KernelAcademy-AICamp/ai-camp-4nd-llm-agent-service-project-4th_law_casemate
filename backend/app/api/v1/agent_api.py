@@ -18,7 +18,7 @@ import json
 import logging
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from langchain_core.messages import HumanMessage
 from langgraph.errors import GraphRecursionError
 from openai import BadRequestError
@@ -145,12 +145,96 @@ def _generate_suggestions(
 
 
 class AgentChatRequest(BaseModel):
-    message: str
+    message: str = Field(..., min_length=1, max_length=5000)
     thread_id: str | None = None
 
 
 def _sse_event(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+async def _stream_graph_events(graph, input_data: dict, config: dict):
+    """그래프 이벤트를 SSE로 변환하는 공용 제너레이터.
+
+    정상 실행과 BadRequestError 재시도 양쪽에서 동일하게 사용.
+    Yields: (sse_string, tool_history, tool_structured)
+    """
+    current_node = ""
+    tool_history: list[str] = []
+    tool_structured: dict[str, dict | None] = {}
+
+    async for event in graph.astream_events(input_data, config, version="v2"):
+        kind = event["event"]
+
+        # ── 노드 시작 → status 이벤트 ──
+        if kind == "on_chain_start":
+            node_name = event.get("name", "")
+            if node_name in STATUS_MESSAGES:
+                current_node = node_name
+                yield _sse_event("status", {
+                    "step": STATUS_STEPS.get(node_name, "executing"),
+                    "message": STATUS_MESSAGES[node_name],
+                })
+
+        # ── LLM 토큰 → generator 또는 agent 노드에서 전송 ──
+        elif kind == "on_chat_model_stream":
+            if current_node in ("generator", "agent"):
+                chunk = event["data"]["chunk"]
+                content = chunk.content
+                if content:
+                    yield _sse_event("token", {"content": content})
+
+        # ── 도구 시작 ──
+        elif kind == "on_tool_start":
+            tool_name = event["name"]
+            run_id = event.get("run_id", "")
+            tool_input = event["data"].get("input", {})
+            yield _sse_event("tool_start", {
+                "id": run_id,
+                "tool": tool_name,
+                "input": tool_input,
+                "message": TOOL_MESSAGES.get(tool_name, f"{tool_name} 실행 중..."),
+            })
+
+        # ── 도구 완료 ──
+        elif kind == "on_tool_end":
+            tool_name = event["name"]
+            run_id = event.get("run_id", "")
+            output = event["data"].get("output", "")
+            if hasattr(output, "content"):
+                output = output.content
+            output_str = str(output)
+
+            structured = _parse_structured(tool_name, output_str)
+            summary = _tool_end_summary(tool_name, output_str, structured)
+
+            tool_history.append(tool_name)
+            tool_structured[tool_name] = structured
+
+            yield _sse_event("tool_end", {
+                "id": run_id,
+                "tool": tool_name,
+                "result": output_str[:3000],
+                "structured": structured,
+                "summary": summary,
+            })
+
+    # 최종 상태에서 cited_sources 추출
+    try:
+        final_state = await graph.aget_state(config)
+        cited_sources = final_state.values.get("cited_sources", [])
+        if cited_sources:
+            yield _sse_event("citations", {"sources": cited_sources})
+    except Exception as cite_err:
+        logger.warning(f"[Agent] cited_sources 추출 실패: {cite_err}")
+
+    # done 직전: 도구를 사용한 경우에만 suggestions 이벤트 발행
+    if tool_history:
+        suggestions = _generate_suggestions(tool_history, tool_structured)
+        if suggestions:
+            yield _sse_event("suggestions", {"items": suggestions})
+
+    yield _sse_event("done", {})
 
 
 @router.post("/chat")
@@ -166,14 +250,6 @@ async def agent_chat(
     law_firm_id = current_user.firm_id
 
     async def event_stream():
-        # 현재 노드 추적 (generator 토큰만 전송하기 위해)
-        current_node = ""
-        # tool run_id → tool_name 매핑
-        tool_run_ids: dict[str, str] = {}
-        # suggestions 생성용 도구 이력 추적
-        tool_history: list[str] = []
-        tool_structured: dict[str, dict | None] = {}
-
         try:
             tools = create_tools(user_id=user_id, law_firm_id=law_firm_id)
             checkpointer = await get_checkpointer()
@@ -191,83 +267,8 @@ async def agent_chat(
                 "cited_sources": [],
             }
 
-            async for event in graph.astream_events(input_data, config, version="v2"):
-                kind = event["event"]
-
-                # ── 노드 시작 → status 이벤트 ──
-                if kind == "on_chain_start":
-                    node_name = event.get("name", "")
-                    if node_name in STATUS_MESSAGES:
-                        current_node = node_name
-                        yield _sse_event("status", {
-                            "step": STATUS_STEPS.get(node_name, "executing"),
-                            "message": STATUS_MESSAGES[node_name],
-                        })
-
-                # ── LLM 토큰 → generator 또는 agent 노드에서 전송 ──
-                elif kind == "on_chat_model_stream":
-                    # generator: complex 최종 답변
-                    # agent: simple 최종 답변 (도구 결과 후 직접 응답)
-                    if current_node in ("generator", "agent"):
-                        chunk = event["data"]["chunk"]
-                        content = chunk.content
-                        if content:
-                            yield _sse_event("token", {"content": content})
-
-                # ── 도구 시작 ──
-                elif kind == "on_tool_start":
-                    tool_name = event["name"]
-                    run_id = event.get("run_id", "")
-                    tool_input = event["data"].get("input", {})
-                    tool_run_ids[run_id] = tool_name
-                    yield _sse_event("tool_start", {
-                        "id": run_id,
-                        "tool": tool_name,
-                        "input": tool_input,
-                        "message": TOOL_MESSAGES.get(tool_name, f"{tool_name} 실행 중..."),
-                    })
-
-                # ── 도구 완료 ──
-                elif kind == "on_tool_end":
-                    tool_name = event["name"]
-                    run_id = event.get("run_id", "")
-                    output = event["data"].get("output", "")
-                    if hasattr(output, "content"):
-                        output = output.content
-                    output_str = str(output)
-
-                    # 구조화 데이터 파싱 시도
-                    structured = _parse_structured(tool_name, output_str)
-                    summary = _tool_end_summary(tool_name, output_str, structured)
-
-                    # suggestions 생성용 이력 추적
-                    tool_history.append(tool_name)
-                    tool_structured[tool_name] = structured
-
-                    yield _sse_event("tool_end", {
-                        "id": run_id,
-                        "tool": tool_name,
-                        "result": output_str[:3000],
-                        "structured": structured,
-                        "summary": summary,
-                    })
-
-            # 최종 상태에서 cited_sources 추출
-            try:
-                final_state = await graph.aget_state(config)
-                cited_sources = final_state.values.get("cited_sources", [])
-                if cited_sources:
-                    yield _sse_event("citations", {"sources": cited_sources})
-            except Exception as cite_err:
-                logger.warning(f"[Agent] cited_sources 추출 실패: {cite_err}")
-
-            # done 직전: 도구를 사용한 경우에만 suggestions 이벤트 발행
-            if tool_history:
-                suggestions = _generate_suggestions(tool_history, tool_structured)
-                if suggestions:
-                    yield _sse_event("suggestions", {"items": suggestions})
-
-            yield _sse_event("done", {})
+            async for sse in _stream_graph_events(graph, input_data, config):
+                yield sse
 
         except BadRequestError as e:
             error_msg = str(e)
@@ -285,76 +286,19 @@ async def agent_chat(
                         "cited_sources": [],
                     }
                     yield _sse_event("status", {"step": "routing", "message": "재처리 중입니다..."})
-                    async for event in graph.astream_events(fresh_input, fresh_config, version="v2"):
-                        kind = event["event"]
-                        if kind == "on_chain_start":
-                            node_name = event.get("name", "")
-                            if node_name in STATUS_MESSAGES:
-                                current_node = node_name
-                                yield _sse_event("status", {
-                                    "step": STATUS_STEPS.get(node_name, "executing"),
-                                    "message": STATUS_MESSAGES[node_name],
-                                })
-                        elif kind == "on_chat_model_stream":
-                            if current_node in ("generator", "agent"):
-                                chunk = event["data"]["chunk"]
-                                content = chunk.content
-                                if content:
-                                    yield _sse_event("token", {"content": content})
-                        elif kind == "on_tool_start":
-                            tool_name = event["name"]
-                            run_id = event.get("run_id", "")
-                            tool_input = event["data"].get("input", {})
-                            tool_run_ids[run_id] = tool_name
-                            yield _sse_event("tool_start", {
-                                "id": run_id,
-                                "tool": tool_name,
-                                "input": tool_input,
-                                "message": TOOL_MESSAGES.get(tool_name, f"{tool_name} 실행 중..."),
-                            })
-                        elif kind == "on_tool_end":
-                            tool_name = event["name"]
-                            run_id = event.get("run_id", "")
-                            output = event["data"].get("output", "")
-                            if hasattr(output, "content"):
-                                output = output.content
-                            output_str = str(output)
-                            structured = _parse_structured(tool_name, output_str)
-                            summary = _tool_end_summary(tool_name, output_str, structured)
-                            tool_history.append(tool_name)
-                            tool_structured[tool_name] = structured
-                            yield _sse_event("tool_end", {
-                                "id": run_id,
-                                "tool": tool_name,
-                                "result": output_str[:3000],
-                                "structured": structured,
-                                "summary": summary,
-                            })
-                    # 최종 상태에서 cited_sources 추출
-                    try:
-                        final_state = await graph.aget_state(fresh_config)
-                        cited_sources = final_state.values.get("cited_sources", [])
-                        if cited_sources:
-                            yield _sse_event("citations", {"sources": cited_sources})
-                    except Exception as cite_err:
-                        logger.warning(f"[Agent] cited_sources 추출 실패 (재시도): {cite_err}")
-
-                    if tool_history:
-                        suggestions = _generate_suggestions(tool_history, tool_structured)
-                        if suggestions:
-                            yield _sse_event("suggestions", {"items": suggestions})
-                    yield _sse_event("done", {})
+                    async for sse in _stream_graph_events(graph, fresh_input, fresh_config):
+                        yield sse
                 except Exception as retry_err:
                     logger.error(f"[Agent] 재시도도 실패: {retry_err}", exc_info=True)
                     yield _sse_event("error", {"message": "대화 상태 복구에 실패했습니다. 새 대화를 시작해 주세요."})
             else:
                 logger.error(f"[Agent] OpenAI 요청 오류: {e}", exc_info=True)
-                yield _sse_event("error", {"message": f"AI 서비스 오류가 발생했습니다. 잠시 후 다시 시도해 주세요."})
+                yield _sse_event("error", {"message": "AI 서비스 오류가 발생했습니다. 잠시 후 다시 시도해 주세요."})
         except GraphRecursionError:
             yield _sse_event("error", {"message": "처리 단계가 너무 많습니다. 질문을 더 구체적으로 해주세요."})
         except Exception as e:
             logger.error(f"[Agent] 스트리밍 오류: {e}", exc_info=True)
-            yield _sse_event("error", {"message": f"오류가 발생했습니다. 잠시 후 다시 시도해 주세요."})
+            yield _sse_event("error", {"message": "오류가 발생했습니다. 잠시 후 다시 시도해 주세요."})
 
     return StreamingResponse(
         event_stream(),
