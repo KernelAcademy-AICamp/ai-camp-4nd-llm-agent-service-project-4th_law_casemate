@@ -170,14 +170,12 @@ def route_after_agent(state: dict) -> str:
 
 
 def route_after_tools(state: dict) -> str:
-    """Tools 실행 후 분기:
-    - simple → agent (Agent가 결과 보고 직접 답변)
-    - complex → generator (Generator가 최종 답변 생성)
+    """Tools 실행 후 항상 Agent로 복귀 (멀티홉).
+
+    Agent가 추가 도구를 호출하거나, 수집 완료 시 route_after_agent에서
+    simple → END, complex → generator로 분기한다.
     """
-    route = state.get("route")
-    if route == "simple":
-        return "agent"
-    return "generator"
+    return "agent"
 
 
 # ── 도구 반복 호출 가드 ────────────────────────────────────────

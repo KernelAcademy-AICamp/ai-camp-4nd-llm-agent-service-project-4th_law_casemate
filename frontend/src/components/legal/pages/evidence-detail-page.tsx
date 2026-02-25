@@ -107,7 +107,6 @@ export function EvidenceDetailPage() {
       }
 
       const data = await response.json();
-      console.log('증거 정보:', data);
       setEvidence(data);
     } catch (error: any) {
       console.error('증거 정보 조회 실패:', error);
@@ -129,7 +128,6 @@ export function EvidenceDetailPage() {
 
       if (response.ok) {
         const data = await response.json();
-        console.log('사건 정보:', data);
         setCaseData(data);
       }
     } catch (error) {
@@ -154,7 +152,6 @@ export function EvidenceDetailPage() {
 
       if (response.ok) {
         const data = await response.json();
-        console.log('분석 정보:', data);
         setHasAnalysis(data.has_analysis);
         setAnalysisData(data.analysis);
 
@@ -164,7 +161,6 @@ export function EvidenceDetailPage() {
           const hasContent = evidence.content && evidence.content.trim().length > 20;
 
           if (isLinkedToCase && hasContent) {
-            console.log('🤖 증거가 사건과 연결되어 있지만 분석이 없습니다. 자동 분석을 시작합니다...');
             // 약간의 지연 후 자동 분석 시작 (UI 업데이트를 위해)
             setTimeout(() => {
               handleAnalyze();
@@ -211,7 +207,6 @@ export function EvidenceDetailPage() {
       }
 
       const data = await response.json();
-      console.log('분석 완료:', data);
 
       // 분석 결과 업데이트
       setHasAnalysis(true);

@@ -10,9 +10,9 @@ create_tools(user_id, law_firm_id)를 호출하면
 import json
 import re
 import logging
-from langchain_core.tools import tool, ToolException
+from langchain_core.tools import tool
 from tool.database import SessionLocal
-from app.models.evidence import Case, CaseAnalysis, Evidence, CaseEvidenceMapping
+from app.models.evidence import Case, CaseAnalysis, CaseEvidenceMapping
 
 logger = logging.getLogger(__name__)
 
@@ -36,10 +36,10 @@ def create_tools(user_id: int, law_firm_id: int):
         Args:
             search_query: 검색어 (의뢰인명, 상대방명, 사건 제목에서 검색). 빈 문자열이면 전체 조회.
         """
-        from sqlalchemy import func as sa_func, text as sql_text
+        try:
+            from sqlalchemy import func as sa_func, text as sql_text
 
-        with SessionLocal() as db:
-            try:
+            with SessionLocal() as db:
                 # 사건별 증거 수 서브쿼리
                 evidence_count_sq = (
                     db.query(
@@ -56,7 +56,6 @@ def create_tools(user_id: int, law_firm_id: int):
                     .subquery()
                 )
 
-                from sqlalchemy.orm import aliased
                 from sqlalchemy import or_
 
                 query = (
@@ -73,16 +72,19 @@ def create_tools(user_id: int, law_firm_id: int):
                     )
                 )
 
-                # 검색어가 있으면 의뢰인/상대방/제목에서 필터링
+                # 검색어가 있으면 의뢰인/상대방/제목에서 필터링 (단어별 OR)
                 if search_query and search_query.strip():
-                    search_term = f"%{search_query.strip()}%"
-                    query = query.filter(
-                        or_(
-                            Case.client_name.ilike(search_term),
-                            Case.opponent_name.ilike(search_term),
-                            Case.title.ilike(search_term),
-                        )
-                    )
+                    conditions = []
+                    for word in search_query.strip().split():
+                        if len(word) >= 2:
+                            term = f"%{word}%"
+                            conditions.extend([
+                                Case.client_name.ilike(term),
+                                Case.opponent_name.ilike(term),
+                                Case.title.ilike(term),
+                            ])
+                    if conditions:
+                        query = query.filter(or_(*conditions))
 
                 rows = query.order_by(Case.created_at.desc()).limit(20).all()
                 if not rows:
@@ -119,8 +121,9 @@ def create_tools(user_id: int, law_firm_id: int):
                     )
                 text = f"총 {len(rows)}건의 사건:\n" + "\n".join(lines)
                 return _structured_return(text, data)
-            except Exception as e:
-                raise ToolException(f"사건 목록 조회 실패: {e}")
+        except Exception as e:
+            logger.error(f"사건 목록 조회 실패: {e}", exc_info=True)
+            return _structured_return(f"사건 목록 조회 실패: {e}", None)
 
     @tool
     def analyze_case(case_id: int) -> str:
@@ -133,8 +136,8 @@ def create_tools(user_id: int, law_firm_id: int):
         이미 분석된 사건이면 캐시된 결과를 즉시 반환합니다.
         아직 분석되지 않은 사건이면 안내 메시지를 반환합니다.
         """
-        with SessionLocal() as db:
-            try:
+        try:
+            with SessionLocal() as db:
                 case = db.query(Case).filter(Case.id == case_id, Case.law_firm_id == law_firm_id).first()
                 if not case:
                     return _structured_return(f"사건 #{case_id}을 찾을 수 없습니다.", None)
@@ -166,8 +169,9 @@ def create_tools(user_id: int, law_firm_id: int):
                     "legal_keywords": keywords,
                 }
                 return _structured_return(text, data)
-            except Exception as e:
-                raise ToolException(f"사건 분석 조회 실패: {e}")
+        except Exception as e:
+            logger.error(f"사건 분석 조회 실패: {e}", exc_info=True)
+            return _structured_return(f"사건 분석 조회 실패: {e}", None)
 
     @tool
     async def generate_timeline(case_id: int) -> str:
@@ -178,10 +182,10 @@ def create_tools(user_id: int, law_firm_id: int):
 
         주의: analyze_case가 먼저 완료되어야 합니다.
         """
-        from app.services.timeline_service import TimeLineService
+        try:
+            from app.services.timeline_service import TimeLineService
 
-        with SessionLocal() as db:
-            try:
+            with SessionLocal() as db:
                 case = db.query(Case).filter(Case.id == case_id, Case.law_firm_id == law_firm_id).first()
                 if not case:
                     return _structured_return(f"사건 #{case_id}을 찾을 수 없습니다.", None)
@@ -208,8 +212,9 @@ def create_tools(user_id: int, law_firm_id: int):
                     lines.append(f"- [{t.date}] {t.title}: {t.description}")
                 text = f"## 타임라인 (#{case_id})\n\n" + "\n".join(lines)
                 return _structured_return(text, data)
-            except Exception as e:
-                raise ToolException(f"타임라인 생성 실패: {e}")
+        except Exception as e:
+            logger.error(f"타임라인 생성 실패: {e}", exc_info=True)
+            return _structured_return(f"타임라인 생성 실패: {e}", None)
 
     @tool
     async def generate_relationship(case_id: int) -> str:
@@ -220,10 +225,10 @@ def create_tools(user_id: int, law_firm_id: int):
 
         주의: analyze_case가 먼저 완료되어야 합니다.
         """
-        from app.services.relationship_service import RelationshipService
+        try:
+            from app.services.relationship_service import RelationshipService
 
-        with SessionLocal() as db:
-            try:
+            with SessionLocal() as db:
                 case = db.query(Case).filter(Case.id == case_id, Case.law_firm_id == law_firm_id).first()
                 if not case:
                     return _structured_return(f"사건 #{case_id}을 찾을 수 없습니다.", None)
@@ -250,8 +255,9 @@ def create_tools(user_id: int, law_firm_id: int):
                 text = "\n".join(lines)
                 data = {"persons": persons, "relationships": rels}
                 return _structured_return(text, data)
-            except Exception as e:
-                raise ToolException(f"관계도 생성 실패: {e}")
+        except Exception as e:
+            logger.error(f"관계도 생성 실패: {e}", exc_info=True)
+            return _structured_return(f"관계도 생성 실패: {e}", None)
 
     @tool
     def search_precedents(query: str, limit: int = 5) -> str:
@@ -263,9 +269,9 @@ def create_tools(user_id: int, law_firm_id: int):
             query: 검색 키워드 (예: "사기죄 공소시효", "교통사고 손해배상")
             limit: 반환할 결과 수 (기본값: 5)
         """
-        from app.services.precedent_search_service import PrecedentSearchService
-
         try:
+            from app.services.precedent_search_service import PrecedentSearchService
+
             service = PrecedentSearchService()
             result = service.search_cases(query=query, limit=limit)
 
@@ -276,24 +282,32 @@ def create_tools(user_id: int, law_firm_id: int):
             data = []
             lines = [f"## 판례 검색 결과 ({len(items)}건)\n"]
             for i, item in enumerate(items, 1):
+                # judgment_date를 문자열로 안전하게 변환
+                jdate = item.get("judgment_date", "?")
+                if hasattr(jdate, "strftime"):
+                    jdate = jdate.strftime("%Y-%m-%d")
+                elif isinstance(jdate, int):
+                    jdate = str(jdate)
+
                 data.append({
-                    "case_number": item.get("case_number", "?"),
-                    "case_name": item.get("case_name", "?"),
-                    "court": item.get("court_name", "?"),
-                    "judgment_date": item.get("judgment_date", "?"),
-                    "content_snippet": (item.get("content", "") or "")[:500],
+                    "case_number": str(item.get("case_number", "?")),
+                    "case_name": str(item.get("case_name", "?")),
+                    "court": str(item.get("court_name", "?")),
+                    "judgment_date": str(jdate),
+                    "content_snippet": str((item.get("content", "") or ""))[:500],
                 })
                 lines.append(
                     f"### {i}. {item.get('case_number', '?')}\n"
                     f"- 사건명: {item.get('case_name', '?')}\n"
                     f"- 법원: {item.get('court_name', '?')}\n"
-                    f"- 선고일: {item.get('judgment_date', '?')}\n"
+                    f"- 선고일: {jdate}\n"
                     f"- 내용: {(item.get('content', '') or '')[:500]}\n"
                 )
             text = "\n".join(lines)
             return _structured_return(text, data)
         except Exception as e:
-            raise ToolException(f"판례 검색 실패: {e}")
+            logger.error(f"판례 검색 실패: {e}", exc_info=True)
+            return _structured_return(f"판례 검색 실패: {e}", None)
 
     @tool
     def summarize_precedent(case_number: str, content: str) -> str:
@@ -303,9 +317,9 @@ def create_tools(user_id: int, law_firm_id: int):
             case_number: 판례 사건번호 (예: "2023다12345")
             content: 판례 내용 텍스트 (search_precedents 결과에서 가져옴)
         """
-        from app.services.precedent_summary_service import SummaryService
-
         try:
+            from app.services.precedent_summary_service import SummaryService
+
             service = SummaryService()
             result = service.get_or_generate_summary(
                 case_number=case_number,
@@ -316,7 +330,8 @@ def create_tools(user_id: int, law_firm_id: int):
             data = {"case_number": case_number, "summary": summary}
             return _structured_return(text, data)
         except Exception as e:
-            raise ToolException(f"판례 요약 실패: {e}")
+            logger.error(f"판례 요약 실패: {e}", exc_info=True)
+            return _structured_return(f"판례 요약 실패: {e}", None)
 
     @tool
     def compare_precedent(case_id: int, target_case_number: str) -> str:
@@ -328,10 +343,10 @@ def create_tools(user_id: int, law_firm_id: int):
 
         주의: search_precedents로 먼저 판례를 검색한 후 사용하세요.
         """
-        from app.services.comparison_service import ComparisonService
+        try:
+            from app.services.comparison_service import ComparisonService
 
-        with SessionLocal() as db:
-            try:
+            with SessionLocal() as db:
                 analysis = db.query(CaseAnalysis).filter(CaseAnalysis.case_id == case_id).first()
                 if not analysis:
                     return _structured_return("사건 분석이 필요합니다. analyze_case를 먼저 호출하세요.", None)
@@ -366,8 +381,9 @@ def create_tools(user_id: int, law_firm_id: int):
                     "strategy_points": parsed.get("strategy_points", ""),
                 }
                 return _structured_return(text, data)
-            except Exception as e:
-                raise ToolException(f"판례 비교 실패: {e}")
+        except Exception as e:
+            logger.error(f"판례 비교 실패: {e}", exc_info=True)
+            return _structured_return(f"판례 비교 실패: {e}", None)
 
     @tool
     def search_laws(query: str, limit: int = 8) -> str:
@@ -381,9 +397,9 @@ def create_tools(user_id: int, law_firm_id: int):
             query: 검색 키워드 (예: "형법 제307조", "민법 750조")
             limit: 반환할 결과 수 (기본값: 8)
         """
-        from app.services.search_laws_service import SearchLawsService
-
         try:
+            from app.services.search_laws_service import SearchLawsService
+
             service = SearchLawsService()
 
             # 특정 조문 패턴 감지: "형법 제307조", "민법 750조" 등
@@ -437,7 +453,8 @@ def create_tools(user_id: int, law_firm_id: int):
             text = "\n".join(lines)
             return _structured_return(text, data)
         except Exception as e:
-            raise ToolException(f"법령 검색 실패: {e}")
+            logger.error(f"법령 검색 실패: {e}", exc_info=True)
+            return _structured_return(f"법령 검색 실패: {e}", None)
 
     @tool
     def get_case_evidence(case_id: int) -> str:
@@ -448,10 +465,10 @@ def create_tools(user_id: int, law_firm_id: int):
 
         증거 현황, 파일 목록, 분석 여부를 확인할 때 사용하세요.
         """
-        from sqlalchemy import text as sql_text
+        try:
+            from sqlalchemy import text as sql_text
 
-        with SessionLocal() as db:
-            try:
+            with SessionLocal() as db:
                 rows = db.execute(sql_text("""
                     SELECT
                         e.id, e.file_name, e.file_type, e.doc_type, e.starred,
@@ -509,8 +526,9 @@ def create_tools(user_id: int, law_firm_id: int):
 
                 text_result = "\n".join(lines)
                 return _structured_return(text_result, data)
-            except Exception as e:
-                raise ToolException(f"증거 현황 조회 실패: {e}")
+        except Exception as e:
+            logger.error(f"증거 현황 조회 실패: {e}", exc_info=True)
+            return _structured_return(f"증거 현황 조회 실패: {e}", None)
 
     @tool
     async def rag_search(query: str, keyword: str = "", precedent_limit: int = 5, law_limit: int = 3) -> str:
@@ -529,9 +547,9 @@ def create_tools(user_id: int, law_firm_id: int):
             precedent_limit: 판례 검색 개수 (기본값: 5)
             law_limit: 법령 검색 개수 (기본값: 3)
         """
-        from app.services.rag_service import RAGService
-
         try:
+            from app.services.rag_service import RAGService
+
             rag_service = RAGService()
             rag_context = await rag_service.retrieve(
                 query=query,
@@ -590,7 +608,8 @@ def create_tools(user_id: int, law_firm_id: int):
             return _structured_return(text, {"precedents": precedents, "laws": laws})
 
         except Exception as e:
-            raise ToolException(f"RAG 검색 실패: {e}")
+            logger.error(f"RAG 검색 실패: {e}", exc_info=True)
+            return _structured_return(f"RAG 검색 실패: {e}", None)
 
     return [
         list_cases,

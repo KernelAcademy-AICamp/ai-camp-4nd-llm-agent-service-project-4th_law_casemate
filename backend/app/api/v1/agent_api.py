@@ -108,40 +108,47 @@ def _parse_structured(tool_name: str, raw_output: str) -> dict | None:
     return None
 
 
-def _generate_suggestions(
+async def _generate_suggestions(
+    user_message: str,
     tool_history: list[str],
     tool_structured: dict[str, dict | None],
 ) -> list[dict]:
-    """도구 실행 이력 기반 후속 질문/액션 생성 (LLM 호출 없음)"""
-    suggestions: list[dict] = []
+    """대화 맥락 기반 후속 질문/액션 생성 (LLM 호출)"""
 
-    # 미등록 사건 → 등록 유도
+    # 미등록 사건 → 등록 유도 (규칙 기반 — LLM 불필요)
     if "list_cases" in tool_history:
         lc_data = tool_structured.get("list_cases")
         if lc_data and isinstance(lc_data.get("data"), list) and len(lc_data["data"]) == 0:
-            suggestions.append({
+            return [{
                 "text": "새 사건을 등록하시겠습니까?",
                 "type": "action",
                 "action": {"navigate": "/new-case"},
-            })
-            return suggestions
+            }]
 
-    last_tool = tool_history[-1] if tool_history else None
+    # LLM으로 맥락 기반 추천 생성
+    try:
+        from langchain_openai import ChatOpenAI
+        from langchain_core.messages import SystemMessage, HumanMessage as HMsg
+        from app.home_agent.prompts import SUGGESTION_SYSTEM_PROMPT
+        from app.config import AgentConfig
 
-    TOOL_SUGGESTIONS: dict[str, list[str]] = {
-        "list_cases": ["사건 분석해줘", "증거 현황 알려줘"],
-        "analyze_case": ["유사 판례 찾아줘", "타임라인 만들어줘", "관계도 만들어줘"],
-        "search_precedents": ["판례 요약해줘", "판례 비교해줘"],
-        "generate_timeline": ["관계도도 만들어줘"],
-        "generate_relationship": ["타임라인도 만들어줘"],
-        "get_case_evidence": ["증거 분석 요약해줘", "사건 분석해줘"],
-        "search_laws": ["유사 판례도 찾아줘"],
-    }
+        llm = ChatOpenAI(
+            model=AgentConfig.ROUTER_MODEL, temperature=0.7,
+            max_tokens=200, request_timeout=5,
+        )
+        context = f"사용자 질문: {user_message}\n실행된 도구: {', '.join(tool_history)}"
+        response = await llm.ainvoke([
+            SystemMessage(content=SUGGESTION_SYSTEM_PROMPT),
+            HMsg(content=context),
+        ])
 
-    for text in TOOL_SUGGESTIONS.get(last_tool, []):
-        suggestions.append({"text": text, "type": "question"})
+        items = json.loads(response.content)
+        if isinstance(items, list):
+            return [{"text": t, "type": "question"} for t in items[:3]]
+    except Exception as e:
+        logger.warning(f"[Suggestions] LLM 추천 생성 실패, 스킵: {e}")
 
-    return suggestions[:3]
+    return []
 
 
 class AgentChatRequest(BaseModel):
@@ -162,9 +169,14 @@ async def _stream_graph_events(graph, input_data: dict, config: dict):
     current_node = ""
     tool_history: list[str] = []
     tool_structured: dict[str, dict | None] = {}
+    pending_tools: dict[str, str] = {}  # run_id → tool_name (tool_end 누락 추적)
 
     async for event in graph.astream_events(input_data, config, version="v2"):
         kind = event["event"]
+
+        # 도구 이벤트 디버그 로깅
+        if kind in ("on_tool_start", "on_tool_end", "on_tool_error"):
+            logger.info(f"[Agent] Event: {kind} — {event.get('name', '?')} (run_id={event.get('run_id', '?')[:8]})")
 
         # ── 노드 시작 → status 이벤트 ──
         if kind == "on_chain_start":
@@ -189,6 +201,7 @@ async def _stream_graph_events(graph, input_data: dict, config: dict):
             tool_name = event["name"]
             run_id = event.get("run_id", "")
             tool_input = event["data"].get("input", {})
+            pending_tools[run_id] = tool_name
             yield _sse_event("tool_start", {
                 "id": run_id,
                 "tool": tool_name,
@@ -200,24 +213,50 @@ async def _stream_graph_events(graph, input_data: dict, config: dict):
         elif kind == "on_tool_end":
             tool_name = event["name"]
             run_id = event.get("run_id", "")
-            output = event["data"].get("output", "")
-            if hasattr(output, "content"):
-                output = output.content
-            output_str = str(output)
+            try:
+                output = event["data"].get("output", "")
+                if hasattr(output, "content"):
+                    output = output.content
+                output_str = str(output)
+                logger.info(f"[Agent] tool_end output length: {len(output_str)} ({tool_name})")
 
-            structured = _parse_structured(tool_name, output_str)
-            summary = _tool_end_summary(tool_name, output_str, structured)
+                structured = _parse_structured(tool_name, output_str)
+                summary = _tool_end_summary(tool_name, output_str, structured)
 
-            tool_history.append(tool_name)
-            tool_structured[tool_name] = structured
+                tool_history.append(tool_name)
+                tool_structured[tool_name] = structured
+                pending_tools.pop(run_id, None)
 
-            yield _sse_event("tool_end", {
-                "id": run_id,
-                "tool": tool_name,
-                "result": output_str[:3000],
-                "structured": structured,
-                "summary": summary,
-            })
+                yield _sse_event("tool_end", {
+                    "id": run_id,
+                    "tool": tool_name,
+                    "result": output_str[:3000],
+                    "structured": structured,
+                    "summary": summary,
+                })
+            except Exception as e:
+                logger.error(f"[Agent] tool_end 처리 실패 ({tool_name}): {e}", exc_info=True)
+                pending_tools.pop(run_id, None)
+                tool_history.append(tool_name)
+                yield _sse_event("tool_end", {
+                    "id": run_id,
+                    "tool": tool_name,
+                    "result": f"도구 결과 처리 중 오류: {e}",
+                    "structured": None,
+                    "summary": f"{TOOL_MESSAGES.get(tool_name, tool_name)} 처리 실패",
+                })
+
+    # tool_start는 왔지만 tool_end가 누락된 도구에 대해 에러 tool_end 발행
+    for run_id, tool_name in pending_tools.items():
+        logger.warning(f"[Agent] tool_end 누락 — {tool_name} (run_id={run_id})")
+        tool_history.append(tool_name)
+        yield _sse_event("tool_end", {
+            "id": run_id,
+            "tool": tool_name,
+            "result": f"{tool_name} 실행 중 오류가 발생했습니다",
+            "structured": None,
+            "summary": f"{TOOL_MESSAGES.get(tool_name, tool_name)} 실패",
+        })
 
     # 최종 상태에서 cited_sources 추출
     try:
@@ -230,7 +269,8 @@ async def _stream_graph_events(graph, input_data: dict, config: dict):
 
     # done 직전: 도구를 사용한 경우에만 suggestions 이벤트 발행
     if tool_history:
-        suggestions = _generate_suggestions(tool_history, tool_structured)
+        user_message = input_data["messages"][0].content if input_data.get("messages") else ""
+        suggestions = await _generate_suggestions(user_message, tool_history, tool_structured)
         if suggestions:
             yield _sse_event("suggestions", {"items": suggestions})
 

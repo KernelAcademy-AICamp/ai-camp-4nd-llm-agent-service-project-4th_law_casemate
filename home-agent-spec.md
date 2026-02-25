@@ -344,7 +344,7 @@ frontend/src/components/legal/home-agent/
 
 - [ ] 클로드 스타일 클릭 가능한 선택지 버튼 UI (역질문 시 A/B/C/D 옵션)
 - [ ] 대화 기록 DB 영속화 (현재 MemorySaver = 메모리 only, 서버 재시작 시 소실)
-- [ ] MemorySaver → SQLite 전환
+- [ ] MemorySaver → AsyncPostgresSaver 전환 (Supabase PostgreSQL 직결, AWS 멀티워커 대응)
 - [ ] 에이전트 답변 피드백 (좋아요/싫어요)
 - [ ] 대화 기록 목록/검색 (사이드바에서 이전 대화 선택)
 

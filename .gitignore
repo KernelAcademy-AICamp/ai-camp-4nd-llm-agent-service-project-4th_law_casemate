@@ -74,5 +74,11 @@ dist/
 dist-ssr/
 *.local
 
+# Pip install artifacts (Windows)
+backend/=*
+
+# Vector DB snapshots
+*.snapshot
+
 # Claude Code
 .claude/

@@ -76,17 +76,8 @@ function filterToolResultsByCitations(
       };
     }
 
-    // search_precedents 결과 필터링
-    if (tr.tool === "search_precedents") {
-      const data = structured.data as { case_number?: string }[];
-      const filtered = data.filter((p) =>
-        citedPrecedentIds.has(p.case_number || "")
-      );
-      return {
-        ...tr,
-        structured: { ...structured, data: filtered },
-      };
-    }
+    // search_precedents: 전체 결과를 보여줌 (필터링하지 않음)
+    // 사용자가 검색된 모든 판례를 확인할 수 있어야 함
 
     // search_laws 결과 필터링
     if (tr.tool === "search_laws") {
@@ -187,9 +178,12 @@ export function useAgentSSE() {
 
           try {
             const data = JSON.parse(dataLines.join("\n"));
+            if (eventType !== "token") {
+              console.log(`[SSE] ${eventType}`, data);
+            }
             handleEvent(eventType, data);
-          } catch {
-            // JSON 파싱 실패 무시
+          } catch (parseErr) {
+            console.error(`[SSE] JSON 파싱 실패 (${eventType}):`, dataLines.join("\n").slice(0, 200), parseErr);
           }
         }
       }
@@ -281,6 +275,14 @@ export function useAgentSSE() {
         // 남은 active steps를 done으로
         setSteps((prev) =>
           prev.map((s) => (s.status === "active" ? { ...s, status: "done" as const } : s))
+        );
+        // 남은 loading toolResults를 error로 전환 (tool_end 누락 방어)
+        setToolResults((prev) =>
+          prev.map((tr) =>
+            tr.status === "loading"
+              ? { ...tr, status: "error" as const, summary: "결과를 수신하지 못했습니다" }
+              : tr
+          )
         );
         break;
 

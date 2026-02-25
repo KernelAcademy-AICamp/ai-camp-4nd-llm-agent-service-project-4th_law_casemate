@@ -1,8 +1,8 @@
 """
 조건부 StateGraph 정의
 
-Simple (명령형):  Router → Agent → Tools → Agent → END        (3 LLM calls)
-Complex (질문형): Router → Agent → Tools → Generator → END    (4 LLM calls)
+Simple (명령형):  Router → Agent → Tools → Agent → END
+Complex (질문형): Router → Agent → Tools → Agent → ... → Generator → END  (멀티홉)
 
 Self-RAG: Generator에서 인용 검증 (환각 방지)
 """
@@ -22,7 +22,6 @@ from app.home_agent.nodes import (
     generator_node,
     route_after_router,
     route_after_agent,
-    route_after_tools,
 )
 
 logger = logging.getLogger(__name__)
@@ -61,11 +60,8 @@ def build_graph(tools: list, checkpointer=None):
         "generator": "generator",
     })
 
-    # 조건부 엣지: Tools → (simple→agent, complex→generator)
-    graph.add_conditional_edges("tools", route_after_tools, {
-        "agent": "agent",
-        "generator": "generator",
-    })
+    # 엣지: Tools → Agent (멀티홉 — Agent가 추가 도구 필요 여부 판단)
+    graph.add_edge("tools", "agent")
 
     # 엣지: Generator → END
     graph.add_edge("generator", END)

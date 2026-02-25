@@ -39,12 +39,10 @@ function App() {
 
         if (response.ok) {
           const userData = await response.json()
-          console.log("환영합니다, " + userData.name + "님!")
           setUserInfo(userData)
           setIsLoggedIn(true)
         } else {
           // 토큰이 만료되었거나 유효하지 않은 경우 로그아웃 처리
-          console.log('토큰이 유효하지 않습니다. 로그아웃 처리합니다.')
           localStorage.removeItem('access_token')
           localStorage.removeItem('user_email')
           localStorage.removeItem('user_id')

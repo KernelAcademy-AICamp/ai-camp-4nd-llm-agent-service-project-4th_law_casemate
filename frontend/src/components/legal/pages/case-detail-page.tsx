@@ -442,7 +442,6 @@ export function CaseDetailPage({
         throw new Error("AI 분석 결과 저장 실패");
       }
 
-      console.log("✅ AI 분석 결과 저장 완료");
       // 저장 후 관련 법령 재검색
       fetchRelatedLaws();
     } catch (err) {
@@ -519,7 +518,6 @@ export function CaseDetailPage({
       setAgentSteps(prev => advanceStep(prev, 4));
       setAnalysisStale(false); // 재분석 완료 → stale 해제
       setAnalyzedAt(new Date().toISOString());
-      console.log("✅ AI 분석 새로고침 완료");
       fetchRelatedLaws();
     } catch (err) {
       console.error("AI 분석 새로고침 실패:", err);
@@ -569,7 +567,6 @@ export function CaseDetailPage({
       const updatedData: CaseApiResponse = await response.json();
       setRawApiData(updatedData);
 
-      console.log("✅ 사건 정보 저장 완료");
       // caseData도 업데이트
       setCaseData(prev => prev ? {
         ...prev,
@@ -697,7 +694,6 @@ export function CaseDetailPage({
   const regenerateRelationships = useCallback(async () => {
     if (!caseData) return;
 
-    console.log("[Relationship Regenerate] 시작 - SSE 버전");
 
     setRelationshipLoading(true);
     setRelationshipSteps(RELATIONSHIP_STEPS);
@@ -724,7 +720,6 @@ export function CaseDetailPage({
           );
         } else if (data.type === "complete") {
           // 완료 - 데이터 업데이트
-          console.log("[Relationship] 생성 완료:", data.relationships);
           const relationshipData = data.relationships || { persons: [], relationships: [] };
           setRelationshipData(relationshipData);
           setRelationshipSteps(prev => prev.map(s => ({ ...s, status: "done" })));
@@ -762,7 +757,6 @@ export function CaseDetailPage({
   const regenerateTimeline = async () => {
     if (!caseData) return;
 
-    console.log("[Timeline Regenerate] 시작 - SSE 버전");
 
     setTimelineLoading(true);
     setTimelineSteps(TIMELINE_STEPS);
@@ -789,7 +783,6 @@ export function CaseDetailPage({
           );
         } else if (data.type === "complete") {
           // 완료 - 데이터 업데이트
-          console.log("[Timeline] 생성 완료:", data.timelines);
           setTimelineEvents(data.timelines || []);
           setTimelineSteps(prev => prev.map(s => ({ ...s, status: "done" })));
           eventSource.close();
