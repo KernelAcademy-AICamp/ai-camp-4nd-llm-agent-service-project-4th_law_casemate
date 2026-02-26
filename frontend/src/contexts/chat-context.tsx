@@ -30,6 +30,7 @@ interface ChatContextValue {
     citations: CitationSource[];
     send: (message: string, threadId?: string) => Promise<void>;
     abort: () => void;
+    reset: () => void;
   };
 }
 
@@ -69,7 +70,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
   const resetChat = useCallback(() => {
     finalizedRef.current = false;
-    agent.abort();
+    agent.reset();  // 모든 agent 상태 초기화 (toolResults 포함)
     setMessages([]);
   }, [agent]);
 

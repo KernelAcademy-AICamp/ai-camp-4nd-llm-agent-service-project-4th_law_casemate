@@ -8,13 +8,16 @@ from tool.security import get_current_user
 from app.models.user import User
 from app.models.precedent_favorite import PrecedentFavorite
 from app.services.precedent_search_service import PrecedentSearchService
+from app.services.precedent_repository import PrecedentRepository
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# 판례 검색 서비스 (Qdrant에서 판례 정보 조회용)
+# 판례 검색 서비스
 search_service = PrecedentSearchService()
+# 판례 저장소 (배치 조회용)
+precedent_repository = PrecedentRepository()
 
 
 @router.post("/{case_number}")
@@ -131,31 +134,25 @@ async def get_favorites(
 
         logger.debug(f"즐겨찾기 {len(favorites)}건 조회")
 
-        # 각 판례의 상세 정보 조회 (Qdrant에서)
+        if not favorites:
+            return {"total": 0, "favorites": []}
+
+        # 배치로 모든 판례 메타데이터 한 번에 조회 (N번 → 1번)
+        case_numbers = [fav.case_number for fav in favorites]
+        metadata_map = precedent_repository.get_metadata_batch(case_numbers)
+
+        # 결과 조합
         favorite_list = []
         for fav in favorites:
-            # Qdrant에서 판례 정보 조회
-            case_detail = search_service.get_case_detail(fav.case_number)
-
-            if case_detail:
-                favorite_list.append({
-                    "favorite_id": fav.id,
-                    "case_number": fav.case_number,
-                    "case_name": case_detail.get("case_name", ""),
-                    "court_name": case_detail.get("court_name", ""),
-                    "judgment_date": case_detail.get("judgment_date", ""),
-                    "created_at": fav.created_at.isoformat() if fav.created_at else None
-                })
-            else:
-                # Qdrant에 없는 경우 기본 정보만
-                favorite_list.append({
-                    "favorite_id": fav.id,
-                    "case_number": fav.case_number,
-                    "case_name": "",
-                    "court_name": "",
-                    "judgment_date": "",
-                    "created_at": fav.created_at.isoformat() if fav.created_at else None
-                })
+            case_detail = metadata_map.get(fav.case_number, {})
+            favorite_list.append({
+                "favorite_id": fav.id,
+                "case_number": fav.case_number,
+                "case_name": case_detail.get("case_name", ""),
+                "court_name": case_detail.get("court_name", ""),
+                "judgment_date": case_detail.get("judgment_date", ""),
+                "created_at": fav.created_at.isoformat() if fav.created_at else None
+            })
 
         return {
             "total": len(favorite_list),

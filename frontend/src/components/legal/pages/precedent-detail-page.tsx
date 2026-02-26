@@ -20,6 +20,10 @@ import { useSearch } from "@/contexts/search-context";
 import { highlightKeywords } from "@/lib/highlight";
 import { ComparisonAnalysisContent } from "@/components/legal/comparison-analysis";
 import { ArticleLink } from "@/components/legal/article-popup";
+import {
+  AgentLoadingOverlay,
+  type AgentStep,
+} from "@/components/ui/agent-loading-overlay";
 
 // API 응답 타입
 interface CaseDetail {
@@ -71,6 +75,21 @@ const renderSummaryHeader = (children: React.ReactNode) => {
 
 interface PrecedentDetailPageProps { }
 
+// AI 요약 로딩 단계
+const SUMMARY_STEPS: AgentStep[] = [
+  { label: "결과 요약 중…", status: "pending" },
+  { label: "사실관계 분석 중…", status: "pending" },
+  { label: "법리 분석 및 법원의 판단 과정 분석 중…", status: "pending" },
+  { label: "실무 포인트 정리 중…", status: "pending" },
+];
+
+const advanceSummaryStep = (steps: AgentStep[], index: number): AgentStep[] =>
+  steps.map((s, i) =>
+    i < index ? { ...s, status: "done" }
+      : i === index ? { ...s, status: "in_progress" }
+        : s
+  );
+
 export function PrecedentDetailPage({ }: PrecedentDetailPageProps) {
   const navigate = useNavigate();
   const { id } = useParams<{ id: string }>();
@@ -90,6 +109,7 @@ export function PrecedentDetailPage({ }: PrecedentDetailPageProps) {
 
   const [summary, setSummary] = useState<string | null>(null);
   const [summaryLoading, setSummaryLoading] = useState(false);
+  const [summarySteps, setSummarySteps] = useState<AgentStep[]>([]);
 
   // 즐겨찾기 상태
   const [isFavorite, setIsFavorite] = useState(false);
@@ -160,7 +180,16 @@ export function PrecedentDetailPage({ }: PrecedentDetailPageProps) {
     const fetchSummary = async () => {
       setSummaryLoading(true);
 
+      // 에이전트 단계 초기화
+      const steps = [...SUMMARY_STEPS];
+      setSummarySteps(advanceSummaryStep(steps, 0));
+
       try {
+        // 단계별 타이머 설정
+        const timer1 = setTimeout(() => setSummarySteps(prev => advanceSummaryStep(prev, 1)), 1500);
+        const timer2 = setTimeout(() => setSummarySteps(prev => advanceSummaryStep(prev, 2)), 4000);
+        const timer3 = setTimeout(() => setSummarySteps(prev => advanceSummaryStep(prev, 3)), 7000);
+
         const response = await apiFetch("/api/v1/search/summarize", {
           method: "POST",
           headers: {
@@ -173,6 +202,11 @@ export function PrecedentDetailPage({ }: PrecedentDetailPageProps) {
           signal: abortController.signal,
         });
 
+        // 타이머 정리
+        clearTimeout(timer1);
+        clearTimeout(timer2);
+        clearTimeout(timer3);
+
         if (!response.ok) {
           throw new Error("요약 중 오류가 발생했습니다.");
         }
@@ -184,6 +218,9 @@ export function PrecedentDetailPage({ }: PrecedentDetailPageProps) {
         if (caseDetail.case_number) {
           updateCaseSummary(caseDetail.case_number, data.summary);
         }
+
+        // 모든 단계 완료
+        setSummarySteps(prev => prev.map(s => ({ ...s, status: "done" as const })));
       } catch (err) {
         // 취소된 경우 무시
         if (err instanceof Error && err.name === "AbortError") {
@@ -575,11 +612,8 @@ export function PrecedentDetailPage({ }: PrecedentDetailPageProps) {
                 /* AI 요약 콘텐츠 */
                 <>
                   {summaryLoading ? (
-                    <div className="py-12">
-                      <div className="flex flex-col items-center justify-center gap-3 text-muted-foreground">
-                        <video src="/assets/loading-card.mp4" autoPlay loop muted playsInline className="h-20 w-20" style={{ mixBlendMode: 'multiply', opacity: 0.3 }} />
-                        <p className="text-sm">AI가 판례를 요약하고 있습니다...</p>
-                      </div>
+                    <div className="relative" style={{ minHeight: "340px" }}>
+                      <AgentLoadingOverlay steps={summarySteps} />
                     </div>
                   ) : summary ? (
                     <div className="space-y-6">

@@ -339,10 +339,12 @@ export function PrecedentsPage({ }: PrecedentsPageProps) {
   // 키워드가 포함된 부분 미리보기
   const getKeywordPreview = (content: string, query: string, maxLength: number = 200) => {
     if (!content) return "";
-    // 【사건명】 섹션 제거 + {{PARA}} 청크 구분자 제거 + 공백 정리
+    // 【사건명】 섹션 제거 + {{PARA}} 청크 구분자 제거 + HTML 태그 제거 + 공백 정리
     const cleaned = content
       .replace(/【사건명】[^【]*(?=【|$)/g, "")  // 【사건명】 섹션 전체 제거
       .replace(/\{\{PARA\}\}/g, " ")
+      .replace(/<br\s*\/?>/gi, " ")  // <br> 태그 제거
+      .replace(/<[^>]+>/g, "")  // 기타 HTML 태그 제거
       .replace(/\s+/g, " ")
       .trim();
 

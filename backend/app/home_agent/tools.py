@@ -2,7 +2,7 @@
 에이전트 도구 정의 — 기존 백엔드 서비스를 @tool로 래핑
 
 create_tools(user_id, law_firm_id)를 호출하면
-해당 사용자 전용 도구 세트(10개)를 반환한다.
+해당 사용자 전용 도구 세트(11개)를 반환한다.
 
 반환 형식: JSON 문자열 {"text": "LLM용 마크다운", "data": 구조화 데이터}
 """
@@ -13,6 +13,7 @@ import logging
 from langchain_core.tools import tool
 from tool.database import SessionLocal
 from app.models.evidence import Case, CaseAnalysis, CaseEvidenceMapping
+from app.models.precedent import SimilarPrecedent
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +37,7 @@ def create_tools(user_id: int, law_firm_id: int):
         Args:
             search_query: 검색어 (의뢰인명, 상대방명, 사건 제목에서 검색). 빈 문자열이면 전체 조회.
         """
+        logger.info(f"[list_cases] search_query='{search_query}'")
         try:
             from sqlalchemy import func as sa_func, text as sql_text
 
@@ -120,6 +122,7 @@ def create_tools(user_id: int, law_firm_id: int):
                         f" | 등록: {created_str}"
                     )
                 text = f"총 {len(rows)}건의 사건:\n" + "\n".join(lines)
+                logger.info(f"[list_cases] 결과: {len(rows)}건, case_ids={[d['id'] for d in data]}")
                 return _structured_return(text, data)
         except Exception as e:
             logger.error(f"사건 목록 조회 실패: {e}", exc_info=True)
@@ -136,6 +139,7 @@ def create_tools(user_id: int, law_firm_id: int):
         이미 분석된 사건이면 캐시된 결과를 즉시 반환합니다.
         아직 분석되지 않은 사건이면 안내 메시지를 반환합니다.
         """
+        logger.info(f"[analyze_case] case_id={case_id}")
         try:
             with SessionLocal() as db:
                 case = db.query(Case).filter(Case.id == case_id, Case.law_firm_id == law_firm_id).first()
@@ -310,15 +314,21 @@ def create_tools(user_id: int, law_firm_id: int):
             return _structured_return(f"판례 검색 실패: {e}", None)
 
     @tool
-    def summarize_precedent(case_number: str, content: str) -> str:
+    def summarize_precedent(case_number: str) -> str:
         """특정 판례를 요약합니다.
 
         Args:
             case_number: 판례 사건번호 (예: "2023다12345")
-            content: 판례 내용 텍스트 (search_precedents 결과에서 가져옴)
         """
         try:
             from app.services.precedent_summary_service import SummaryService
+            from app.services.precedent_repository import PrecedentRepository
+
+            # DB에서 판례 전체 내용 직접 조회
+            repo = PrecedentRepository()
+            content = repo.get_full_case_content(case_number)
+            if not content:
+                return _structured_return(f"판례 '{case_number}'을(를) 찾을 수 없습니다.", None)
 
             service = SummaryService()
             result = service.get_or_generate_summary(
@@ -351,6 +361,52 @@ def create_tools(user_id: int, law_firm_id: int):
                 if not analysis:
                     return _structured_return("사건 분석이 필요합니다. analyze_case를 먼저 호출하세요.", None)
 
+                # 1. SimilarPrecedent 테이블에서 캐시 확인
+                cached = db.query(SimilarPrecedent).filter(
+                    SimilarPrecedent.case_id == case_id,
+                    SimilarPrecedent.case_number == target_case_number
+                ).first()
+
+                if cached and cached.summary:
+                    # 캐시된 결과 반환
+                    logger.info(f"[compare_precedent] 캐시 히트: case_id={case_id}, case_number={target_case_number}")
+                    try:
+                        parsed = json.loads(cached.summary)
+                    except (json.JSONDecodeError, TypeError):
+                        parsed = {}
+
+                    # similarities: issue_analysis 또는 similarities 필드
+                    similarities = parsed.get("issue_analysis") or parsed.get("similarities") or ""
+                    if isinstance(similarities, list):
+                        similarities = "\n".join(f"- {item}" for item in similarities)
+
+                    differences = parsed.get("differences") or ""
+                    if isinstance(differences, list):
+                        differences = "\n".join(f"- {item}" for item in differences)
+
+                    strategy_points = parsed.get("strategy_points") or ""
+                    if isinstance(strategy_points, list):
+                        strategy_points = "\n".join(f"- {item}" for item in strategy_points)
+
+                    text = (
+                        f"## 판례 비교 분석 (캐시)\n\n"
+                        f"### 현재 사건 개요\n{parsed.get('case_overview', '')}\n\n"
+                        f"### 판례 요약\n{parsed.get('precedent_summary', '')}\n\n"
+                        f"### 유사점\n{similarities}\n\n"
+                        f"### 차이점\n{differences}\n\n"
+                        f"### 전략적 시사점\n{strategy_points}"
+                    )
+                    data = {
+                        "case_overview": parsed.get("case_overview", ""),
+                        "precedent_summary": parsed.get("precedent_summary", ""),
+                        "similarities": similarities,
+                        "differences": differences,
+                        "strategy_points": strategy_points,
+                    }
+                    return _structured_return(text, data)
+
+                # 2. 캐시 없으면 LLM 호출
+                logger.info(f"[compare_precedent] 캐시 미스, LLM 호출: case_id={case_id}, case_number={target_case_number}")
                 service = ComparisonService()
                 result = service.compare(
                     origin_facts=analysis.facts or "",
@@ -363,6 +419,21 @@ def create_tools(user_id: int, law_firm_id: int):
                         f"비교 분석 실패: {result.get('error', '알 수 없는 오류')}",
                         None,
                     )
+
+                # 3. 결과를 SimilarPrecedent 테이블에 저장
+                raw_analysis = result.get("analysis", "")
+                try:
+                    new_cache = SimilarPrecedent(
+                        case_id=case_id,
+                        case_number=target_case_number,
+                        summary=raw_analysis,  # JSON 문자열 그대로 저장
+                    )
+                    db.add(new_cache)
+                    db.commit()
+                    logger.info(f"[compare_precedent] 캐시 저장 완료: case_id={case_id}, case_number={target_case_number}")
+                except Exception as save_err:
+                    logger.warning(f"[compare_precedent] 캐시 저장 실패: {save_err}")
+                    db.rollback()
 
                 parsed = result.get("parsed", {})
                 text = (
@@ -386,7 +457,7 @@ def create_tools(user_id: int, law_firm_id: int):
             return _structured_return(f"판례 비교 실패: {e}", None)
 
     @tool
-    def search_laws(query: str, limit: int = 8) -> str:
+    async def search_laws(query: str, limit: int = 8) -> str:
         """법령만 검색합니다. 사용자가 명시적으로 특정 조문을 요청할 때만 사용하세요.
 
         사용 예시: "형법 제307조 찾아줘", "민법 750조 알려줘"
@@ -409,12 +480,12 @@ def create_tools(user_id: int, law_firm_id: int):
             )
 
             if article_pattern:
-                # 정확한 조문 조회
+                # 정확한 조문 조회 (DB → API Fallback)
                 law_name = article_pattern.group(1)
                 article_number = article_pattern.group(2)
                 logger.info(f"[search_laws] 정확한 조문 조회: {law_name} 제{article_number}조")
 
-                article = service.get_article(law_name, article_number)
+                article = await service.get_article_with_fallback(law_name, article_number)
 
                 if article:
                     data = [{
@@ -426,8 +497,8 @@ def create_tools(user_id: int, law_firm_id: int):
                     text = f"## {law_name} 제{article_number}조 {article.get('article_title', '')}\n\n{article.get('content', '')}"
                     return _structured_return(text, data)
                 else:
-                    # 정확한 조문 없으면 벡터 검색으로 폴백
-                    logger.info(f"[search_laws] 정확한 조문 없음, 벡터 검색으로 폴백")
+                    # DB에도 API에도 없으면 벡터 검색으로 폴백
+                    logger.info(f"[search_laws] DB/API 모두 조문 없음, 벡터 검색으로 폴백")
 
             # 벡터 검색 (일반 키워드 검색)
             result = service.search_laws(query=query, limit=limit)
@@ -439,16 +510,17 @@ def create_tools(user_id: int, law_firm_id: int):
             data = []
             lines = [f"## 법령 검색 결과 ({len(items)}건)\n"]
             for i, item in enumerate(items, 1):
+                content = item.get("content", "") or ""
                 data.append({
                     "law_name": item.get("law_name", "?"),
                     "article_number": item.get("article_number", "?"),
                     "article_title": item.get("article_title", ""),
-                    "content": (item.get("content", "") or "")[:400],
+                    "content": content,  # 전체 내용 전달 (프론트에서 펼치기/접기)
                 })
                 lines.append(
                     f"### {i}. {item.get('law_name', '?')} 제{item.get('article_number', '?')}조"
                     f" {item.get('article_title', '')}\n"
-                    f"{(item.get('content', '') or '')[:400]}\n"
+                    f"{content[:400]}\n"  # LLM용 텍스트만 400자 제한
                 )
             text = "\n".join(lines)
             return _structured_return(text, data)
@@ -531,6 +603,85 @@ def create_tools(user_id: int, law_firm_id: int):
             return _structured_return(f"증거 현황 조회 실패: {e}", None)
 
     @tool
+    def get_case_similar_precedents(case_id: int) -> str:
+        """사건에 이미 저장된 유사 판례 목록을 조회합니다.
+
+        사건 분석 시 검색된 유사 판례가 DB에 저장되어 있습니다.
+        "내 사건 유사 판례 찾아줘" 같은 요청에는 이 도구를 사용하세요.
+
+        Args:
+            case_id: 사건 ID (list_cases로 확인 가능)
+
+        주의: 새로운 키워드로 판례를 검색하려면 search_precedents를 사용하세요.
+        """
+        try:
+            from app.models.precedent import Precedent
+
+            with SessionLocal() as db:
+                case = db.query(Case).filter(Case.id == case_id, Case.law_firm_id == law_firm_id).first()
+                if not case:
+                    return _structured_return(f"사건 #{case_id}을 찾을 수 없습니다.", None)
+
+                # case_analyses.similar_precedents에서 가져오기
+                analysis = db.query(CaseAnalysis).filter(CaseAnalysis.case_id == case_id).first()
+                if not analysis or not analysis.similar_precedents:
+                    return _structured_return(
+                        f"사건 #{case_id}({case.title})에 저장된 유사 판례가 없습니다.\n"
+                        f"search_precedents로 새로 검색하거나, 사건 분석을 먼저 실행해주세요.",
+                        []
+                    )
+
+                # similar_precedents JSON 파싱
+                try:
+                    similar_list = json.loads(analysis.similar_precedents)
+                    if not isinstance(similar_list, list):
+                        similar_list = []
+                except (json.JSONDecodeError, TypeError):
+                    similar_list = []
+
+                if not similar_list:
+                    return _structured_return(
+                        f"사건 #{case_id}({case.title})에 저장된 유사 판례가 없습니다.",
+                        []
+                    )
+
+                # 판례 메타데이터 일괄 조회
+                case_numbers = [s.get("case_number") for s in similar_list if s.get("case_number")]
+                precedents = db.query(Precedent).filter(Precedent.case_number.in_(case_numbers)).all()
+                precedent_map = {p.case_number: p for p in precedents}
+
+                data = []
+                lines = [f"## 유사 판례 ({len(similar_list)}건)\n"]
+                for i, s in enumerate(similar_list, 1):
+                    case_number = s.get("case_number", "")
+                    p = precedent_map.get(case_number)
+
+                    # content_snippet: 여러 필드에서 추출 시도
+                    snippet = (
+                        s.get("precedent_summary")
+                        or s.get("summary")
+                        or s.get("content_snippet")
+                        or s.get("content")
+                        or ""
+                    )
+
+                    data.append({
+                        # PrecedentListRenderer 형식
+                        "case_number": case_number,
+                        "case_name": s.get("case_name") or (p.case_name if p else ""),
+                        "court": s.get("court") or s.get("court_name") or (p.court_name if p else ""),
+                        "judgment_date": s.get("judgment_date") or (p.judgment_date if p else ""),
+                        "content_snippet": snippet[:500] if snippet else "",
+                    })
+                    lines.append(f"### {i}. {case_number}\n{snippet[:200] if snippet else '요약 없음'}\n")
+
+                text = "\n".join(lines)
+                return _structured_return(text, data)
+        except Exception as e:
+            logger.error(f"유사 판례 조회 실패: {e}", exc_info=True)
+            return _structured_return(f"유사 판례 조회 실패: {e}", None)
+
+    @tool
     async def rag_search(query: str, keyword: str = "", precedent_limit: int = 5, law_limit: int = 3) -> str:
         """[기본 검색 도구] 판례와 법령을 병렬로 검색합니다.
 
@@ -583,7 +734,7 @@ def create_tools(user_id: int, law_firm_id: int):
                         "law_name": source.metadata.get("law_name", ""),
                         "article_number": source.metadata.get("article_number", ""),
                         "article_title": source.metadata.get("article_title", ""),
-                        "content": source.content[:400],
+                        "content": source.content,  # 전체 내용 (프론트에서 펼치기/접기)
                     })
 
             if precedents:
@@ -621,5 +772,6 @@ def create_tools(user_id: int, law_firm_id: int):
         compare_precedent,
         search_laws,
         get_case_evidence,
+        get_case_similar_precedents,
         rag_search,
     ]

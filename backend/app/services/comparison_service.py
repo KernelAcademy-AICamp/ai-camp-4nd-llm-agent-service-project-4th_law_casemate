@@ -211,7 +211,7 @@ class ComparisonService:
         sections = {
             "case_overview": ["현재 사건 개요"],
             "precedent_summary": ["유사 판례 요약"],
-            "similarities": ["쟁점별 분석", "핵심 쟁점별 유사점", "유사점"],
+            "similarities": ["핵심 쟁점별 유사점", "유사점"],
             "differences": ["차이점"],
             "strategy_points": ["전략 포인트"],
         }

@@ -1,4 +1,5 @@
-import { BookOpen } from "lucide-react";
+import { useState } from "react";
+import { BookOpen, ChevronDown, ChevronUp } from "lucide-react";
 
 interface LawItem {
   law_name: string;
@@ -11,6 +12,58 @@ interface Props {
   data: Record<string, unknown>[];
 }
 
+function LawCard({ item }: { item: LawItem }) {
+  const [expanded, setExpanded] = useState(false);
+  const isLong = item.content && item.content.length > 200;
+
+  return (
+    <div className="rounded-xl border border-border/50 bg-card p-3 hover:border-teal-300/50 transition-colors">
+      <div className="flex items-start gap-2.5">
+        <div className="w-8 h-8 rounded-lg flex items-center justify-center bg-teal-500/10 shrink-0 mt-0.5">
+          <BookOpen className="h-4 w-4 text-teal-500" />
+        </div>
+        <div className="flex-1 min-w-0">
+          <p className="text-xs font-semibold text-teal-600 dark:text-teal-400">
+            {item.law_name}
+          </p>
+          <p className="text-sm font-medium text-foreground mt-0.5">
+            제{item.article_number}조 {item.article_title}
+          </p>
+          {item.content && (
+            <>
+              <p
+                className={`text-xs text-muted-foreground mt-1.5 leading-relaxed whitespace-pre-wrap ${
+                  !expanded && isLong ? "line-clamp-4" : ""
+                }`}
+              >
+                {item.content}
+              </p>
+              {isLong && (
+                <button
+                  onClick={() => setExpanded(!expanded)}
+                  className="flex items-center gap-1 mt-1.5 text-xs text-teal-600 dark:text-teal-400 hover:underline"
+                >
+                  {expanded ? (
+                    <>
+                      <ChevronUp className="h-3 w-3" />
+                      접기
+                    </>
+                  ) : (
+                    <>
+                      <ChevronDown className="h-3 w-3" />
+                      전체 보기
+                    </>
+                  )}
+                </button>
+              )}
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function LawListRenderer({ data }: Props) {
   const items = data as unknown as LawItem[];
 
@@ -21,29 +74,7 @@ export function LawListRenderer({ data }: Props) {
   return (
     <div className="space-y-2">
       {items.map((item, idx) => (
-        <div
-          key={idx}
-          className="rounded-xl border border-border/50 bg-card p-3 hover:border-teal-300/50 transition-colors"
-        >
-          <div className="flex items-start gap-2.5">
-            <div className="w-8 h-8 rounded-lg flex items-center justify-center bg-teal-500/10 shrink-0 mt-0.5">
-              <BookOpen className="h-4 w-4 text-teal-500" />
-            </div>
-            <div className="flex-1 min-w-0">
-              <p className="text-xs font-semibold text-teal-600 dark:text-teal-400">
-                {item.law_name}
-              </p>
-              <p className="text-sm font-medium text-foreground mt-0.5">
-                제{item.article_number}조 {item.article_title}
-              </p>
-              {item.content && (
-                <p className="text-xs text-muted-foreground mt-1.5 leading-relaxed line-clamp-4">
-                  {item.content}
-                </p>
-              )}
-            </div>
-          </div>
-        </div>
+        <LawCard key={idx} item={item} />
       ))}
     </div>
   );

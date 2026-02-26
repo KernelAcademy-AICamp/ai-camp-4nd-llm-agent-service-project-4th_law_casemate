@@ -46,7 +46,6 @@ export function CaseListRenderer({ data }: Props) {
             </div>
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-2">
-                <span className="text-xs text-muted-foreground">#{c.id}</span>
                 <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${STATUS_COLORS[c.status] || "bg-muted text-muted-foreground"}`}>
                   {c.status}
                 </span>

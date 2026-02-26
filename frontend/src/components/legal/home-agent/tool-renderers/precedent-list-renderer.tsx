@@ -13,6 +13,16 @@ interface Props {
   data: Record<string, unknown>[];
 }
 
+// {{PARA}}, <br>, HTML 태그 등을 제거
+function cleanSnippet(text: string): string {
+  return text
+    .replace(/\{\{PARA\}\}/g, " ")
+    .replace(/<br\s*\/?>/gi, " ")
+    .replace(/<[^>]+>/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 export function PrecedentListRenderer({ data }: Props) {
   const navigate = useNavigate();
   const items = data as unknown as PrecedentItem[];
@@ -51,7 +61,7 @@ export function PrecedentListRenderer({ data }: Props) {
               </div>
               {item.content_snippet && (
                 <p className="text-xs text-muted-foreground mt-2 line-clamp-3 leading-relaxed">
-                  {item.content_snippet}
+                  {cleanSnippet(item.content_snippet)}
                 </p>
               )}
             </div>

@@ -29,6 +29,7 @@ const TOOL_META: Record<string, { label: string; icon: React.ElementType; color:
   compare_precedent: { label: "판례 비교", icon: GitBranch, color: "#EC4899" },
   search_laws: { label: "법령 검색", icon: Search, color: "#14B8A6" },
   get_case_evidence: { label: "증거 현황", icon: Files, color: "#F97316" },
+  get_case_similar_precedents: { label: "유사 판례", icon: GitBranch, color: "#EC4899" },
   rag_search: { label: "RAG 검색", icon: Search, color: "#8B5CF6" },
 };
 
@@ -57,6 +58,7 @@ function getToolRenderer(tr: ToolResult) {
       case "analyze_case":
         return <CaseAnalysisRenderer data={data as Record<string, string | string[]>} caseId={tr.input?.case_id as number | undefined} />;
       case "search_precedents":
+      case "get_case_similar_precedents":
         return <PrecedentListRenderer data={data as Record<string, unknown>[]} />;
       case "compare_precedent":
         return <ComparisonRenderer data={data as Record<string, string>} />;
@@ -138,6 +140,8 @@ export function AgentResultsPanel({ toolResults, onClose }: AgentResultsPanelPro
             if (data?.case_number) {
               tabLabel = data.case_number;
             }
+          } else if (tr.tool === "compare_precedent" && tr.input?.target_case_number) {
+            tabLabel = tr.input.target_case_number as string;
           }
 
           return (

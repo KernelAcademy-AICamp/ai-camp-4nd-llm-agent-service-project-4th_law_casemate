@@ -2144,12 +2144,6 @@ export function CaseDetailPage({
                             <h4 className="text-sm font-medium">
                               {caseItem.case_number}
                             </h4>
-                            <Badge
-                              variant="secondary"
-                              className="text-xs font-normal"
-                            >
-                              유사도 {Math.round(caseItem.score * 100)}%
-                            </Badge>
                           </div>
                           <p className="text-sm text-foreground/80">
                             {caseItem.case_name}

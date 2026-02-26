@@ -86,7 +86,7 @@ class RefCaseCollectorKure(BaseCaseCollector):
     """
 
     # 참조판례 소스 컬렉션
-    SOURCE_COLLECTION = "precedents_backup"
+    SOURCE_COLLECTION = "precedents_kure"
 
     def __init__(self):
         super().__init__()

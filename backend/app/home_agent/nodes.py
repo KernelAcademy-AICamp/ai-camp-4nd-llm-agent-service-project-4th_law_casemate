@@ -96,8 +96,7 @@ def agent_node(state: dict, tools) -> dict:
     """도구 선택 및 호출 계획 (ReAct)"""
     messages = _sanitize_messages(state["messages"])
 
-    # Agent에게는 도구 결과 데이터를 전달하지 않음 (복사 방지)
-    # "[N건 조회됨]" 같은 최소 정보만 전달
+    # Agent에게는 판례번호/사건명만 전달 (상세 내용 복사 방지)
     llm_messages = _strip_tool_data_for_agent(messages)
 
     llm = _get_agent_llm(tools)
@@ -170,11 +169,23 @@ def route_after_agent(state: dict) -> str:
 
 
 def route_after_tools(state: dict) -> str:
-    """Tools 실행 후 항상 Agent로 복귀 (멀티홉).
-
-    Agent가 추가 도구를 호출하거나, 수집 완료 시 route_after_agent에서
-    simple → END, complex → generator로 분기한다.
+    """Tools 실행 후 분기:
+    - 단일 도구 + complex → generator (바로 답변, LLM 1회 절약)
+    - 그 외 → agent (멀티홉 지원)
     """
+    route = state.get("route")
+    messages = state["messages"]
+
+    # 마지막 AIMessage의 tool_calls 수 확인
+    last_ai = next((m for m in reversed(messages) if hasattr(m, "tool_calls") and m.tool_calls), None)
+    tool_count = len(last_ai.tool_calls) if last_ai else 0
+
+    # complex + 단일 도구 → 바로 generator (Agent 재호출 스킵)
+    if route == "complex" and tool_count == 1:
+        logger.info("[Route] 단일 도구 완료 → Generator 직행")
+        return "generator"
+
+    # 멀티홉 필요 (여러 도구 or simple)
     return "agent"
 
 
@@ -192,10 +203,20 @@ def _guard_repeated_tool_calls(response: AIMessage, messages: list) -> AIMessage
 
     예: get_case_evidence(1), get_case_evidence(2), get_case_evidence(3)...
     list_cases가 이미 evidence_count/has_analysis를 포함하므로 개별 호출 불필요.
+
+    주의: 현재 턴(마지막 HumanMessage 이후)에서만 체크. 새 질문에서는 다른 사건 분석 허용.
     """
-    # 대화 이력에서 이미 호출된 per-case 도구 추적: {tool_name: {case_id, ...}}
+    # 마지막 HumanMessage 이후의 메시지만 확인 (현재 턴)
+    current_turn_messages = []
+    for msg in reversed(messages):
+        if isinstance(msg, HumanMessage):
+            break
+        current_turn_messages.append(msg)
+    current_turn_messages.reverse()
+
+    # 현재 턴에서 이미 호출된 per-case 도구 추적: {tool_name: {case_id, ...}}
     called: dict[str, set[int]] = {}
-    for msg in messages:
+    for msg in current_turn_messages:
         if hasattr(msg, "tool_calls") and msg.tool_calls:
             for tc in msg.tool_calls:
                 name = tc.get("name", "")
@@ -260,10 +281,9 @@ def _sanitize_messages(messages: list) -> list:
 # ── LLM 전달용 메시지 정리 ───────────────────────────────────
 
 def _strip_tool_data_for_agent(messages: list) -> list:
-    """Agent용: ToolMessage 내용을 최소화 (결과 건수만 전달)
+    """Agent용: ToolMessage 내용을 최소화 (핵심 식별자만 전달)
 
-    Agent는 도구 결과 데이터가 필요 없음.
-    "N건 검색됨" 정도만 알면 됨.
+    Agent는 상세 내용이 필요 없지만, 판례번호/사건명은 알아야 함.
     전체 데이터는 우측 패널에 표시됨.
     """
     result = []
@@ -274,10 +294,37 @@ def _strip_tool_data_for_agent(messages: list) -> list:
                 parsed = json.loads(msg.content)
                 if isinstance(parsed, dict) and "data" in parsed:
                     data = parsed["data"]
-                    if isinstance(data, list):
-                        summary = f"[{len(data)}건 조회됨]"
+                    if isinstance(data, list) and len(data) > 0:
+                        # 판례 검색: 판례번호 전체 목록
+                        if msg.name == "search_precedents":
+                            case_numbers = [p.get("case_number", "?") for p in data]
+                            summary = f"[{len(data)}건 검색됨] 판례번호: {', '.join(case_numbers)}"
+                        # 저장된 유사 판례: 판례번호 전체 목록
+                        elif msg.name == "get_case_similar_precedents":
+                            case_numbers = [p.get("case_number", "?") for p in data]
+                            summary = f"[저장된 유사 판례 {len(data)}건] 판례번호: {', '.join(case_numbers)}"
+                        # 사건 목록: case_id와 사건명 포함 (Agent가 case_id 알아야 함)
+                        elif msg.name == "list_cases":
+                            case_info = [f"#{c.get('id', '?')} {c.get('title', '?')}" for c in data]
+                            summary = f"[{len(data)}건 조회됨] 사건: {', '.join(case_info)}"
+                        # 기타 리스트
+                        else:
+                            summary = f"[{len(data)}건 조회됨]"
                     elif isinstance(data, dict):
-                        summary = "[분석 완료]"
+                        # 판례 비교: 유사점/차이점 존재 여부 알림
+                        if msg.name == "compare_precedent":
+                            has_sim = bool(data.get("similarities"))
+                            has_diff = bool(data.get("differences"))
+                            summary = f"[비교 분석 완료] 유사점: {'있음' if has_sim else '없음'}, 차이점: {'있음' if has_diff else '없음'}"
+                        # 사건 분석
+                        elif msg.name == "analyze_case":
+                            summary = "[사건 분석 완료]"
+                        # 판례 요약
+                        elif msg.name == "summarize_precedent":
+                            case_num = data.get("case_number", "")
+                            summary = f"[요약 완료] {case_num}"
+                        else:
+                            summary = "[분석 완료]"
             except (json.JSONDecodeError, TypeError):
                 pass
 

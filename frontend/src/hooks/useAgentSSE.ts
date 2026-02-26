@@ -242,7 +242,6 @@ export function useAgentSSE() {
 
       case "tool_end": {
         const id = data.id as string;
-        const tool = data.tool as string;
         const result = data.result as string | undefined;
         const structured = data.structured as unknown;
         const summary = data.summary as string | undefined;
@@ -312,6 +311,18 @@ export function useAgentSSE() {
     setIsStreaming(false);
   }, []);
 
+  const reset = useCallback(() => {
+    abortRef.current?.abort();
+    setSteps([]);
+    setToolResults([]);
+    setStreamingText("");
+    setPhase("idle");
+    setIsStreaming(false);
+    setError(null);
+    setSuggestions([]);
+    setCitations([]);
+  }, []);
+
   return {
     steps,
     toolResults,
@@ -323,5 +334,6 @@ export function useAgentSSE() {
     citations,
     send,
     abort,
+    reset,
   };
 }

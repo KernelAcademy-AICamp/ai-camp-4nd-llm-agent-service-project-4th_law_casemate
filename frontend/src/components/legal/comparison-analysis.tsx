@@ -277,7 +277,7 @@ export function ComparisonAnalysisContent({
       emptyMessage: "판례 요약을 불러올 수 없습니다.",
     },
     {
-      title: "쟁점별 분석",
+      title: "유사점",
       icon: CheckCircle2,
       bgColor: "bg-emerald-100",
       iconColor: "text-emerald-600",
