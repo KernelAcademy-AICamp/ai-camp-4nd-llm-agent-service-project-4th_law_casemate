@@ -20,16 +20,19 @@ TARGET_COLLECTION = "precedents_kure_q"
 BATCH_SIZE = 500
 
 
-def create_quantized_collection(client: QdrantClient, overwrite: bool = False) -> bool:
+def create_quantized_collection(client: QdrantClient, overwrite: bool = False, incremental: bool = False) -> bool:
     """양자화 설정이 포함된 새 컬렉션 생성"""
     collections = [c.name for c in client.get_collections().collections]
 
     if TARGET_COLLECTION in collections:
-        if overwrite:
+        if incremental:
+            print(f"{TARGET_COLLECTION} 이미 존재. 증분 마이그레이션 진행.")
+            return True
+        elif overwrite:
             client.delete_collection(TARGET_COLLECTION)
             print(f"기존 {TARGET_COLLECTION} 삭제")
         else:
-            print(f"{TARGET_COLLECTION} 이미 존재. --overwrite 옵션 사용하세요.")
+            print(f"{TARGET_COLLECTION} 이미 존재. --overwrite 또는 --incremental 옵션 사용하세요.")
             return False
 
     # 소스 컬렉션 설정 가져오기
@@ -62,17 +65,56 @@ def create_quantized_collection(client: QdrantClient, overwrite: bool = False) -
     return True
 
 
-def copy_data(client: QdrantClient):
+def get_existing_ids(client: QdrantClient) -> set:
+    """타겟 컬렉션의 기존 포인트 ID 조회"""
+    collections = [c.name for c in client.get_collections().collections]
+    if TARGET_COLLECTION not in collections:
+        return set()
+
+    existing_ids = set()
+    offset = None
+
+    while True:
+        result = client.scroll(
+            collection_name=TARGET_COLLECTION,
+            limit=10000,
+            offset=offset,
+            with_payload=False,
+            with_vectors=False,
+        )
+        points = result[0]
+        if not points:
+            break
+
+        for p in points:
+            existing_ids.add(p.id)
+
+        offset = result[1]
+        if offset is None:
+            break
+
+    return existing_ids
+
+
+def copy_data(client: QdrantClient, incremental: bool = False):
     """소스에서 타겟으로 데이터 복사"""
     source_info = client.get_collection(SOURCE_COLLECTION)
     total = source_info.points_count
 
+    # 증분 모드: 기존 ID 조회
+    existing_ids = set()
+    if incremental:
+        print("기존 포인트 ID 조회 중...")
+        existing_ids = get_existing_ids(client)
+        print(f"타겟에 이미 {len(existing_ids):,}개 존재")
+
     print(f"\n데이터 복사: {SOURCE_COLLECTION} → {TARGET_COLLECTION}")
-    print(f"총 {total:,}개 포인트")
+    print(f"소스 총 {total:,}개 포인트")
 
     offset = None
     copied = 0
-    pbar = tqdm(total=total, desc="복사 중")
+    skipped = 0
+    pbar = tqdm(total=total, desc="처리 중")
 
     start_time = time.time()
 
@@ -90,9 +132,13 @@ def copy_data(client: QdrantClient):
         if not points:
             break
 
-        # 포인트 변환
+        # 포인트 변환 (중복 제외)
         new_points = []
         for p in points:
+            if incremental and p.id in existing_ids:
+                skipped += 1
+                continue
+
             sparse_vec = p.vector.get("sparse")
             dense_vec = p.vector.get("dense")
 
@@ -109,14 +155,15 @@ def copy_data(client: QdrantClient):
             )
             new_points.append(new_point)
 
-        # 타겟에 저장 (양자화 자동 적용)
-        client.upsert(
-            collection_name=TARGET_COLLECTION,
-            points=new_points,
-            wait=True,
-        )
+        # 새 포인트가 있을 때만 저장
+        if new_points:
+            client.upsert(
+                collection_name=TARGET_COLLECTION,
+                points=new_points,
+                wait=True,
+            )
+            copied += len(new_points)
 
-        copied += len(points)
         pbar.update(len(points))
 
         offset = result[1]
@@ -126,8 +173,11 @@ def copy_data(client: QdrantClient):
     pbar.close()
     elapsed = time.time() - start_time
 
-    print(f"\n복사 완료: {copied:,}개 ({elapsed:.1f}초)")
-    print(f"속도: {copied / elapsed:.1f}개/초")
+    print(f"\n복사 완료: {copied:,}개 신규 추가 ({elapsed:.1f}초)")
+    if incremental:
+        print(f"건너뜀: {skipped:,}개 (이미 존재)")
+    if elapsed > 0:
+        print(f"속도: {(copied + skipped) / elapsed:.1f}개/초")
 
 
 def verify_and_compare(client: QdrantClient):
@@ -235,6 +285,7 @@ def test_search(client: QdrantClient, query: str = "손해배상 청구"):
 def main():
     parser = argparse.ArgumentParser(description="KURE 컬렉션 양자화")
     parser.add_argument("--overwrite", action="store_true", help="기존 컬렉션 덮어쓰기")
+    parser.add_argument("--incremental", action="store_true", help="증분 마이그레이션 (중복 건너뜀)")
     parser.add_argument("--test-only", action="store_true", help="검색 테스트만 실행")
     parser.add_argument("--query", type=str, default="손해배상 청구", help="테스트 검색 쿼리")
 
@@ -246,12 +297,12 @@ def main():
         test_search(client, args.query)
         return
 
-    # 1. 양자화 컬렉션 생성
-    if not create_quantized_collection(client, args.overwrite):
+    # 1. 양자화 컬렉션 생성 (또는 기존 유지)
+    if not create_quantized_collection(client, args.overwrite, args.incremental):
         return
 
-    # 2. 데이터 복사
-    copy_data(client)
+    # 2. 데이터 복사 (증분 모드 지원)
+    copy_data(client, args.incremental)
 
     # 3. 결과 확인
     verify_and_compare(client)

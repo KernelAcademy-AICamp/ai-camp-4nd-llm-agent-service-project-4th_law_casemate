@@ -16,6 +16,8 @@ import {
   Download,
   CheckCircle,
   XCircle,
+  ChevronLeft,
+  ChevronRight,
 } from "lucide-react";
 
 interface Evidence {
@@ -33,11 +35,16 @@ interface Evidence {
 }
 
 interface CaseData {
-  case_id: number;
-  name: string;
+  id: number;
+  title: string;
   description?: string;
   case_type?: string;
   status?: string;
+}
+
+interface EvidenceListItem {
+  evidence_id: number;
+  file_name: string;
 }
 
 interface AnalysisData {
@@ -73,6 +80,10 @@ export function EvidenceDetailPage() {
   // 파일 미리보기 상태
   const [filePreviewUrl, setFilePreviewUrl] = useState<string | null>(null);
   const [isLoadingPreview, setIsLoadingPreview] = useState(false);
+
+  // 증거 네비게이션 상태
+  const [evidenceList, setEvidenceList] = useState<EvidenceListItem[]>([]);
+  const [currentIndex, setCurrentIndex] = useState<number>(-1);
 
   // 증거 정보 가져오기
   const fetchEvidence = async () => {
@@ -133,6 +144,44 @@ export function EvidenceDetailPage() {
     } catch (error) {
       console.error('사건 정보 조회 실패:', error);
     }
+  };
+
+  // 사건의 증거 목록 가져오기 (네비게이션용)
+  const fetchEvidenceList = async () => {
+    if (!caseId) return;
+
+    const caseIdNum = parseInt(caseId);
+    if (isNaN(caseIdNum)) return;
+
+    try {
+      const response = await apiFetch(`/api/v1/evidence/list?case_id=${caseIdNum}`);
+
+      if (response.ok) {
+        const data = await response.json();
+        const list = data.files || [];
+        setEvidenceList(list);
+
+        // 현재 증거의 인덱스 찾기
+        if (id) {
+          const evidenceIdNum = parseInt(id);
+          const idx = list.findIndex((e: EvidenceListItem) => e.evidence_id === evidenceIdNum);
+          setCurrentIndex(idx);
+        }
+      }
+    } catch (error) {
+      console.error('증거 목록 조회 실패:', error);
+    }
+  };
+
+  // 이전/다음 증거로 이동
+  const navigateEvidence = (direction: 'prev' | 'next') => {
+    if (evidenceList.length === 0 || currentIndex === -1) return;
+
+    const newIndex = direction === 'prev' ? currentIndex - 1 : currentIndex + 1;
+    if (newIndex < 0 || newIndex >= evidenceList.length) return;
+
+    const targetEvidence = evidenceList[newIndex];
+    navigate(`/evidence/${targetEvidence.evidence_id}?caseId=${caseId}`);
   };
 
   // 분석 정보 조회
@@ -296,6 +345,7 @@ export function EvidenceDetailPage() {
   useEffect(() => {
     fetchEvidence();
     fetchCase();
+    fetchEvidenceList();
   }, [id, caseId]);
 
   // 증거 정보가 로드되면 분석 정보 조회 및 파일 미리보기 URL 가져오기
@@ -382,9 +432,33 @@ export function EvidenceDetailPage() {
             돌아가기
           </Button>
           {caseData && (
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-muted-foreground">사건:</span>
-              <span className="text-sm font-medium">{caseData.name}</span>
+            <span className="text-sm text-muted-foreground">
+              사건: {caseData.title}
+            </span>
+          )}
+          {/* 이전/다음 증거 네비게이션 */}
+          {evidenceList.length > 1 && currentIndex !== -1 && (
+            <div className="flex items-center gap-1 ml-2">
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-8 px-2"
+                onClick={() => navigateEvidence('prev')}
+                disabled={currentIndex === 0}
+              >
+                <ChevronLeft className="h-4 w-4" />
+                <span className="text-xs">이전</span>
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-8 px-2"
+                onClick={() => navigateEvidence('next')}
+                disabled={currentIndex === evidenceList.length - 1}
+              >
+                <span className="text-xs">다음</span>
+                <ChevronRight className="h-4 w-4" />
+              </Button>
             </div>
           )}
         </div>

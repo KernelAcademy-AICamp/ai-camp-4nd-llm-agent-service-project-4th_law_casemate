@@ -1262,26 +1262,35 @@ export function CaseDetailPage({
   };
 
   // 타임라인 헬퍼 함수들
-  const parseDateParts = (dateStr: string) => {
+  const parseDateParts = (dateStr: string | null | undefined) => {
+    if (!dateStr) {
+      return { day: null, month: null, year: null, dayOfWeek: null, isValid: false };
+    }
     const date = new Date(dateStr);
+    if (isNaN(date.getTime())) {
+      return { day: null, month: null, year: null, dayOfWeek: null, isValid: false };
+    }
     const dayOfWeekNames = ["일", "월", "화", "수", "목", "금", "토"];
     return {
       day: date.getDate(),
       month: date.getMonth() + 1,
       year: date.getFullYear(),
       dayOfWeek: dayOfWeekNames[date.getDay()],
+      isValid: true,
     };
   };
 
-  const formatMonthYear = (dateStr: string) => {
-    const { year, month } = parseDateParts(dateStr);
+  const formatMonthYear = (dateStr: string | null | undefined) => {
+    const { year, month, isValid } = parseDateParts(dateStr);
+    if (!isValid) return "시점 미상";
     return `${year}년 ${month}월`;
   };
 
-  const isNewMonth = (currentDate: string, previousDate: string | null) => {
+  const isNewMonth = (currentDate: string | null | undefined, previousDate: string | null | undefined) => {
     if (!previousDate) return true;
     const current = parseDateParts(currentDate);
     const previous = parseDateParts(previousDate);
+    if (!current.isValid || !previous.isValid) return true;
     return current.year !== previous.year || current.month !== previous.month;
   };
 
@@ -2280,7 +2289,7 @@ export function CaseDetailPage({
                                 <div key={event.id} className="flex group relative">
                                   {/* Date Column */}
                                   <div className="w-16 sm:w-20 shrink-0 hidden sm:flex flex-col items-center pt-1">
-                                    {isFirstInGroup && (
+                                    {isFirstInGroup && dateParts.isValid && (
                                       <>
                                         <span className="text-2xl font-bold text-foreground leading-none">
                                           {dateParts.day}
@@ -2313,8 +2322,14 @@ export function CaseDetailPage({
                                   <div className="flex-1 pb-5 pl-3 sm:pl-4">
                                     {/* Mobile date */}
                                     <div className="sm:hidden flex items-center gap-1.5 text-xs text-muted-foreground mb-1">
-                                      <span className="font-semibold text-foreground">{dateParts.month}/{dateParts.day}</span>
-                                      <span className="text-muted-foreground/50">{dateParts.dayOfWeek}</span>
+                                      {dateParts.isValid ? (
+                                        <>
+                                          <span className="font-semibold text-foreground">{dateParts.month}/{dateParts.day}</span>
+                                          <span className="text-muted-foreground/50">{dateParts.dayOfWeek}</span>
+                                        </>
+                                      ) : (
+                                        <span className="text-muted-foreground">시점 미상</span>
+                                      )}
                                     </div>
 
                                     <div className={`px-4 py-3 rounded-xl border shadow-sm hover:shadow-md transition-all duration-200 ${getTypeColor(event.type)}`}>
@@ -2425,12 +2440,18 @@ export function CaseDetailPage({
                                 {/* 날짜 — 카드 위에 크게 */}
                                 {showDate && (
                                   <div className={`flex items-baseline gap-1.5 mb-2 ${isLeft ? "justify-end" : "justify-start"}`}>
-                                    <span className="text-xl font-bold text-foreground leading-none tracking-tight">
-                                      {dateParts.day}일
-                                    </span>
-                                    <span className="text-xs text-muted-foreground">
-                                      {dateParts.dayOfWeek}
-                                    </span>
+                                    {dateParts.isValid ? (
+                                      <>
+                                        <span className="text-xl font-bold text-foreground leading-none tracking-tight">
+                                          {dateParts.day}일
+                                        </span>
+                                        <span className="text-xs text-muted-foreground">
+                                          {dateParts.dayOfWeek}
+                                        </span>
+                                      </>
+                                    ) : (
+                                      <span className="text-xs text-muted-foreground">시점 미상</span>
+                                    )}
                                     {event.time && (
                                       <span className="text-xs text-muted-foreground/60 ml-1">
                                         {event.time}
