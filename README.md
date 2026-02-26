@@ -193,8 +193,8 @@ API 상세 문서: `http://localhost:8000/docs`
 
 | 이름 | 역할 |
 |------|------|
-| dayforged | AI 어시스턴트 (홈 에이전트), AI 사건 분석, 보안/안정성, 프론트엔드 UI/UX |
-| DaHee05 | AI 어시스턴트 (홈 에이전트), 판례 검색/AI 비교 분석, AWS 배포, 프론트엔드 UI/UX |
+| dayforged | AI 어시스턴트 (홈 에이전트), AI 사건 분석, 프론트엔드 UI/UX |
+| DaHee05 | AI 어시스턴트 (홈 에이전트), 판례 검색/AI 비교 분석, AWS 배포 |
 | hdju (kiribati) | 타임라인, 인물관계도, VLM |
 
 ## 라이선스
