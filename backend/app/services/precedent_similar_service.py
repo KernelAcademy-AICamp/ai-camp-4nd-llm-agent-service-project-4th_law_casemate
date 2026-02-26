@@ -6,6 +6,7 @@
 - PostgreSQL에서 메타데이터/전문 조회
 """
 
+import os
 import time
 import logging
 from typing import List, Dict, Any, Optional
@@ -16,7 +17,7 @@ from qdrant_client.models import Filter, FieldCondition, MatchAny
 
 from app.services.precedent_embedding_service import PrecedentEmbeddingService, get_openai_client
 from app.services.precedent_repository import PrecedentRepository
-from app.config import CollectionConfig
+from app.config import CollectionConfig, QuantizationConfig
 from tool.qdrant_client import get_qdrant_client
 from app.prompts.query_transform_prompt import (
     QUERY_TRANSFORM_V5_SYSTEM,
@@ -26,12 +27,20 @@ import re
 
 logger = logging.getLogger(__name__)
 
+
+def is_reranking_enabled() -> bool:
+    """USE_RERANKING 환경변수 확인 (기본값: false)"""
+    return os.getenv("USE_RERANKING", "false").lower() in ("true", "1", "yes")
+
+
 # 리랭커 모델 (Lazy Loading)
 _reranker_model = None
 
 
 def get_reranker_model():
-    """리랭커 모델 싱글톤 로드"""
+    """리랭커 모델 싱글톤 로드. 리랭킹 비활성 시 None 반환."""
+    if not is_reranking_enabled():
+        return None
     global _reranker_model
     if _reranker_model is None:
         from sentence_transformers import CrossEncoder
@@ -82,20 +91,20 @@ class PrecedentSimilarService:
     SEARCH_LIMIT = 50  # 각 검색(Dense/Sparse)에서 가져올 수
     RERANK_CANDIDATES = 30  # 리랭킹할 판례 후보 수
 
-    def __init__(self, use_reranking: bool = True):
+    def __init__(self, use_reranking: bool | None = None):
         self.embedding_service = PrecedentEmbeddingService(
             model=PrecedentEmbeddingService.MODEL_SMALL
         )
         self.qdrant_client = get_qdrant_client()
         self.openai_client = get_openai_client()
         self.repository = PrecedentRepository()
-        self.use_reranking = use_reranking
+        self.use_reranking = use_reranking if use_reranking is not None else is_reranking_enabled()
 
     # ==================== 쿼리 정제 + 키워드 추출 ====================
 
     def _refine_and_extract(self, user_query: str) -> Dict[str, Any]:
         """
-        GPT를 사용해 쿼리 정제 + 키워드 추출 (V5 프롬프트)
+        GPT를 사용해 쿼리 정제 + 키워드 추출 (V5 프롬프트 - JSON 출력)
         - 고유명사 → 법률 주체 변환
         - 플랫폼 일반화
         - 법률 키워드 추출
@@ -103,6 +112,8 @@ class PrecedentSimilarService:
         Returns:
             {"query": 정제된 쿼리, "keywords": [키워드 리스트]}
         """
+        import json
+
         try:
             logger.info("=" * 60)
             logger.info("[유사 판례 검색] GPT 쿼리 정제 + 키워드 추출 (V5)")
@@ -116,22 +127,19 @@ class PrecedentSimilarService:
                 ],
                 temperature=0,
                 max_tokens=600,
+                response_format={"type": "json_object"},
             )
 
             result_text = response.choices[0].message.content.strip()
 
-            # V5 텍스트 형식 파싱 (query: ..., keywords: [...])
-            query = ""
-            keywords = []
-            for line in result_text.split('\n'):
-                line = line.strip()
-                if line.lower().startswith('query:'):
-                    query = line[6:].strip()
-                elif line.lower().startswith('keywords:'):
-                    kw_str = line[9:].strip()
-                    # [keyword1, keyword2] 형식 파싱
-                    if kw_str.startswith('[') and kw_str.endswith(']'):
-                        keywords = [k.strip() for k in kw_str[1:-1].split(',')]
+            # JSON 형식 파싱
+            result_json = json.loads(result_text)
+            query = result_json.get("query", "")
+            keywords = result_json.get("keywords", [])
+
+            # 키워드가 문자열로 올 경우 리스트로 변환
+            if isinstance(keywords, str):
+                keywords = [k.strip() for k in keywords.split(",")]
 
             logger.info(f"[정제된 쿼리] {query[:200]}...")
             logger.info(f"[추출 키워드] {keywords}")
@@ -145,6 +153,12 @@ class PrecedentSimilarService:
                 "keywords": keywords[:5]
             }
 
+        except json.JSONDecodeError as e:
+            logger.error(f"JSON 파싱 실패: {e}, 최소 정제 적용")
+            return {
+                "query": self._minimal_clean(user_query),
+                "keywords": []
+            }
         except Exception as e:
             logger.error(f"GPT 쿼리 정제 실패: {e}, 최소 정제 적용")
             return {
@@ -246,6 +260,16 @@ class PrecedentSimilarService:
             )
 
         # Dense 검색 (필터 적용)
+        # 양자화 컬렉션용 search_params 설정
+        search_params = None
+        if QuantizationConfig.ENABLED:
+            search_params = models.SearchParams(
+                quantization=models.QuantizationSearchParams(
+                    rescore=QuantizationConfig.RESCORE,
+                    oversampling=QuantizationConfig.OVERSAMPLING,
+                )
+            )
+
         results = self.qdrant_client.query_points(
             collection_name=self.COLLECTION_PRECEDENTS,
             query=dense_vec,
@@ -253,6 +277,7 @@ class PrecedentSimilarService:
             query_filter=search_filter,
             limit=self.SEARCH_LIMIT,
             with_payload=["case_number", "section"],
+            search_params=search_params,
         )
 
         chunk_scores = {}
@@ -377,6 +402,8 @@ class PrecedentSimilarService:
             return []
 
         reranker = get_reranker_model()
+        if reranker is None:
+            return candidates[:top_k]
 
         # (쿼리, best_chunk) 쌍 생성
         pairs = []
@@ -497,7 +524,7 @@ class PrecedentSimilarService:
             "extracted_keywords": keywords,
             "use_reranking": self.use_reranking,
             "search_method": "2-Stage (BM25 Filter → Dense)",
-            "embedding_model": "KURE" if self.embedding_service.use_kure else "OpenAI",
+            "embedding_model": self.embedding_service.embedding_mode,
             "total_chunks_matched": len(chunk_scores),
             "total_cases_matched": len(grouped_cases),
             "top_scores": [

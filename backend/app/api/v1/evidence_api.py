@@ -8,6 +8,7 @@ from pydantic import BaseModel
 import os
 import uuid
 import time
+import logging
 from app.services.evidence_processor import EvidenceProcessor
 from openai import AsyncOpenAI
 
@@ -15,6 +16,8 @@ from tool.database import get_db
 from tool.security import get_current_user
 from app.models.user import User
 from app.models import evidence as models
+
+logger = logging.getLogger(__name__)
 
 # 요청 스키마
 class CategoryCreateRequest(BaseModel):
@@ -31,14 +34,23 @@ class CategoryMoveRequest(BaseModel):
 # 환경변수 로드
 load_dotenv()
 
-# Supabase 설정 (Service Role Key 사용 - RLS 우회)
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+# Supabase 설정 (Lazy Init - 환경변수 없어도 앱 시작 가능)
+_supabase_client: Client | None = None
 
-if not SUPABASE_URL or not SUPABASE_KEY:
-    raise ValueError("SUPABASE_URL 또는 SUPABASE_SERVICE_ROLE_KEY가 .env 파일에 설정되지 않았습니다")
 
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+def get_supabase() -> Client:
+    """Supabase 클라이언트 lazy 초기화"""
+    global _supabase_client
+    if _supabase_client is None:
+        url = os.getenv("SUPABASE_URL")
+        key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+        if not url or not key:
+            raise HTTPException(
+                status_code=503,
+                detail="Supabase 설정이 누락되었습니다 (SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)"
+            )
+        _supabase_client = create_client(url, key)
+    return _supabase_client
 
 router = APIRouter()
 
@@ -55,14 +67,12 @@ async def process_evidence_in_background(evidence_id: int, file_content: bytes, 
     from tool.database import SessionLocal
     from io import BytesIO
 
-    print(f"\n{'='*80}")
-    print(f"🤖 [백그라운드] 증거 분석 시작: evidence_id={evidence_id}")
-    print(f"{'='*80}\n")
+    logger.info(f"[백그라운드] 증거 분석 시작: evidence_id={evidence_id}")
 
     db = SessionLocal()
     try:
         # 1. 메모리에서 파일 내용 사용 (다운로드 불필요!)
-        print(f"📄 [백그라운드] 파일 크기: {len(file_content)} bytes")
+        logger.debug(f"[백그라운드] 파일 크기: {len(file_content)} bytes")
         file_like = BytesIO(file_content)
 
         # UploadFile 객체 생성 (processor.process에서 필요)
@@ -70,7 +80,7 @@ async def process_evidence_in_background(evidence_id: int, file_content: bytes, 
         upload_file = UploadFile(filename=file_name, file=file_like)
 
         # 3. EvidenceProcessor로 분석
-        print(f"🔍 [백그라운드] 텍스트 추출 시작...")
+        logger.info(f"[백그라운드] 텍스트 추출 시작...")
         processor = EvidenceProcessor()
         result = await processor.process(upload_file, detail="high")
 
@@ -87,11 +97,8 @@ async def process_evidence_in_background(evidence_id: int, file_content: bytes, 
 
                 db.commit()
 
-                print(f"✅ [백그라운드] 텍스트 추출 완료!")
-                print(f"   - 추출된 텍스트: {len(extracted_text)}자")
-                print(f"   - 문서 유형: {doc_type}")
-                print(f"   - 추출 방법: {result.get('method')}")
-                print(f"   - 비용 추정: {result.get('cost_estimate')}\n")
+                logger.info(f"[백그라운드] 텍스트 추출 완료: {len(extracted_text)}자, 문서유형={doc_type}")
+                logger.debug(f"[백그라운드] 추출 방법: {result.get('method')}, 비용 추정: {result.get('cost_estimate')}")
 
                 # 5. 사건과 연결된 경우 자동 분석 트리거
                 case_mappings = db.query(models.CaseEvidenceMapping).filter(
@@ -99,7 +106,7 @@ async def process_evidence_in_background(evidence_id: int, file_content: bytes, 
                 ).all()
 
                 if case_mappings:
-                    print(f"🔗 [백그라운드] 증거가 {len(case_mappings)}개 사건과 연결됨. 자동 분석 시작...")
+                    logger.info(f"[백그라운드] 증거가 {len(case_mappings)}개 사건과 연결됨. 자동 분석 시작...")
                     for mapping in case_mappings:
                         # 기존 분석이 없는 경우만 분석 수행
                         existing_analysis = db.query(models.EvidenceAnalysis).filter(
@@ -108,19 +115,17 @@ async def process_evidence_in_background(evidence_id: int, file_content: bytes, 
                         ).first()
 
                         if not existing_analysis:
-                            print(f"   📊 사건 ID {mapping.case_id}에 대한 분석 시작...")
+                            logger.info(f"사건 ID {mapping.case_id}에 대한 분석 시작...")
                             await analyze_evidence_on_link_background(evidence_id, mapping.case_id)
                         else:
-                            print(f"   ⏭️  사건 ID {mapping.case_id}는 이미 분석됨. 건너뜀.")
+                            logger.debug(f"사건 ID {mapping.case_id}는 이미 분석됨. 건너뜀.")
             else:
-                print(f"⚠️ [백그라운드] DB에서 증거를 찾을 수 없음: evidence_id={evidence_id}")
+                logger.info(f"[백그라운드] DB에서 증거를 찾을 수 없음: evidence_id={evidence_id}")
         else:
-            print(f"⚠️ [백그라운드] 텍스트 추출 실패: {result.get('error')}\n")
+            logger.info(f"[백그라운드] 텍스트 추출 실패: {result.get('error')}")
 
     except Exception as e:
-        print(f"❌ [백그라운드] 증거 분석 중 오류: {str(e)}\n")
-        import traceback
-        traceback.print_exc()
+        logger.error(f"[백그라운드] 증거 분석 중 오류: {str(e)}", exc_info=True)
     finally:
         db.close()
 
@@ -139,27 +144,25 @@ async def analyze_evidence_on_link_background(evidence_id: int, case_id: int):
     import json
     import re
 
-    print(f"\n{'='*80}")
-    print(f"🤖 [백그라운드] 증거-사건 연결 분석 시작: evidence_id={evidence_id}, case_id={case_id}")
-    print(f"{'='*80}\n")
+    logger.info(f"[백그라운드] 증거-사건 연결 분석 시작: evidence_id={evidence_id}, case_id={case_id}")
 
     db = SessionLocal()
     try:
         # 1. 증거 조회
         evidence = db.query(models.Evidence).filter(models.Evidence.id == evidence_id).first()
         if not evidence:
-            print(f"⚠️ [백그라운드] 증거를 찾을 수 없음: evidence_id={evidence_id}")
+            logger.info(f"[백그라운드] 증거를 찾을 수 없음: evidence_id={evidence_id}")
             return
 
         # 2. content 확인
         if not evidence.content or len(evidence.content.strip()) < 20:
-            print(f"⚠️ [백그라운드] 분석할 텍스트가 없음 (content가 비어있거나 너무 짧음)")
+            logger.info(f"[백그라운드] 분석할 텍스트가 없음 (content가 비어있거나 너무 짧음)")
             return
 
         # 3. 사건 정보 조회
         case = db.query(models.Case).filter(models.Case.id == case_id).first()
         if not case:
-            print(f"⚠️ [백그라운드] 사건을 찾을 수 없음: case_id={case_id}")
+            logger.info(f"[백그라운드] 사건을 찾을 수 없음: case_id={case_id}")
             return
 
         case_context = f"""
@@ -175,12 +178,12 @@ async def analyze_evidence_on_link_background(evidence_id: int, case_id: int):
         # 4. AI 분석 수행
         api_key = os.getenv("OPENAI_API_KEY")
         if not api_key:
-            print(f"⚠️ [백그라운드] OPENAI_API_KEY가 설정되지 않음")
+            logger.info(f"[백그라운드] OPENAI_API_KEY가 설정되지 않음")
             return
 
         client = AsyncOpenAI(api_key=api_key)
 
-        print(f"🤖 [백그라운드] AI 분석 중... (텍스트 길이: {len(evidence.content)}자)")
+        logger.info(f"[백그라운드] AI 분석 중... (텍스트 길이: {len(evidence.content)}자)")
 
         # 분석 프롬프트
         prompt = f"""당신은 법률 전문가입니다. 다음 증거 자료를 특정 사건의 맥락에서 분석해주세요.
@@ -235,10 +238,10 @@ async def analyze_evidence_on_link_background(evidence_id: int, case_id: int):
             legal_relevance = parsed.get("legal_relevance", "")
             risk_level = parsed.get("risk_level", "medium")
 
-            print(f"✅ [백그라운드] AI 분석 완료: risk_level={risk_level}")
+            logger.info(f"[백그라운드] AI 분석 완료: risk_level={risk_level}")
 
         except (json.JSONDecodeError, AttributeError) as e:
-            print(f"⚠️ [백그라운드] JSON 파싱 실패: {str(e)}")
+            logger.debug(f"[백그라운드] JSON 파싱 실패: {str(e)}")
             summary = content[:500]
             legal_relevance = "자동 분석 실패"
             risk_level = "medium"
@@ -257,7 +260,7 @@ async def analyze_evidence_on_link_background(evidence_id: int, case_id: int):
             existing_analysis.ai_model = "gpt-4o-mini"
             existing_analysis.created_at = datetime.now()
             db.commit()
-            print(f"✅ [백그라운드] 분석 업데이트 완료: analysis_id={existing_analysis.id}")
+            logger.info(f"[백그라운드] 분석 업데이트 완료: analysis_id={existing_analysis.id}")
         else:
             # 새로 생성
             new_analysis = models.EvidenceAnalysis(
@@ -270,12 +273,10 @@ async def analyze_evidence_on_link_background(evidence_id: int, case_id: int):
             )
             db.add(new_analysis)
             db.commit()
-            print(f"✅ [백그라운드] 분석 생성 완료: case_id={case_id}")
+            logger.info(f"[백그라운드] 분석 생성 완료: case_id={case_id}")
 
     except Exception as e:
-        print(f"❌ [백그라운드] 증거-사건 연결 분석 중 오류: {str(e)}")
-        import traceback
-        traceback.print_exc()
+        logger.error(f"[백그라운드] 증거-사건 연결 분석 중 오류: {str(e)}", exc_info=True)
     finally:
         db.close()
 
@@ -302,12 +303,7 @@ async def upload_file(
     - file_name: 원본 파일명 (한글 포함)
     - url: Signed URL (60초 유효)
     """
-    print("=" * 50)
-    print(f"🎉 Upload Evidence endpoint called!")
-    print(f"📁 파일명: {file.filename}")
-    print(f"📋 사건 ID: {case_id if case_id else '미연결'}")
-    print(f"📂 카테고리 ID: {category_id if category_id else '미분류'}")
-    print("=" * 50)
+    logger.info(f"증거 업로드 요청: 파일명={file.filename}, 사건ID={case_id if case_id else '미연결'}, 카테고리ID={category_id if category_id else '미분류'}")
 
     # 1. 파일 이름 중복 방지를 위한 고유 식별자 생성
     file_extension = file.filename.split(".")[-1] if "." in file.filename else "bin"
@@ -318,25 +314,34 @@ async def upload_file(
     firm_id = current_user.firm_id if current_user.firm_id else "unassigned"
     file_path = f"{firm_id}/{today_date}/{unique_filename}"
 
+    # 파일 크기 제한 (50MB)
+    MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
+    file_content = await file.read()
+    if len(file_content) > MAX_FILE_SIZE:
+        raise HTTPException(
+            status_code=413,
+            detail=f"파일 크기가 제한을 초과했습니다 (최대 {MAX_FILE_SIZE // (1024*1024)}MB)"
+        )
+
     try:
         # 3. Supabase Storage 업로드 (폴더 자동 생성)
-        file_content = await file.read()
-        upload_response = supabase.storage.from_("Evidences").upload(
+        upload_response = get_supabase().storage.from_("Evidences").upload(
             path=file_path,
             file=file_content,
             file_options={"content-type": file.content_type}
         )
 
-        print(f"📤 Upload response: {upload_response}")
+        logger.debug(f"Upload response: {upload_response}")
 
         # 업로드 응답 검증
         if hasattr(upload_response, 'error') and upload_response.error:
-            raise HTTPException(status_code=500, detail=f"Supabase 업로드 실패: {upload_response.error}")
+            logger.error(f"Supabase 업로드 실패: {upload_response.error}")
+            raise HTTPException(status_code=500, detail="파일 업로드에 실패했습니다")
 
         # 4. Signed URL 생성 (60초 유효)
-        signed_url_response = supabase.storage.from_("Evidences").create_signed_url(file_path, 60)
+        signed_url_response = get_supabase().storage.from_("Evidences").create_signed_url(file_path, 60)
         signed_url = signed_url_response.get('signedURL') if signed_url_response else ""
-        print(f"🔗 Signed URL: {signed_url}")
+        logger.debug(f"Signed URL: {signed_url}")
 
         # 5. DB 저장
         new_evidence = models.Evidence(
@@ -364,7 +369,7 @@ async def upload_file(
 
         # 백그라운드에서 텍스트 추출 (STT/OCR/VLM)
         # 파일 내용을 직접 전달 (재다운로드 불필요!)
-        print(f"📋 백그라운드 분석 작업 등록: evidence_id={new_evidence.id}")
+        logger.info(f"백그라운드 분석 작업 등록: evidence_id={new_evidence.id}")
         background_tasks.add_task(
             process_evidence_in_background,
             new_evidence.id,
@@ -385,7 +390,8 @@ async def upload_file(
 
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"업로드 실패: {str(e)}")
+        logger.error(f"파일 업로드 실패: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="파일 업로드 중 오류가 발생했습니다")
 
 @router.delete("/delete/{evidence_id}")
 async def delete_evidence(
@@ -401,7 +407,7 @@ async def delete_evidence(
     - case_evidence_mappings에서 관련 매핑 삭제
     - Supabase Storage에서 실제 파일 삭제
     """
-    print(f"🗑️ 증거 삭제 요청: evidence_id={evidence_id}, user_id={current_user.id}, firm_id={current_user.firm_id}")
+    logger.info(f"증거 삭제 요청: evidence_id={evidence_id}, user_id={current_user.id}, firm_id={current_user.firm_id}")
 
     try:
         # 1. 증거 조회
@@ -419,10 +425,10 @@ async def delete_evidence(
         # 3. Storage에서 파일 삭제
         if evidence.file_path:
             try:
-                supabase.storage.from_("Evidences").remove([evidence.file_path])
-                print(f"📤 Storage에서 파일 삭제: {evidence.file_path}")
+                get_supabase().storage.from_("Evidences").remove([evidence.file_path])
+                logger.debug(f"Storage에서 파일 삭제: {evidence.file_path}")
             except Exception as storage_error:
-                print(f"⚠️ Storage 파일 삭제 실패 (계속 진행): {str(storage_error)}")
+                logger.debug(f"Storage 파일 삭제 실패 (계속 진행): {str(storage_error)}")
 
         # 4. case_evidence_mappings에서 관련 매핑 삭제
         db.query(models.CaseEvidenceMapping).filter(
@@ -433,7 +439,7 @@ async def delete_evidence(
         db.delete(evidence)
         db.commit()
 
-        print(f"✅ 증거 삭제 완료: evidence_id={evidence_id}")
+        logger.info(f"증거 삭제 완료: evidence_id={evidence_id}")
 
         return {"message": "증거 삭제 완료", "evidence_id": evidence_id}
 
@@ -441,8 +447,9 @@ async def delete_evidence(
         raise
     except Exception as e:
         db.rollback()
-        print(f"❌ 증거 삭제 실패: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"증거 삭제 실패: {str(e)}")
+        logger.error(f"증거 삭제 실패: {str(e)}")
+        logger.error(f"증거 삭제 실패: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="증거 삭제 중 오류가 발생했습니다")
 
 @router.delete("/categories/delete/{category_id}")
 async def delete_category(
@@ -457,7 +464,7 @@ async def delete_category(
     - 하위 카테고리가 있으면 함께 삭제
     - 해당 폴더 및 하위 폴더의 파일은 미분류(category_id=NULL)로 이동
     """
-    print(f"🗑️ 카테고리 삭제 요청: category_id={category_id}, user_id={current_user.id}, firm_id={current_user.firm_id}")
+    logger.info(f"카테고리 삭제 요청: category_id={category_id}, user_id={current_user.id}, firm_id={current_user.firm_id}")
 
     try:
         category = db.query(models.EvidenceCategory).filter(
@@ -494,7 +501,7 @@ async def delete_category(
             ).delete()
 
         db.commit()
-        print(f"✅ 카테고리 삭제 완료: {len(all_ids)}개 폴더 삭제 (id: {all_ids})")
+        logger.info(f"카테고리 삭제 완료: {len(all_ids)}개 폴더 삭제 (id: {all_ids})")
 
         return {"message": "카테고리 삭제 완료", "deleted_count": len(all_ids)}
 
@@ -502,8 +509,9 @@ async def delete_category(
         raise
     except Exception as e:
         db.rollback()
-        print(f"❌ 카테고리 삭제 실패: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"카테고리 삭제 실패: {str(e)}")
+        logger.error(f"카테고리 삭제 실패: {str(e)}")
+        logger.error(f"카테고리 삭제 실패: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="카테고리 삭제 중 오류가 발생했습니다")
 
 @router.post("/categories")
 async def create_category(
@@ -519,7 +527,7 @@ async def create_category(
     - order_index: (선택) 정렬 순서 (기본값: 0)
     - firm_id는 현재 사용자의 firm_id로 자동 설정
     """
-    print(f"📂 카테고리 생성: name={request.name}, parent_id={request.parent_id}, order_index={request.order_index}")
+    logger.info(f"카테고리 생성: name={request.name}, parent_id={request.parent_id}, order_index={request.order_index}")
 
     try:
         # parent_id가 제공된 경우, 해당 카테고리가 같은 firm에 속하는지 검증
@@ -546,7 +554,7 @@ async def create_category(
         db.commit()
         db.refresh(new_category)
 
-        print(f"✅ 카테고리 생성 완료: category_id={new_category.id}")
+        logger.info(f"카테고리 생성 완료: category_id={new_category.id}")
 
         return {
             "message": "카테고리 생성 완료",
@@ -561,8 +569,9 @@ async def create_category(
         raise
     except Exception as e:
         db.rollback()
-        print(f"❌ 카테고리 생성 실패: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"카테고리 생성 실패: {str(e)}")
+        logger.error(f"카테고리 생성 실패: {str(e)}")
+        logger.error(f"카테고리 생성 실패: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="카테고리 생성 중 오류가 발생했습니다")
 
 @router.patch("/categories/{category_id}/rename")
 async def rename_category(
@@ -578,7 +587,7 @@ async def rename_category(
     - name: 새로운 카테고리명
     - firm_id 소유권 검증 후 이름 변경
     """
-    print(f"✏️ 카테고리 이름 변경: category_id={category_id}, new_name={request.name}")
+    logger.info(f"카테고리 이름 변경: category_id={category_id}, new_name={request.name}")
 
     try:
         # 1. 카테고리 조회
@@ -598,7 +607,7 @@ async def rename_category(
         db.commit()
         db.refresh(category)
 
-        print(f"✅ 카테고리 이름 변경 완료: category_id={category_id}, name={category.name}")
+        logger.info(f"카테고리 이름 변경 완료: category_id={category_id}, name={category.name}")
 
         return {
             "message": "이름 변경 완료",
@@ -610,8 +619,9 @@ async def rename_category(
         raise
     except Exception as e:
         db.rollback()
-        print(f"❌ 카테고리 이름 변경 실패: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"카테고리 이름 변경 실패: {str(e)}")
+        logger.error(f"카테고리 이름 변경 실패: {str(e)}")
+        logger.error(f"카테고리 이름 변경 실패: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="카테고리 이름 변경 중 오류가 발생했습니다")
 
 @router.patch("/categories/{category_id}/move")
 async def move_category(
@@ -628,7 +638,7 @@ async def move_category(
     - firm_id 소유권 검증
     - 순환 참조 방지 (자기 자신의 하위 카테고리로 이동 불가)
     """
-    print(f"📦 카테고리 이동: category_id={category_id}, new_parent_id={request.parent_id}")
+    logger.info(f"카테고리 이동: category_id={category_id}, new_parent_id={request.parent_id}")
 
     try:
         # 1. 카테고리 조회
@@ -676,7 +686,7 @@ async def move_category(
         db.commit()
         db.refresh(category)
 
-        print(f"✅ 카테고리 이동 완료: category_id={category_id}, parent_id={category.parent_id}")
+        logger.info(f"카테고리 이동 완료: category_id={category_id}, parent_id={category.parent_id}")
 
         return {
             "message": "이동 완료",
@@ -688,8 +698,9 @@ async def move_category(
         raise
     except Exception as e:
         db.rollback()
-        print(f"❌ 카테고리 이동 실패: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"카테고리 이동 실패: {str(e)}")
+        logger.error(f"카테고리 이동 실패: {str(e)}")
+        logger.error(f"카테고리 이동 실패: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="카테고리 이동 중 오류가 발생했습니다")
 
 @router.get("/categories")
 async def get_category_list(
@@ -703,7 +714,7 @@ async def get_category_list(
     - 계층 구조 포함 (parent_id)
     - order_index 기준 정렬
     """
-    print(f"📂 카테고리 목록 조회: user_id={current_user.id}, firm_id={current_user.firm_id}")
+    logger.debug(f"카테고리 목록 조회: user_id={current_user.id}, firm_id={current_user.firm_id}")
 
     try:
         # 쿼리: 현재 사용자의 firm_id로 필터링, order_index로 정렬
@@ -713,7 +724,7 @@ async def get_category_list(
             models.EvidenceCategory.order_index.asc()
         ).all()
 
-        print(f"✅ 조회된 카테고리 수: {len(categories)}")
+        logger.debug(f"조회된 카테고리 수: {len(categories)}")
 
         # 응답 데이터 구성
         category_list = []
@@ -732,8 +743,9 @@ async def get_category_list(
         }
 
     except Exception as e:
-        print(f"❌ 카테고리 목록 조회 실패: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"카테고리 목록 조회 실패: {str(e)}")
+        logger.error(f"카테고리 목록 조회 실패: {str(e)}")
+        logger.error(f"카테고리 목록 조회 실패: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="목록 조회 중 오류가 발생했습니다")
 
 
 @router.get("/list")
@@ -755,15 +767,13 @@ async def get_evidence_list(
     start_time = time.time()
     start_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
 
-    print(f"\n{'='*80}")
-    print(f"📋 [증거 목록 조회] 시작 - {start_datetime}")
-    print(f"📋 파라미터: user_id={current_user.id}, firm_id={current_user.firm_id}, case_id={case_id}, category_id={category_id}")
-    print(f"{'='*80}")
+    logger.debug(f"[증거 목록 조회] 시작 - {start_datetime}")
+    logger.debug(f"파라미터: user_id={current_user.id}, firm_id={current_user.firm_id}, case_id={case_id}, category_id={category_id}")
 
     try:
         # DB 쿼리 시작 (JOIN 사용으로 1번의 쿼리로 통합)
         query_start = time.time()
-        print(f"⏱️  [DB 쿼리 + JOIN] 시작 - {datetime.now().strftime('%H:%M:%S.%f')[:-3]}")
+        logger.debug(f"[DB 쿼리 + JOIN] 시작 - {datetime.now().strftime('%H:%M:%S.%f')[:-3]}")
 
         # LEFT JOIN + GROUP BY로 증거와 연결된 사건 ID를 한 번에 조회
         query = db.query(
@@ -793,13 +803,11 @@ async def get_evidence_list(
 
         query_end = time.time()
         query_duration = (query_end - query_start) * 1000  # 밀리초로 변환
-        print(f"✅ [DB 쿼리 + JOIN] 완료 - {datetime.now().strftime('%H:%M:%S.%f')[:-3]} (소요: {query_duration:.2f}ms)")
-        print(f"📊 조회된 증거 파일 수: {len(results)}")
-        print(f"🚀 성능 개선: 1번의 쿼리로 모든 데이터 조회 (기존 N+1 문제 해결)")
+        logger.debug(f"[DB 쿼리 + JOIN] 완료 (소요: {query_duration:.2f}ms), 조회된 증거 파일 수: {len(results)}")
 
         # 응답 데이터 구성 시작
         mapping_start = time.time()
-        print(f"⏱️  [응답 데이터 구성] 시작 - {datetime.now().strftime('%H:%M:%S.%f')[:-3]}")
+        logger.debug(f"[응답 데이터 구성] 시작 - {datetime.now().strftime('%H:%M:%S.%f')[:-3]}")
 
         evidence_list = []
         for idx, (evidence, linked_case_ids) in enumerate(results):
@@ -807,7 +815,7 @@ async def get_evidence_list(
             case_ids = [cid for cid in (linked_case_ids or []) if cid is not None]
 
             if idx < 5:
-                print(f"   └─ 증거 #{idx+1} (id={evidence.id}): 연결된 사건 {len(case_ids)}개")
+                logger.debug(f"증거 #{idx+1} (id={evidence.id}): 연결된 사건 {len(case_ids)}개")
 
             evidence_list.append({
                 "evidence_id": evidence.id,
@@ -824,21 +832,14 @@ async def get_evidence_list(
 
         mapping_end = time.time()
         mapping_duration = (mapping_end - mapping_start) * 1000
-        print(f"✅ [응답 데이터 구성] 완료 - {datetime.now().strftime('%H:%M:%S.%f')[:-3]} (소요: {mapping_duration:.2f}ms)")
+        logger.debug(f"[응답 데이터 구성] 완료 (소요: {mapping_duration:.2f}ms)")
 
         # 전체 완료
         end_time = time.time()
         total_duration = (end_time - start_time) * 1000
         end_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
 
-        print(f"\n{'='*80}")
-        print(f"🎉 [증거 목록 조회] 완료 - {end_datetime}")
-        print(f"📊 총 소요 시간: {total_duration:.2f}ms ({total_duration/1000:.3f}초)")
-        print(f"   ├─ DB 쿼리 (JOIN): {query_duration:.2f}ms ({query_duration/total_duration*100:.1f}%)")
-        print(f"   └─ 응답 구성: {mapping_duration:.2f}ms ({mapping_duration/total_duration*100:.1f}%)")
-        print(f"📦 반환 데이터: {len(evidence_list)}개 파일")
-        print(f"✨ 최적화: N+1 문제 해결 (기존 {len(evidence_list)+1}번 쿼리 → 1번 쿼리)")
-        print(f"{'='*80}\n")
+        logger.debug(f"[증거 목록 조회] 완료: 총 {total_duration:.2f}ms, DB쿼리={query_duration:.2f}ms, 응답구성={mapping_duration:.2f}ms, {len(evidence_list)}개 파일")
 
         return {
             "total": len(evidence_list),
@@ -847,11 +848,9 @@ async def get_evidence_list(
 
     except Exception as e:
         error_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-        print(f"\n{'='*80}")
-        print(f"❌ [증거 목록 조회] 실패 - {error_time}")
-        print(f"❌ 에러: {str(e)}")
-        print(f"{'='*80}\n")
-        raise HTTPException(status_code=500, detail=f"목록 조회 실패: {str(e)}")
+        logger.error(f"[증거 목록 조회] 실패: {str(e)}")
+        logger.error(f"증거 목록 조회 실패: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="목록 조회 중 오류가 발생했습니다")
 
 
 @router.get("/{evidence_id}")
@@ -866,7 +865,7 @@ async def get_evidence_detail(
     - 증거 상세 정보 반환 (파일 정보, content, 연결된 사건 ID 등)
     - 권한 확인: 같은 law_firm_id만 조회 가능
     """
-    print(f"📄 증거 상세 조회: evidence_id={evidence_id}, user_id={current_user.id}, firm_id={current_user.firm_id}")
+    logger.debug(f"증거 상세 조회: evidence_id={evidence_id}, user_id={current_user.id}, firm_id={current_user.firm_id}")
 
     try:
         # 증거 조회
@@ -899,14 +898,15 @@ async def get_evidence_detail(
             "uploader_id": evidence.uploader_id
         }
 
-        print(f"✅ 증거 상세 조회 성공: {evidence.file_name}")
+        logger.debug(f"증거 상세 조회 성공: evidence_id={evidence_id}")
         return result
 
     except HTTPException:
         raise
     except Exception as e:
-        print(f"❌ 증거 상세 조회 실패: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"증거 조회 실패: {str(e)}")
+        logger.error(f"증거 상세 조회 실패: {str(e)}")
+        logger.error(f"증거 조회 실패: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="증거 조회 중 오류가 발생했습니다")
 
 
 @router.post("/{evidence_id}/link-case/{case_id}")
@@ -924,7 +924,7 @@ async def link_evidence_to_case(
     - case_id: 사건 ID
     - 같은 law_firm_id 사용자만 연결 가능
     """
-    print(f"🔗 증거-사건 연결: evidence_id={evidence_id}, case_id={case_id}, user_id={current_user.id}")
+    logger.info(f"증거-사건 연결: evidence_id={evidence_id}, case_id={case_id}, user_id={current_user.id}")
 
     try:
         # 1. 증거 조회 및 권한 확인
@@ -953,11 +953,11 @@ async def link_evidence_to_case(
         db.commit()
         db.refresh(new_mapping)
 
-        print(f"✅ 증거-사건 연결 완료: mapping_id={new_mapping.id}")
+        logger.info(f"증거-사건 연결 완료: mapping_id={new_mapping.id}")
 
         # 4. 백그라운드에서 증거 분석 (사건 맥락 포함)
         background_tasks.add_task(analyze_evidence_on_link_background, evidence_id, case_id)
-        print(f"🤖 백그라운드 분석 작업 예약: evidence_id={evidence_id}, case_id={case_id}")
+        logger.info(f"백그라운드 분석 작업 예약: evidence_id={evidence_id}, case_id={case_id}")
 
         return {
             "message": "연결 성공",
@@ -970,8 +970,8 @@ async def link_evidence_to_case(
         raise
     except Exception as e:
         db.rollback()
-        print(f"❌ 증거-사건 연결 실패: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"연결 실패: {str(e)}")
+        logger.error(f"증거-사건 연결 실패: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="연결 중 오류가 발생했습니다")
 
 @router.delete("/{evidence_id}/unlink-case/{case_id}")
 async def unlink_evidence_from_case(
@@ -1007,7 +1007,8 @@ async def unlink_evidence_from_case(
         raise
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"연결 해제 실패: {str(e)}")
+        logger.error(f"증거-사건 연결 해제 실패: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="연결 해제 중 오류가 발생했습니다")
 
 
 @router.post("/{evidence_id}/link-case-with-details/{case_id}")
@@ -1029,7 +1030,7 @@ async def link_evidence_to_case_with_details(
     - description: (선택) 증거 설명
     - 같은 law_firm_id 사용자만 연결 가능
     """
-    print(f"🔗 증거-사건 연결 (상세): evidence_id={evidence_id}, case_id={case_id}, date={evidence_date}, desc={description}")
+    logger.info(f"증거-사건 연결 (상세): evidence_id={evidence_id}, case_id={case_id}, date={evidence_date}")
 
     try:
         # 1. 증거 조회 및 권한 확인
@@ -1052,7 +1053,7 @@ async def link_evidence_to_case_with_details(
             existing_mapping.description = description
             db.commit()
             db.refresh(existing_mapping)
-            print(f"✅ 기존 매핑 업데이트: mapping_id={existing_mapping.id}")
+            logger.info(f"기존 매핑 업데이트: mapping_id={existing_mapping.id}")
             return {
                 "message": "기존 연결 정보 업데이트",
                 "mapping_id": existing_mapping.id,
@@ -1071,12 +1072,12 @@ async def link_evidence_to_case_with_details(
         db.commit()
         db.refresh(new_mapping)
 
-        print(f"✅ 증거-사건 연결 완료: mapping_id={new_mapping.id}")
+        logger.info(f"증거-사건 연결 완료: mapping_id={new_mapping.id}")
 
         # 4. 백그라운드에서 증거 분석 (사건 맥락 포함)
         if background_tasks:
             background_tasks.add_task(analyze_evidence_on_link_background, evidence_id, case_id)
-            print(f"🤖 백그라운드 분석 작업 예약: evidence_id={evidence_id}, case_id={case_id}")
+            logger.info(f"백그라운드 분석 작업 예약: evidence_id={evidence_id}, case_id={case_id}")
 
         return {
             "message": "연결 성공",
@@ -1089,8 +1090,8 @@ async def link_evidence_to_case_with_details(
         raise
     except Exception as e:
         db.rollback()
-        print(f"❌ 증거-사건 연결 실패: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"연결 실패: {str(e)}")
+        logger.error(f"증거-사건 연결(상세) 실패: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="연결 중 오류가 발생했습니다")
 
 @router.patch("/{evidence_id}/starred")
 async def toggle_starred(
@@ -1104,7 +1105,7 @@ async def toggle_starred(
     - evidence_id: 증거 ID
     - starred 상태를 반전시킴 (true <-> false)
     """
-    print(f"⭐ 즐겨찾기 토글: evidence_id={evidence_id}, user_id={current_user.id}")
+    logger.debug(f"즐겨찾기 토글: evidence_id={evidence_id}, user_id={current_user.id}")
 
     try:
         # 1. 증거 조회
@@ -1121,7 +1122,7 @@ async def toggle_starred(
         db.commit()
         db.refresh(evidence)
 
-        print(f"✅ 즐겨찾기 토글 완료: starred={evidence.starred}")
+        logger.debug(f"즐겨찾기 토글 완료: evidence_id={evidence_id}, starred={evidence.starred}")
 
         return {
             "message": "즐겨찾기 상태 변경 완료",
@@ -1133,8 +1134,9 @@ async def toggle_starred(
         raise
     except Exception as e:
         db.rollback()
-        print(f"❌ 즐겨찾기 토글 실패: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"즐겨찾기 토글 실패: {str(e)}")
+        logger.error(f"즐겨찾기 토글 실패: {str(e)}")
+        logger.error(f"즐겨찾기 토글 실패: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="즐겨찾기 처리 중 오류가 발생했습니다")
 
 @router.get("/{evidence_id}/url")
 async def get_signed_url(
@@ -1149,7 +1151,7 @@ async def get_signed_url(
     - 60초간 유효한 signed URL 반환
     - 보안: 같은 law_firm_id 사용자만 접근 가능
     """
-    print(f"🔐 Signed URL 요청: evidence_id={evidence_id}, user_id={current_user.id}")
+    logger.debug(f"Signed URL 요청: evidence_id={evidence_id}, user_id={current_user.id}")
 
     # 1. DB에서 증거 파일 조회
     evidence = db.query(models.Evidence).filter(models.Evidence.id == evidence_id).first()
@@ -1163,7 +1165,7 @@ async def get_signed_url(
 
     # 3. Signed URL 생성 (60초 유효)
     try:
-        signed_url_response = supabase.storage.from_("Evidences").create_signed_url(
+        signed_url_response = get_supabase().storage.from_("Evidences").create_signed_url(
             evidence.file_path,
             60  # 60초
         )
@@ -1173,7 +1175,7 @@ async def get_signed_url(
         if not signed_url:
             raise HTTPException(status_code=500, detail="Signed URL 생성 실패")
 
-        print(f"✅ Signed URL 생성 성공: {signed_url[:50]}...")
+        logger.debug(f"Signed URL 생성 성공: evidence_id={evidence_id}")
 
         return {
             "evidence_id": evidence_id,
@@ -1182,8 +1184,9 @@ async def get_signed_url(
             "expires_in": 60
         }
     except Exception as e:
-        print(f"❌ Signed URL 생성 실패: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"URL 생성 실패: {str(e)}")
+        logger.error(f"Signed URL 생성 실패: {str(e)}")
+        logger.error(f"Signed URL 생성 실패: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="URL 생성 중 오류가 발생했습니다")
 
 @router.get("/{evidence_id}/analysis")
 async def get_evidence_analysis(
@@ -1199,7 +1202,7 @@ async def get_evidence_analysis(
     - case_id: (선택) 사건 ID - 특정 사건 맥락의 분석 조회
     - 해당 증거의 분석 정보 반환 (없으면 null)
     """
-    print(f"📊 분석 정보 조회: evidence_id={evidence_id}, case_id={case_id}, user_id={current_user.id}")
+    logger.debug(f"분석 정보 조회: evidence_id={evidence_id}, case_id={case_id}, user_id={current_user.id}")
 
     try:
         # 1. 증거 조회 및 권한 확인
@@ -1221,13 +1224,13 @@ async def get_evidence_analysis(
         analysis = query.order_by(models.EvidenceAnalysis.created_at.desc()).first()
 
         if not analysis:
-            print(f"📊 분석 정보 없음: evidence_id={evidence_id}, case_id={case_id}")
+            logger.debug(f"분석 정보 없음: evidence_id={evidence_id}, case_id={case_id}")
             return {
                 "has_analysis": False,
                 "analysis": None
             }
 
-        print(f"✅ 분석 정보 조회 완료: analysis_id={analysis.id}")
+        logger.debug(f"분석 정보 조회 완료: analysis_id={analysis.id}")
 
         return {
             "has_analysis": True,
@@ -1245,8 +1248,9 @@ async def get_evidence_analysis(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"❌ 분석 정보 조회 실패: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"분석 정보 조회 실패: {str(e)}")
+        logger.error(f"분석 정보 조회 실패: {str(e)}")
+        logger.error(f"분석 정보 조회 실패: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="분석 정보 조회 중 오류가 발생했습니다")
 
 @router.post("/{evidence_id}/analyze")
 async def analyze_evidence(
@@ -1263,7 +1267,7 @@ async def analyze_evidence(
     - 증거의 content를 AI로 분석하여 요약, 법적 관련성, 위험도 평가
     - 결과를 evidence_analyses 테이블에 저장
     """
-    print(f"🤖 증거 분석 시작: evidence_id={evidence_id}, case_id={case_id}, user_id={current_user.id}")
+    logger.info(f"증거 분석 시작: evidence_id={evidence_id}, case_id={case_id}, user_id={current_user.id}")
 
     try:
         # 1. 증거 조회 및 권한 확인
@@ -1288,7 +1292,7 @@ async def analyze_evidence(
 
         client = AsyncOpenAI(api_key=api_key)
 
-        print(f"🤖 AI 분석 중... (텍스트 길이: {len(evidence.content)}자)")
+        logger.info(f"AI 분석 중... (텍스트 길이: {len(evidence.content)}자)")
 
         # 사건 정보 조회 (case_id가 있는 경우)
         case_context = ""
@@ -1361,10 +1365,10 @@ async def analyze_evidence(
             legal_relevance = parsed.get("legal_relevance", "")
             risk_level = parsed.get("risk_level", "medium")
 
-            print(f"✅ AI 분석 완료: risk_level={risk_level}")
+            logger.info(f"AI 분석 완료: risk_level={risk_level}")
 
         except (json.JSONDecodeError, AttributeError) as e:
-            print(f"⚠️ JSON 파싱 실패: {str(e)}")
+            logger.debug(f"JSON 파싱 실패: {str(e)}")
             # 파싱 실패 시 전체 응답을 summary로 사용
             summary = content[:500]
             legal_relevance = "자동 분석 실패"
@@ -1389,7 +1393,7 @@ async def analyze_evidence(
             db.commit()
             db.refresh(existing_analysis)
 
-            print(f"✅ 분석 업데이트 완료: analysis_id={existing_analysis.id}")
+            logger.info(f"분석 업데이트 완료: analysis_id={existing_analysis.id}")
 
             return {
                 "message": "분석 완료 (업데이트)",
@@ -1417,7 +1421,7 @@ async def analyze_evidence(
             db.commit()
             db.refresh(new_analysis)
 
-            print(f"✅ 분석 생성 완료: analysis_id={new_analysis.id}, case_id={case_id}")
+            logger.info(f"분석 생성 완료: analysis_id={new_analysis.id}, case_id={case_id}")
 
             return {
                 "message": "분석 완료",
@@ -1436,6 +1440,7 @@ async def analyze_evidence(
         raise
     except Exception as e:
         db.rollback()
-        print(f"❌ 증거 분석 실패: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"증거 분석 실패: {str(e)}")
+        logger.error(f"증거 분석 실패: {str(e)}")
+        logger.error(f"증거 분석 실패: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="증거 분석 중 오류가 발생했습니다")
 

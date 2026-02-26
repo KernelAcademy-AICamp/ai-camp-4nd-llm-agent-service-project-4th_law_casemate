@@ -93,6 +93,7 @@ export function ComparisonAnalysisContent({
             "Content-Type": "application/json",
           },
           body: JSON.stringify({
+            case_id: originCaseId ? parseInt(originCaseId, 10) : null,
             origin_facts: originFacts,
             origin_claims: originClaims,
             target_case_number: targetCaseNumber,
@@ -104,8 +105,8 @@ export function ComparisonAnalysisContent({
         clearTimeout(timer3);
 
         if (!response.ok) {
-          const errData = await response.json();
-          throw new Error(errData.detail || "비교 분석 중 오류가 발생했습니다.");
+          console.error("비교 분석 API 에러:", await response.text());
+          throw new Error("비교 분석에 실패했습니다. 잠시 후 다시 시도해주세요.");
         }
 
         // 결과 수신 → 마지막 단계
@@ -121,7 +122,7 @@ export function ComparisonAnalysisContent({
         setAgentSteps(prev => prev.map(s => ({ ...s, status: "done" as const })));
       } catch (err) {
         console.error("비교 분석 실패:", err);
-        setError(err instanceof Error ? err.message : "비교 분석 중 오류가 발생했습니다.");
+        setError("비교 분석에 실패했습니다. 잠시 후 다시 시도해주세요.");
       } finally {
         setTimeout(() => {
           setLoading(false);
@@ -264,6 +265,7 @@ export function ComparisonAnalysisContent({
       iconColor: "text-slate-600",
       bulletColor: "bg-slate-500",
       items: parseToSentences(parsed.case_overview || ""),
+      emptyMessage: "사건 개요를 불러올 수 없습니다.",
     },
     {
       title: "유사 판례 요약",
@@ -272,6 +274,7 @@ export function ComparisonAnalysisContent({
       iconColor: "text-violet-600",
       bulletColor: "bg-violet-500",
       items: parseToSentences(parsed.precedent_summary || ""),
+      emptyMessage: "판례 요약을 불러올 수 없습니다.",
     },
     {
       title: "유사점",
@@ -280,7 +283,7 @@ export function ComparisonAnalysisContent({
       iconColor: "text-emerald-600",
       bulletColor: "bg-emerald-500",
       items: parseToList(parsed.similarities),
-      emptyMessage: "분석된 유사점이 없습니다.",
+      emptyMessage: "공통 쟁점이 없습니다.",
     },
     {
       title: "차이점",

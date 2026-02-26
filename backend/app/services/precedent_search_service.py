@@ -11,7 +11,7 @@ from qdrant_client.http import models
 
 from app.services.precedent_embedding_service import PrecedentEmbeddingService
 from app.services.precedent_repository import PrecedentRepository, SearchResult
-from app.config import CollectionConfig
+from app.config import CollectionConfig, QuantizationConfig
 
 logger = logging.getLogger(__name__)
 
@@ -401,6 +401,16 @@ class PrecedentSearchService:
         # offset + limit + 1 만큼 검색 (has_more 판단용, 중복 제거 고려해 여유있게)
         internal_limit = (offset + limit + 1) * 3
 
+        # 양자화 컬렉션용 search_params 설정
+        search_params = None
+        if QuantizationConfig.ENABLED:
+            search_params = models.SearchParams(
+                quantization=models.QuantizationSearchParams(
+                    rescore=QuantizationConfig.RESCORE,
+                    oversampling=QuantizationConfig.OVERSAMPLING,
+                )
+            )
+
         # ★ Qdrant API 1회: Prefetch + RRF Fusion
         results = self.repository.qdrant_client.query_points(
             collection_name=self.CASES_COLLECTION,
@@ -412,6 +422,7 @@ class PrecedentSearchService:
             query_filter=query_filter,
             limit=internal_limit,
             with_payload=["case_number", "section"],  # 최소 payload만 요청
+            search_params=search_params,
         )
 
         # 사건번호별 중복 제거 (섹션 가중치만 적용)

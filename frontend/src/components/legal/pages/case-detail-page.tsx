@@ -182,8 +182,8 @@ export function CaseDetailPage({
     legalBasis: "",
   });
 
-  // 메인 탭 상태
-  const [activeTab, setActiveTab] = useState<string>("overview");
+  // 메인 탭 상태 (URL ?tab= 파라미터로 초기값 설정)
+  const [activeTab, setActiveTab] = useState<string>(initialTab);
 
   // 서브 탭 상태: "analysis" (AI 분석) | "original" (원문 보기)
   const [detailSubTab, setDetailSubTab] = useState<"analysis" | "original">("analysis");
@@ -442,7 +442,6 @@ export function CaseDetailPage({
         throw new Error("AI 분석 결과 저장 실패");
       }
 
-      console.log("✅ AI 분석 결과 저장 완료");
       // 저장 후 관련 법령 재검색
       fetchRelatedLaws();
     } catch (err) {
@@ -519,7 +518,6 @@ export function CaseDetailPage({
       setAgentSteps(prev => advanceStep(prev, 4));
       setAnalysisStale(false); // 재분석 완료 → stale 해제
       setAnalyzedAt(new Date().toISOString());
-      console.log("✅ AI 분석 새로고침 완료");
       fetchRelatedLaws();
     } catch (err) {
       console.error("AI 분석 새로고침 실패:", err);
@@ -569,7 +567,6 @@ export function CaseDetailPage({
       const updatedData: CaseApiResponse = await response.json();
       setRawApiData(updatedData);
 
-      console.log("✅ 사건 정보 저장 완료");
       // caseData도 업데이트
       setCaseData(prev => prev ? {
         ...prev,
@@ -598,17 +595,19 @@ export function CaseDetailPage({
   };
 
   // 유사 판례 검색 (overviewData 기반)
-  const fetchSimilarCases = useCallback(async () => {
+  const fetchSimilarCases = useCallback(async (forceRefresh = false) => {
     if (!caseData) return;
 
-    // 1. 캐시에 있으면 캐시된 결과 사용
-    const cached = getSimilarCases(caseData.id);
-    if (cached) {
-      setSimilarCases(cached);
-      return;
+    // 1. 강제 새로고침이 아니고 캐시에 있으면 캐시된 결과 사용
+    if (!forceRefresh) {
+      const cached = getSimilarCases(caseData.id);
+      if (cached) {
+        setSimilarCases(cached);
+        return;
+      }
     }
 
-    // 2. 캐시에 없으면 API 호출 (case_id로 DB에서 직접 조회)
+    // 2. 캐시에 없거나 강제 새로고침이면 API 호출
     if (!caseData?.id) return;
 
     // 이미 로딩 중이면 중복 호출 방지
@@ -623,7 +622,8 @@ export function CaseDetailPage({
         },
         body: JSON.stringify({
           case_id: caseData.id,
-          exclude_case_number: null  // 현재 사건은 판례가 아니므로 제외할 필요 없음
+          exclude_case_number: null,  // 현재 사건은 판례가 아니므로 제외할 필요 없음
+          force: forceRefresh  // 새로고침 시 백엔드 캐시도 무시
         }),
       });
 
@@ -694,7 +694,6 @@ export function CaseDetailPage({
   const regenerateRelationships = useCallback(async () => {
     if (!caseData) return;
 
-    console.log("[Relationship Regenerate] 시작 - SSE 버전");
 
     setRelationshipLoading(true);
     setRelationshipSteps(RELATIONSHIP_STEPS);
@@ -721,7 +720,6 @@ export function CaseDetailPage({
           );
         } else if (data.type === "complete") {
           // 완료 - 데이터 업데이트
-          console.log("[Relationship] 생성 완료:", data.relationships);
           const relationshipData = data.relationships || { persons: [], relationships: [] };
           setRelationshipData(relationshipData);
           setRelationshipSteps(prev => prev.map(s => ({ ...s, status: "done" })));
@@ -759,7 +757,6 @@ export function CaseDetailPage({
   const regenerateTimeline = async () => {
     if (!caseData) return;
 
-    console.log("[Timeline Regenerate] 시작 - SSE 버전");
 
     setTimelineLoading(true);
     setTimelineSteps(TIMELINE_STEPS);
@@ -786,7 +783,6 @@ export function CaseDetailPage({
           );
         } else if (data.type === "complete") {
           // 완료 - 데이터 업데이트
-          console.log("[Timeline] 생성 완료:", data.timelines);
           setTimelineEvents(data.timelines || []);
           setTimelineSteps(prev => prev.map(s => ({ ...s, status: "done" })));
           eventSource.close();
@@ -818,6 +814,13 @@ export function CaseDetailPage({
       fetchTimeline();
     }
   }, [caseData, fetchTimeline]);
+
+  // 관계도 데이터 가져오기 (URL ?tab=relations로 직접 접근 시)
+  useEffect(() => {
+    if (activeTab === "relations" && relationshipData.persons.length === 0 && caseData) {
+      fetchRelationships();
+    }
+  }, [activeTab, caseData, relationshipData.persons.length, fetchRelationships]);
 
   // 유사 판례 검색 (overviewData 설정 후에만 실행)
   useEffect(() => {
@@ -1259,26 +1262,35 @@ export function CaseDetailPage({
   };
 
   // 타임라인 헬퍼 함수들
-  const parseDateParts = (dateStr: string) => {
+  const parseDateParts = (dateStr: string | null | undefined) => {
+    if (!dateStr) {
+      return { day: null, month: null, year: null, dayOfWeek: null, isValid: false };
+    }
     const date = new Date(dateStr);
+    if (isNaN(date.getTime())) {
+      return { day: null, month: null, year: null, dayOfWeek: null, isValid: false };
+    }
     const dayOfWeekNames = ["일", "월", "화", "수", "목", "금", "토"];
     return {
       day: date.getDate(),
       month: date.getMonth() + 1,
       year: date.getFullYear(),
       dayOfWeek: dayOfWeekNames[date.getDay()],
+      isValid: true,
     };
   };
 
-  const formatMonthYear = (dateStr: string) => {
-    const { year, month } = parseDateParts(dateStr);
+  const formatMonthYear = (dateStr: string | null | undefined) => {
+    const { year, month, isValid } = parseDateParts(dateStr);
+    if (!isValid) return "시점 미상";
     return `${year}년 ${month}월`;
   };
 
-  const isNewMonth = (currentDate: string, previousDate: string | null) => {
+  const isNewMonth = (currentDate: string | null | undefined, previousDate: string | null | undefined) => {
     if (!previousDate) return true;
     const current = parseDateParts(currentDate);
     const previous = parseDateParts(previousDate);
+    if (!current.isValid || !previous.isValid) return true;
     return current.year !== previous.year || current.month !== previous.month;
   };
 
@@ -2090,15 +2102,27 @@ export function CaseDetailPage({
           {/* Similar Precedents from API */}
           <Card className="border-border/60">
             <CardHeader className="pb-4">
-              <CardTitle className="text-base font-medium flex items-center gap-2">
-                <Scale className="h-4 w-4" />
-                유사 판례
-                {similarCases.length > 0 && (
-                  <Badge variant="secondary" className="text-xs font-normal">
-                    {similarCases.length}건
-                  </Badge>
-                )}
-              </CardTitle>
+              <div className="flex items-center justify-between">
+                <CardTitle className="text-base font-medium flex items-center gap-2">
+                  <Scale className="h-4 w-4" />
+                  유사 판례
+                  {similarCases.length > 0 && (
+                    <Badge variant="secondary" className="text-xs font-normal">
+                      {similarCases.length}건
+                    </Badge>
+                  )}
+                </CardTitle>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8"
+                  onClick={() => fetchSimilarCases(true)}
+                  disabled={similarCasesLoading}
+                  title="유사 판례 새로고침"
+                >
+                  <RefreshCw className={`h-4 w-4 ${similarCasesLoading ? 'animate-spin' : ''}`} />
+                </Button>
+              </div>
             </CardHeader>
             <CardContent>
               {similarCasesLoading ? (
@@ -2129,12 +2153,6 @@ export function CaseDetailPage({
                             <h4 className="text-sm font-medium">
                               {caseItem.case_number}
                             </h4>
-                            <Badge
-                              variant="secondary"
-                              className="text-xs font-normal"
-                            >
-                              유사도 {Math.round(caseItem.score * 100)}%
-                            </Badge>
                           </div>
                           <p className="text-sm text-foreground/80">
                             {caseItem.case_name}
@@ -2156,65 +2174,67 @@ export function CaseDetailPage({
         {/* ===== 타임라인 탭 - Zigzag Design with Color Highlights ===== */}
         <TabsContent value="timeline" className="mt-6">
           <Card className="border-border/60">
-            <CardHeader className="flex flex-row items-center justify-between pb-4">
-              <div>
-                <CardTitle className="text-base font-medium">
-                  사건 경과 타임라인
-                </CardTitle>
-                <p className="text-xs text-muted-foreground mt-1">
-                  실제 발생한 사건들을 시간순으로 정리
-                </p>
+            <CardHeader className="pb-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle className="text-base font-medium">
+                    사건 경과 타임라인
+                  </CardTitle>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    실제 발생한 사건들을 시간순으로 정리
+                  </p>
+                </div>
+                <div className="flex items-center gap-3">
+                  {/* Layout toggle */}
+                  <div className="flex items-center bg-secondary/50 rounded-md p-0.5">
+                    <button
+                      type="button"
+                      onClick={() => setTimelineLayout("linear")}
+                      className={`px-2 py-1 text-xs rounded transition-colors ${timelineLayout === "linear" ? "bg-background shadow-sm font-medium text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+                    >
+                      목록
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setTimelineLayout("zigzag")}
+                      className={`px-2 py-1 text-xs rounded transition-colors ${timelineLayout === "zigzag" ? "bg-background shadow-sm font-medium text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+                    >
+                      지그재그
+                    </button>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={regenerateTimeline}
+                    disabled={timelineLoading}
+                  >
+                    <RefreshCw className={`h-4 w-4 mr-2 ${timelineLoading ? 'animate-spin' : ''}`} />
+                    새로고침
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => setIsAddingEvent(true)}
+                  >
+                    <Plus className="h-4 w-4 mr-2" />
+                    추가
+                  </Button>
+                </div>
               </div>
-              <div className="flex items-center gap-3">
-                {/* Legend */}
-                <div className="hidden sm:flex items-center gap-2 text-xs">
-                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#6D5EF5]/10 text-[#6D5EF5] font-medium">
-                    <User className="h-3 w-3" />
-                    우리측
-                  </span>
-                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#F59E0B]/10 text-[#B45309] font-medium">
-                    <UserX className="h-3 w-3" />
-                    상대측
-                  </span>
-                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#38BDF8]/10 text-[#0284C7] font-medium">
-                    <FileText className="h-3 w-3" />
-                    증거
-                  </span>
-                </div>
-                {/* Layout toggle */}
-                <div className="flex items-center bg-secondary/50 rounded-md p-0.5">
-                  <button
-                    type="button"
-                    onClick={() => setTimelineLayout("linear")}
-                    className={`px-2 py-1 text-xs rounded transition-colors ${timelineLayout === "linear" ? "bg-background shadow-sm font-medium text-foreground" : "text-muted-foreground hover:text-foreground"}`}
-                  >
-                    목록
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setTimelineLayout("zigzag")}
-                    className={`px-2 py-1 text-xs rounded transition-colors ${timelineLayout === "zigzag" ? "bg-background shadow-sm font-medium text-foreground" : "text-muted-foreground hover:text-foreground"}`}
-                  >
-                    지그재그
-                  </button>
-                </div>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={regenerateTimeline}
-                  disabled={timelineLoading}
-                >
-                  <RefreshCw className={`h-4 w-4 mr-2 ${timelineLoading ? 'animate-spin' : ''}`} />
-                  새로고침
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => setIsAddingEvent(true)}
-                >
-                  <Plus className="h-4 w-4 mr-2" />
-                  추가
-                </Button>
+              {/* Legend - 별도 줄 */}
+              <div className="hidden sm:flex items-center gap-2 text-xs">
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#6D5EF5]/10 text-[#6D5EF5] font-medium">
+                  <User className="h-3 w-3" />
+                  우리측
+                </span>
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#F59E0B]/10 text-[#B45309] font-medium">
+                  <UserX className="h-3 w-3" />
+                  상대측
+                </span>
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#38BDF8]/10 text-[#0284C7] font-medium">
+                  <FileText className="h-3 w-3" />
+                  증거
+                </span>
               </div>
             </CardHeader>
             <CardContent>
@@ -2269,7 +2289,7 @@ export function CaseDetailPage({
                                 <div key={event.id} className="flex group relative">
                                   {/* Date Column */}
                                   <div className="w-16 sm:w-20 shrink-0 hidden sm:flex flex-col items-center pt-1">
-                                    {isFirstInGroup && (
+                                    {isFirstInGroup && dateParts.isValid && (
                                       <>
                                         <span className="text-2xl font-bold text-foreground leading-none">
                                           {dateParts.day}
@@ -2302,8 +2322,14 @@ export function CaseDetailPage({
                                   <div className="flex-1 pb-5 pl-3 sm:pl-4">
                                     {/* Mobile date */}
                                     <div className="sm:hidden flex items-center gap-1.5 text-xs text-muted-foreground mb-1">
-                                      <span className="font-semibold text-foreground">{dateParts.month}/{dateParts.day}</span>
-                                      <span className="text-muted-foreground/50">{dateParts.dayOfWeek}</span>
+                                      {dateParts.isValid ? (
+                                        <>
+                                          <span className="font-semibold text-foreground">{dateParts.month}/{dateParts.day}</span>
+                                          <span className="text-muted-foreground/50">{dateParts.dayOfWeek}</span>
+                                        </>
+                                      ) : (
+                                        <span className="text-muted-foreground">시점 미상</span>
+                                      )}
                                     </div>
 
                                     <div className={`px-4 py-3 rounded-xl border shadow-sm hover:shadow-md transition-all duration-200 ${getTypeColor(event.type)}`}>
@@ -2414,12 +2440,18 @@ export function CaseDetailPage({
                                 {/* 날짜 — 카드 위에 크게 */}
                                 {showDate && (
                                   <div className={`flex items-baseline gap-1.5 mb-2 ${isLeft ? "justify-end" : "justify-start"}`}>
-                                    <span className="text-xl font-bold text-foreground leading-none tracking-tight">
-                                      {dateParts.day}일
-                                    </span>
-                                    <span className="text-xs text-muted-foreground">
-                                      {dateParts.dayOfWeek}
-                                    </span>
+                                    {dateParts.isValid ? (
+                                      <>
+                                        <span className="text-xl font-bold text-foreground leading-none tracking-tight">
+                                          {dateParts.day}일
+                                        </span>
+                                        <span className="text-xs text-muted-foreground">
+                                          {dateParts.dayOfWeek}
+                                        </span>
+                                      </>
+                                    ) : (
+                                      <span className="text-xs text-muted-foreground">시점 미상</span>
+                                    )}
                                     {event.time && (
                                       <span className="text-xs text-muted-foreground/60 ml-1">
                                         {event.time}
@@ -2522,7 +2554,12 @@ export function CaseDetailPage({
         {/* ===== 문서 작성 탭 ===== */}
         <TabsContent value="documents" className="mt-8">
           {caseData ? (
-            <DocumentEditor caseData={caseData} similarCases={similarCases} />
+            <DocumentEditor
+              caseData={caseData}
+              similarCases={similarCases}
+              initialTemplateType={searchParams.get("type") || undefined}
+              autoGenerate={searchParams.get("autoGenerate") === "true"}
+            />
           ) : (
             <div className="flex flex-col items-center justify-center h-[600px] text-muted-foreground">
               <video src="/assets/loading-card.mp4" autoPlay loop muted playsInline className="h-20 w-20 mb-3" style={{ mixBlendMode: 'multiply', opacity: 0.3 }} />

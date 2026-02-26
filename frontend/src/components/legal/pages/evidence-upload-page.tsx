@@ -162,7 +162,6 @@ export function EvidenceUploadPage({}: EvidenceUploadPageProps) {
 
         if (response.ok) {
           const data = await response.json();
-          console.log('카테고리 목록:', data);
 
           // API 응답을 FileFolder 형식으로 변환
           const categoryFolders: FileFolder[] = data.categories.map((cat: any) => ({
@@ -190,19 +189,15 @@ export function EvidenceUploadPage({}: EvidenceUploadPageProps) {
 
   // 초기 데이터 가져오기 함수
   const fetchInitData = useCallback(async () => {
-    console.log('fetchInitData 호출됨');
 
     setIsLoadingFiles(true);
-    console.log('API 호출 시작: /api/v1/file-manager/init');
 
     try {
       const response = await apiFetch('/api/v1/file-manager/init');
 
-      console.log('API 응답 상태:', response.status, response.ok);
 
       if (response.ok) {
         const data = await response.json();
-        console.log('✅ 증거 목록:', data);
 
         // 카테고리 → 폴더
         const categoryFolders: FileFolder[] = data.categories.map((cat: any) => ({
@@ -412,7 +407,6 @@ export function EvidenceUploadPage({}: EvidenceUploadPageProps) {
           }
 
           const data = await response.json();
-          console.log('업로드 API 응답:', data);
           uploadSuccessCount++;
 
           // 진행률 업데이트
@@ -470,7 +464,6 @@ export function EvidenceUploadPage({}: EvidenceUploadPageProps) {
         }
 
         const data = await response.json();
-        console.log('업로드 API 응답:', data);
         uploadSuccessCount++;
 
         // 진행률 업데이트
@@ -521,7 +514,6 @@ export function EvidenceUploadPage({}: EvidenceUploadPageProps) {
       }
 
       const data = await response.json();
-      console.log('증거 삭제 성공:', data);
 
       // 증거 목록 새로고침
       await fetchEvidences();
@@ -556,7 +548,6 @@ export function EvidenceUploadPage({}: EvidenceUploadPageProps) {
       }
 
       const data = await response.json();
-      console.log('즐겨찾기 토글 성공:', data);
 
       // 로컬 상태 업데이트
       setFiles((prev) =>

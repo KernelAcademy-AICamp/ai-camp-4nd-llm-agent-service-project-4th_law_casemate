@@ -1,0 +1,39 @@
+services:
+  nginx:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - backend
+    restart: always
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    expose:
+      - "8000"
+    env_file:
+      - .env
+    environment:
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - USE_RERANKING=false
+      - ALLOWED_ORIGINS=*
+    depends_on:
+      - qdrant
+    restart: always
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    expose:
+      - "6333"
+    volumes:
+      - ./qdrant_data:/qdrant/storage
+    environment:
+      - QDRANT__SERVICE__GRPC_PORT=6334
+    restart: always

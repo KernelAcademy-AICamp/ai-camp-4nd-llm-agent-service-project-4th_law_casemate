@@ -13,6 +13,7 @@ import { PrecedentDetailPage } from '@/components/legal/pages/precedent-detail-p
 import { NewCasePage } from '@/components/legal/pages/new-case-page'
 import { EvidenceUploadPage } from '@/components/legal/pages/evidence-upload-page'
 import { SearchProvider } from '@/contexts/search-context'
+import { ChatProvider } from '@/contexts/chat-context'
 import './App.css'
 
 function App() {
@@ -38,12 +39,10 @@ function App() {
 
         if (response.ok) {
           const userData = await response.json()
-          console.log("환영합니다, " + userData.name + "님!")
           setUserInfo(userData)
           setIsLoggedIn(true)
         } else {
           // 토큰이 만료되었거나 유효하지 않은 경우 로그아웃 처리
-          console.log('토큰이 유효하지 않습니다. 로그아웃 처리합니다.')
           localStorage.removeItem('access_token')
           localStorage.removeItem('user_email')
           localStorage.removeItem('user_id')
@@ -118,6 +117,7 @@ function App() {
   return (
     <BrowserRouter>
       <SearchProvider>
+      <ChatProvider>
       <Routes>
         {/* Public Route */}
         <Route
@@ -151,6 +151,7 @@ function App() {
           <AuthPage onLogin={() => {}} exiting={authAnimating} />
         </div>
       )}
+      </ChatProvider>
       </SearchProvider>
     </BrowserRouter>
   )

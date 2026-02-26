@@ -10,7 +10,6 @@ import os
 import re
 import json
 import hashlib
-import traceback
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
@@ -27,8 +26,11 @@ from app.services.relationship_service import RelationshipService
 from app.models.timeline import TimeLine
 from app.models.relationship import CasePerson, CaseRelationship
 
+import logging
+logger = logging.getLogger(__name__)
+
 # OpenAI 클라이언트
-openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 router = APIRouter(tags=["Cases"])
 
@@ -104,12 +106,7 @@ async def create_case(
     - law_firm_id, created_by는 JWT에서 자동 추출
     - status는 기본값 '접수'로 설정
     """
-    print("=" * 50)
-    print(f"📁 새 사건 생성 요청")
-    print(f"   사용자: {current_user.email} (ID: {current_user.id})")
-    print(f"   사무실: {current_user.firm_id}")
-    print(f"   제목: {request.title}")
-    print("=" * 50)
+    logger.debug(f"[Case POST] 새 사건 생성 요청: user_id={current_user.id}, firm_id={current_user.firm_id}")
 
     try:
         new_case = Case(
@@ -134,14 +131,15 @@ async def create_case(
         db.commit()
         db.refresh(new_case)
 
-        print(f"✅ 사건 생성 완료: case_id={new_case.id}")
+        logger.info(f"[Case POST] 사건 생성 완료: case_id={new_case.id}")
 
         return new_case
 
     except Exception as e:
         db.rollback()
-        print(f"❌ 사건 생성 실패: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"사건 생성 실패: {str(e)}")
+        logger.debug(f"[Case POST] 사건 생성 실패: {str(e)}")
+        logger.error(f"사건 생성 실패: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="사건 생성 중 오류가 발생했습니다")
 
 
 @router.get("", response_model=dict)
@@ -157,7 +155,7 @@ async def get_cases(
     - availability='o' (open) 상태인 사건만 반환
     - 최신순 정렬
     """
-    print(f"📋 사건 목록 조회: user_id={current_user.id}, firm_id={current_user.firm_id}")
+    logger.debug(f"[Case GET] 사건 목록 조회: user_id={current_user.id}, firm_id={current_user.firm_id}")
 
     try:
         cases = db.query(Case).filter(
@@ -167,7 +165,7 @@ async def get_cases(
             Case.created_at.desc()
         ).all()
 
-        print(f"✅ 조회된 사건 수: {len(cases)}")
+        logger.debug(f"[Case GET] 조회된 사건 수: {len(cases)}")
 
         case_list = []
         for case in cases:
@@ -186,8 +184,9 @@ async def get_cases(
         }
 
     except Exception as e:
-        print(f"❌ 사건 목록 조회 실패: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"사건 목록 조회 실패: {str(e)}")
+        logger.debug(f"[Case GET] 사건 목록 조회 실패: {str(e)}")
+        logger.error(f"사건 목록 조회 실패: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="사건 목록 조회 중 오류가 발생했습니다")
 
 
 @router.get("/{case_id}", response_model=CaseResponse)
@@ -202,7 +201,7 @@ async def get_case_detail(
     - JWT 인증 필요
     - 같은 law_firm_id 소속만 조회 가능
     """
-    print(f"📄 사건 상세 조회: case_id={case_id}, user_id={current_user.id}")
+    logger.debug(f"[Case GET] 사건 상세 조회: case_id={case_id}, user_id={current_user.id}")
 
     try:
         case = db.query(Case).filter(Case.id == case_id).first()
@@ -235,7 +234,7 @@ async def get_case_detail(
                 "crime_names": cached_crime,
             }
 
-        print(f"✅ 사건 상세 조회 완료: {case.title}, analyzed_at={analyzed_at}, analysis_stale={analysis_stale}, has_cached_analysis={cached_analysis is not None}")
+        logger.debug(f"[Case GET] 사건 상세 조회 완료: case_id={case_id}, analyzed_at={analyzed_at}, analysis_stale={analysis_stale}, has_cached_analysis={cached_analysis is not None}")
 
         # ORM → CaseResponse dict에 분석 상태 주입
         response = CaseResponse.model_validate(case)
@@ -248,8 +247,9 @@ async def get_case_detail(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"❌ 사건 상세 조회 실패: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"사건 상세 조회 실패: {str(e)}")
+        logger.debug(f"[Case GET] 사건 상세 조회 실패: {str(e)}")
+        logger.error(f"사건 상세 조회 실패: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="사건 상세 조회 중 오류가 발생했습니다")
 
 
 # ==================== 사건 분석 API ====================
@@ -278,7 +278,7 @@ async def reanalyze_case_evidences(db: Session, case_id: int) -> int:
         # 1. 사건 정보 조회
         case = db.query(Case).filter(Case.id == case_id).first()
         if not case:
-            print(f"⚠️ [Evidence Reanalysis] 사건을 찾을 수 없음: case_id={case_id}")
+            logger.debug(f"[Evidence Reanalysis] 사건을 찾을 수 없음: case_id={case_id}")
             return 0
 
         # 2. 해당 사건의 모든 증거 조회
@@ -287,15 +287,15 @@ async def reanalyze_case_evidences(db: Session, case_id: int) -> int:
         ).all()
 
         if not evidence_mappings:
-            print(f"⚠️ [Evidence Reanalysis] 연결된 증거 없음: case_id={case_id}")
+            logger.debug(f"[Evidence Reanalysis] 연결된 증거 없음: case_id={case_id}")
             return 0
 
-        print(f"📊 [Evidence Reanalysis] 재분석 대상: {len(evidence_mappings)}개 증거")
+        logger.debug(f"[Evidence Reanalysis] 재분석 대상: {len(evidence_mappings)}개 증거")
 
         # 3. AsyncOpenAI 클라이언트 생성
         api_key = os.getenv("OPENAI_API_KEY")
         if not api_key:
-            print(f"❌ [Evidence Reanalysis] OPENAI_API_KEY 없음")
+            logger.debug("[Evidence Reanalysis] OPENAI_API_KEY 없음")
             return 0
 
         client = AsyncOpenAI(api_key=api_key)
@@ -321,10 +321,10 @@ async def reanalyze_case_evidences(db: Session, case_id: int) -> int:
                 ).first()
 
                 if not evidence or not evidence.content or len(evidence.content.strip()) < 20:
-                    print(f"  [{idx+1}/{len(evidence_mappings)}] 건너뜀: evidence_id={mapping.evidence_id} (내용 없음)")
+                    logger.debug(f"[Evidence Reanalysis] [{idx+1}/{len(evidence_mappings)}] 건너뜀: evidence_id={mapping.evidence_id} (내용 없음)")
                     continue
 
-                print(f"  [{idx+1}/{len(evidence_mappings)}] 분석 중: {evidence.file_name}")
+                logger.debug(f"[Evidence Reanalysis] [{idx+1}/{len(evidence_mappings)}] 분석 중: evidence_id={evidence.id}")
 
                 # GPT 프롬프트
                 prompt = f"""당신은 법률 전문가입니다. 다음 증거 자료를 특정 사건의 맥락에서 분석해주세요.
@@ -379,7 +379,7 @@ async def reanalyze_case_evidences(db: Session, case_id: int) -> int:
                     legal_relevance = parsed.get("legal_relevance", "")
                     risk_level = parsed.get("risk_level", "medium")
                 except (json.JSONDecodeError, AttributeError) as e:
-                    print(f"    ⚠️ JSON 파싱 실패: {str(e)}")
+                    logger.debug(f"[Evidence Reanalysis] JSON 파싱 실패: {str(e)}")
                     summary = content[:500]
                     legal_relevance = "자동 분석 실패"
                     risk_level = "medium"
@@ -409,18 +409,17 @@ async def reanalyze_case_evidences(db: Session, case_id: int) -> int:
 
                 db.commit()
                 analyzed_count += 1
-                print(f"    ✅ 완료: risk_level={risk_level}")
+                logger.debug(f"[Evidence Reanalysis] 완료: evidence_id={evidence.id}, risk_level={risk_level}")
 
             except Exception as e:
-                print(f"    ❌ 증거 분석 실패 (evidence_id={mapping.evidence_id}): {str(e)}")
+                logger.debug(f"[Evidence Reanalysis] 증거 분석 실패: evidence_id={mapping.evidence_id}, error={str(e)}")
                 db.rollback()
                 continue
 
         return analyzed_count
 
     except Exception as e:
-        print(f"❌ [Evidence Reanalysis] 전체 실패: {str(e)}")
-        print(traceback.format_exc())
+        logger.debug(f"[Evidence Reanalysis] 전체 실패: {str(e)}", exc_info=True)
         return 0
 
 
@@ -431,22 +430,20 @@ async def generate_timeline_and_relationships_background(case_id: int):
     """
     db = SessionLocal()
     try:
-        print(f"\n{'='*80}")
-        print(f"[Background Task] 타임라인 및 관계도 자동 생성 시작: case_id={case_id}")
-        print(f"{'='*80}\n")
+        logger.debug(f"[Background Task] 타임라인 및 관계도 자동 생성 시작: case_id={case_id}")
 
         # 1. 기존 타임라인 삭제
         deleted_timeline_count = db.query(TimeLine).filter(
             TimeLine.case_id == case_id
         ).delete()
         db.commit()
-        print(f"[Background Task] 기존 타임라인 삭제: {deleted_timeline_count}개")
+        logger.debug(f"[Background Task] 기존 타임라인 삭제: {deleted_timeline_count}개")
 
         # 2. 타임라인 생성
-        print(f"[Background Task] 타임라인 생성 시작...")
+        logger.debug("[Background Task] 타임라인 생성 시작...")
         timeline_service = TimeLineService(db=db, case_id=case_id)
         generated_timelines = await timeline_service.generate_timeline_auto()
-        print(f"[Background Task] 타임라인 생성 완료: {len(generated_timelines)}개")
+        logger.info(f"[Background Task] 타임라인 생성 완료: {len(generated_timelines)}개")
 
         # 3. 기존 관계도 삭제
         deleted_rel_count = db.query(CaseRelationship).filter(
@@ -456,26 +453,23 @@ async def generate_timeline_and_relationships_background(case_id: int):
             CasePerson.case_id == case_id
         ).delete()
         db.commit()
-        print(f"[Background Task] 기존 관계도 삭제: {deleted_person_count}명, {deleted_rel_count}개 관계")
+        logger.debug(f"[Background Task] 기존 관계도 삭제: {deleted_person_count}명, {deleted_rel_count}개 관계")
 
         # 4. 관계도 생성
-        print(f"[Background Task] 관계도 생성 시작...")
+        logger.debug("[Background Task] 관계도 생성 시작...")
         relationship_service = RelationshipService(db=db, case_id=case_id)
         relationship_data = await relationship_service.generate_relationship()
-        print(f"[Background Task] 관계도 생성 완료: {len(relationship_data['persons'])}명, {len(relationship_data['relationships'])}개 관계")
+        logger.info(f"[Background Task] 관계도 생성 완료: {len(relationship_data['persons'])}명, {len(relationship_data['relationships'])}개 관계")
 
         # 5. 증거 재분석 (사건 맥락 기반)
-        print(f"[Background Task] 증거 재분석 시작...")
+        logger.debug("[Background Task] 증거 재분석 시작...")
         evidence_count = await reanalyze_case_evidences(db, case_id)
-        print(f"[Background Task] 증거 재분석 완료: {evidence_count}개")
+        logger.info(f"[Background Task] 증거 재분석 완료: {evidence_count}개")
 
-        print(f"\n{'='*80}")
-        print(f"[Background Task] 타임라인, 관계도, 증거 분석 완료")
-        print(f"{'='*80}\n")
+        logger.info("[Background Task] 타임라인, 관계도, 증거 분석 완료")
 
     except Exception as e:
-        print(f"[Background Task] 에러 발생: {type(e).__name__} - {str(e)}")
-        print(f"[Background Task] 트레이스백:\n{traceback.format_exc()}")
+        logger.debug(f"[Background Task] 에러 발생: {type(e).__name__} - {str(e)}", exc_info=True)
         db.rollback()
     finally:
         db.close()
@@ -498,9 +492,7 @@ async def analyze_case(
     - force=true: 캐시 무시하고 재분석 후 덮어쓰기
     - 분석 완료 후 백그라운드에서 타임라인과 관계도 자동 생성
     """
-    print("=" * 50)
-    print(f"🔍 사건 분석 요청: case_id={case_id}, force={force}")
-    print("=" * 50)
+    logger.debug(f"[Case Analyze] 사건 분석 요청: case_id={case_id}, force={force}")
 
     try:
         # 사건 조회
@@ -516,7 +508,7 @@ async def analyze_case(
         # 캐시 조회: case_analyses 테이블에서 먼저 확인 (force=true면 스킵)
         cached_summary = db.query(CaseAnalysis).filter(CaseAnalysis.case_id == case_id).first()
         if cached_summary and cached_summary.summary and not force:
-            print(f"✅ 캐시 히트: case_id={case_id}")
+            logger.debug(f"[Case Analyze] 캐시 히트: case_id={case_id}")
             cached_crime = json.loads(cached_summary.crime_names) if cached_summary.crime_names else []
             cached_keywords = json.loads(cached_summary.legal_keywords) if cached_summary.legal_keywords else []
             return CaseAnalyzeResponse(
@@ -528,7 +520,7 @@ async def analyze_case(
             )
 
         if force:
-            print(f"🔄 강제 재분석 모드: 캐시 무시")
+            logger.debug("[Case Analyze] 강제 재분석 모드: 캐시 무시")
             # 하위 캐시 초기화 (재분석 후 법령 검색도 다시 해야 하므로)
             if cached_summary:
                 cached_summary.legal_keywords = None
@@ -536,18 +528,18 @@ async def analyze_case(
                 cached_summary.crime_names = None
                 cached_summary.legal_search_results = None
 
-        print(f"📭 캐시 미스: LLM 분석 시작")
+        logger.debug("[Case Analyze] 캐시 미스: LLM 분석 시작")
 
         # description이 없으면 기본값 반환
         if not case.description or not case.description.strip():
-            print("⚠️ description이 비어있음 - 기본값 반환")
+            logger.debug("[Case Analyze] description이 비어있음 - 기본값 반환")
             return CaseAnalyzeResponse(
                 summary=f"{case.title} 사건입니다.",
                 facts="사실관계가 아직 입력되지 않았습니다.",
                 claims="청구 내용이 아직 입력되지 않았습니다."
             )
 
-        print(f"📝 분석할 텍스트 길이: {len(case.description)}자")
+        logger.debug(f"[Case Analyze] 분석할 텍스트 길이: {len(case.description)}자")
 
         # 시스템 프롬프트 (역할/페르소나/금지 규칙)
         system_prompt = """역할:
@@ -653,7 +645,7 @@ async def analyze_case(
 ★ crime_names, legal_keywords, legal_laws는 반드시 문자열 배열로 출력."""
 
         # OpenAI API 호출
-        response = openai_client.chat.completions.create(
+        response = await openai_client.chat.completions.create(
             model="gpt-4o",
             messages=[
                 {"role": "system", "content": system_prompt},
@@ -684,18 +676,16 @@ async def analyze_case(
         crime_names = parsed.get("crime_names", [])
         legal_keywords = parsed.get("legal_keywords", [])
         legal_laws = parsed.get("legal_laws", [])
-        print(f"🔍 법적 분석: crime_names={crime_names}, keywords={legal_keywords}, laws={legal_laws}")
+        logger.debug(f"[Case Analyze] 법적 분석: crime_names={crime_names}, keywords={legal_keywords}, laws={legal_laws}")
 
-        print(f"🔍 파싱된 타입: summary={type(summary_raw).__name__}, facts={type(facts_raw).__name__}, claims={type(claims_raw).__name__}")
-        print(f"🔍 facts_raw 내용: {facts_raw}")
-        print(f"🔍 claims_raw 내용: {claims_raw}")
+        logger.debug(f"[Case Analyze] 파싱된 타입: summary={type(summary_raw).__name__}, facts={type(facts_raw).__name__}, claims={type(claims_raw).__name__}")
 
         # facts가 문자열이면 배열로 변환
         if isinstance(facts_raw, str) and facts_raw.strip():
             # 문장 단위로 분리 (마침표, 함, 됨, 음, 임 등으로 끝나는 부분)
             sentences = re.split(r'(?<=[.함됨음임])\s+', facts_raw.strip())
             facts_raw = [s.strip() for s in sentences if s.strip()]
-            print(f"🔄 facts 문자열→배열 변환: {len(facts_raw)}개 항목")
+            logger.debug(f"[Case Analyze] facts 문자열->배열 변환: {len(facts_raw)}개 항목")
 
         # 마크다운 형식으로 변환하는 헬퍼 함수
         def to_markdown(value, is_claims=False):
@@ -735,9 +725,8 @@ async def analyze_case(
 
         # 후처리 없이 원본 그대로 반환 (포맷은 프론트엔드에서 처리)
 
-        print(f"✅ 사건 분석 완료")
-        print(f"   summary: {summary[:80] if len(summary) > 80 else summary}...")
-        print(f"   facts type: {type(facts).__name__}, length: {len(facts)}")
+        logger.info(f"[Case Analyze] 사건 분석 완료: case_id={case_id}")
+        logger.debug(f"[Case Analyze] facts type: {type(facts).__name__}, length: {len(facts)}")
 
         # description_hash 계산
         description_hash = hashlib.sha256(case.description.encode()).hexdigest()
@@ -758,7 +747,7 @@ async def analyze_case(
             cached_summary.legal_keywords = legal_keywords_json
             cached_summary.legal_laws = legal_laws_json
             cached_summary.legal_search_results = None  # 법령 검색 결과는 별도 호출 시 재생성
-            print(f"💾 캐시 업데이트 완료: case_id={case_id}")
+            logger.debug(f"[Case Analyze] 캐시 업데이트 완료: case_id={case_id}")
         else:
             new_summary = CaseAnalysis(
                 case_id=case_id,
@@ -772,11 +761,11 @@ async def analyze_case(
                 legal_laws=legal_laws_json,
             )
             db.add(new_summary)
-            print(f"💾 캐시 신규 저장 완료: case_id={case_id}")
+            logger.debug(f"[Case Analyze] 캐시 신규 저장 완료: case_id={case_id}")
         db.commit()
 
         # 백그라운드에서 타임라인과 관계도 자동 생성
-        print(f"🚀 타임라인 및 관계도 자동 생성 예약: case_id={case_id}")
+        logger.info(f"[Case Analyze] 타임라인 및 관계도 자동 생성 예약: case_id={case_id}")
         background_tasks.add_task(generate_timeline_and_relationships_background, case_id)
 
         return CaseAnalyzeResponse(
@@ -788,7 +777,7 @@ async def analyze_case(
         )
 
     except json.JSONDecodeError as e:
-        print(f"❌ JSON 파싱 실패: {str(e)}")
+        logger.debug(f"[Case Analyze] JSON 파싱 실패: {str(e)}")
         # 파싱 실패 시 기본값 반환
         return CaseAnalyzeResponse(
             summary=f"{case.title} 사건입니다.",
@@ -798,8 +787,9 @@ async def analyze_case(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"❌ 사건 분석 실패: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"사건 분석 실패: {str(e)}")
+        logger.debug(f"[Case Analyze] 사건 분석 실패: {str(e)}")
+        logger.error(f"사건 분석 실패: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="사건 분석 중 오류가 발생했습니다")
 
 
 # ==================== 사건 수정 API ====================
@@ -835,9 +825,7 @@ async def update_case(
     - 같은 law_firm_id 소속만 수정 가능
     - 전달된 필드만 업데이트 (None이 아닌 필드)
     """
-    print("=" * 50)
-    print(f"📝 사건 정보 수정 요청: case_id={case_id}")
-    print("=" * 50)
+    logger.debug(f"[Case PUT] 사건 정보 수정 요청: case_id={case_id}")
 
     try:
         case = db.query(Case).filter(Case.id == case_id).first()
@@ -863,7 +851,7 @@ async def update_case(
             current_hash = hashlib.sha256(case.description.encode()).hexdigest()
             analysis_stale = cached.description_hash != current_hash
 
-        print(f"✅ 사건 정보 수정 완료: case_id={case_id}, 수정 필드: {list(update_data.keys())}, analysis_stale={analysis_stale}")
+        logger.info(f"[Case PUT] 사건 정보 수정 완료: case_id={case_id}, 수정 필드: {list(update_data.keys())}, analysis_stale={analysis_stale}")
 
         response_data = CaseResponse.model_validate(case).model_dump()
         analyzed_at = cached.analyzed_at if cached else None
@@ -875,8 +863,9 @@ async def update_case(
         raise
     except Exception as e:
         db.rollback()
-        print(f"❌ 사건 원문 수정 실패: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"사건 원문 수정 실패: {str(e)}")
+        logger.debug(f"[Case PUT] 사건 원문 수정 실패: {str(e)}")
+        logger.error(f"사건 원문 수정 실패: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="사건 정보 수정 중 오류가 발생했습니다")
 
 
 # ==================== 사건 분석 결과 수정 API ====================
@@ -914,9 +903,7 @@ async def update_case_summary(
     - 같은 law_firm_id 소속만 수정 가능
     - 기존 case_analyses 레코드가 없으면 새로 생성
     """
-    print("=" * 50)
-    print(f"📝 AI 분석 결과 수정 요청: case_id={case_id}")
-    print("=" * 50)
+    logger.debug(f"[Case Summary PUT] AI 분석 결과 수정 요청: case_id={case_id}")
 
     try:
         # 사건 조회 및 권한 검증
@@ -939,7 +926,7 @@ async def update_case_summary(
                 case_summary.facts = request.facts
             if request.claims is not None:
                 case_summary.claims = request.claims
-            print(f"✅ 기존 분석 결과 업데이트")
+            logger.debug("[Case Summary PUT] 기존 분석 결과 업데이트")
         else:
             # 새 레코드 생성
             case_summary = CaseAnalysis(
@@ -949,12 +936,12 @@ async def update_case_summary(
                 claims=request.claims or ""
             )
             db.add(case_summary)
-            print(f"✅ 새 분석 결과 생성")
+            logger.debug("[Case Summary PUT] 새 분석 결과 생성")
 
         db.commit()
         db.refresh(case_summary)
 
-        print(f"💾 AI 분석 결과 저장 완료: case_id={case_id}")
+        logger.info(f"[Case Summary PUT] AI 분석 결과 저장 완료: case_id={case_id}")
 
         return CaseAnalysisResponse(
             case_id=case_summary.case_id,
@@ -968,8 +955,9 @@ async def update_case_summary(
         raise
     except Exception as e:
         db.rollback()
-        print(f"❌ AI 분석 결과 수정 실패: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"AI 분석 결과 수정 실패: {str(e)}")
+        logger.debug(f"[Case Summary PUT] AI 분석 결과 수정 실패: {str(e)}")
+        logger.error(f"AI 분석 결과 수정 실패: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="분석 결과 수정 중 오류가 발생했습니다")
 
 
 @router.delete("/{case_id}")
@@ -985,9 +973,7 @@ async def delete_case(
     - 같은 law_firm_id 소속만 삭제 가능
     - 실제로 DB에서 삭제하지 않고 availability를 'c'(closed)로 변경
     """
-    print("=" * 50)
-    print(f"🗑️  사건 삭제 요청: case_id={case_id}, user_id={current_user.id}")
-    print("=" * 50)
+    logger.debug(f"[Case DELETE] 사건 삭제 요청: case_id={case_id}, user_id={current_user.id}")
 
     try:
         # 사건 조회 및 권한 검증
@@ -1003,7 +989,7 @@ async def delete_case(
         case.availability = 'c'
         db.commit()
 
-        print(f"✅ 사건 삭제 완료: case_id={case_id}, title={case.title}")
+        logger.info(f"[Case DELETE] 사건 삭제 완료: case_id={case_id}")
 
         return {
             "message": "사건이 삭제되었습니다",
@@ -1014,5 +1000,6 @@ async def delete_case(
         raise
     except Exception as e:
         db.rollback()
-        print(f"❌ 사건 삭제 실패: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"사건 삭제 실패: {str(e)}")
+        logger.debug(f"[Case DELETE] 사건 삭제 실패: {str(e)}")
+        logger.error(f"사건 삭제 실패: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="사건 삭제 중 오류가 발생했습니다")

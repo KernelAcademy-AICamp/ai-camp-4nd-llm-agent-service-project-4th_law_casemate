@@ -406,7 +406,6 @@ export function NewCasePage({ }: NewCasePageProps) {
           [categoryId]: transformedFiles,
         }));
 
-        console.log(`카테고리 ${categoryId} 파일 로드 완료:`, transformedFiles.length);
       } else {
         console.error("파일 목록 로드 실패:", response.status);
       }
@@ -429,7 +428,6 @@ export function NewCasePage({ }: NewCasePageProps) {
           const tree = buildCategoryTree(categories);
           setFolderStructure(tree);
 
-          console.log("카테고리 로드 완료:", tree);
         } else {
           console.error("카테고리 로드 실패:", response.status);
         }
@@ -492,7 +490,6 @@ export function NewCasePage({ }: NewCasePageProps) {
         throw new Error(data.detail || "사건 등록에 실패했습니다");
       }
 
-      console.log("사건 등록 성공:", data);
       const caseId = data.id;
 
       // 증거 파일 업로드 및 매핑 처리
@@ -531,7 +528,6 @@ export function NewCasePage({ }: NewCasePageProps) {
                   }
                 );
 
-                console.log(`증거 파일 연결 완료: ${uploadedFile.name}`);
               } else {
                 console.error(
                   `파일 업로드 실패: ${uploadedFile.name}`,
@@ -548,7 +544,6 @@ export function NewCasePage({ }: NewCasePageProps) {
         // 실제 evidence_id를 추출하거나 다른 방식으로 처리 필요
         // 임시로 이 부분은 스킵 (파일 관리 시스템이 별도 구현 필요)
 
-        console.log("모든 증거 파일 처리 완료");
       } catch (evidenceError) {
         console.error("증거 파일 처리 중 오류:", evidenceError);
         alert(

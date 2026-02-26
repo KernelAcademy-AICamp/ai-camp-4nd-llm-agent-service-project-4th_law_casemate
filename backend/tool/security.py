@@ -15,17 +15,19 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 # 토큰을 추출할 경로 설정
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/v1/auth/login")
 
-# .env 파일에서 시크릿 키 가져오기
-SECRET_KEY = os.getenv("BCRYPT_SECRET", "default-bcrypt-secret-change-this")
+# .env 파일에서 JWT 서명 키 가져오기
+SECRET_KEY = os.getenv("JWT_SECRET_KEY") or os.getenv("BCRYPT_SECRET")
+if not SECRET_KEY:
+    raise RuntimeError("JWT_SECRET_KEY 환경변수가 설정되지 않았습니다. .env 파일을 확인하세요.")
 ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_HOURS = int(os.getenv("ACCESS_TOKEN_EXPIRE_HOURS", "24"))
 
 def get_password_hash(password: str) -> str:
     """비밀번호를 bcrypt로 해시합니다."""
-    # bcrypt는 72바이트까지만 처리 가능하므로 명시적으로 제한
     password_bytes = password.encode('utf-8')
     if len(password_bytes) > 72:
-        password_bytes = password_bytes[:72]
-    return pwd_context.hash(password_bytes.decode('utf-8'))
+        raise ValueError("비밀번호는 72바이트를 초과할 수 없습니다")
+    return pwd_context.hash(password)
 
 def verify_password(plain_password, hashed_password):
     """비밀번호를 검증합니다."""
@@ -33,7 +35,7 @@ def verify_password(plain_password, hashed_password):
 
 def create_access_token(data: dict):
     to_encode = data.copy()
-    expire = datetime.utcnow() + timedelta(days=7) # 토큰 유효 시간: 7일
+    expire = datetime.utcnow() + timedelta(hours=ACCESS_TOKEN_EXPIRE_HOURS)
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 

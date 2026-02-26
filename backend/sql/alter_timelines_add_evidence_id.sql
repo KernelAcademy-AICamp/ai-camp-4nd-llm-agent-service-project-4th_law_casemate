@@ -6,12 +6,21 @@
 ALTER TABLE timelines
 ADD COLUMN IF NOT EXISTS evidence_id BIGINT;
 
--- 2. Foreign Key 제약조건 추가
-ALTER TABLE timelines
-ADD CONSTRAINT fk_timelines_evidence
-    FOREIGN KEY (evidence_id)
-    REFERENCES evidences(id)
-    ON DELETE SET NULL;
+-- 2. Foreign Key 제약조건 추가 (이미 존재하면 스킵)
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.table_constraints
+        WHERE constraint_name = 'fk_timelines_evidence'
+          AND table_name = 'timelines'
+    ) THEN
+        ALTER TABLE timelines
+        ADD CONSTRAINT fk_timelines_evidence
+            FOREIGN KEY (evidence_id)
+            REFERENCES evidences(id)
+            ON DELETE SET NULL;
+    END IF;
+END $$;
 
 -- 3. 인덱스 생성 (증거 기반 조회 성능 향상)
 CREATE INDEX IF NOT EXISTS idx_timelines_evidence_id ON timelines(evidence_id);

@@ -1,0 +1,339 @@
+import { useState, useCallback, useRef } from "react";
+
+// ── Types ──
+
+export interface StepEvent {
+  id: string;
+  type: "status" | "tool";
+  tool?: string;
+  message: string;
+  status: "active" | "done";
+  summary?: string;
+}
+
+export interface ToolResult {
+  id: string;
+  tool: string;
+  input?: Record<string, unknown>;
+  result?: string;
+  structured?: unknown;
+  summary?: string;
+  status: "loading" | "done" | "error";
+}
+
+export interface SuggestionItem {
+  text: string;
+  type: "question" | "action";
+  action?: { navigate: string };
+}
+
+export interface CitationSource {
+  type: "precedent" | "law";
+  id: string;
+}
+
+export type AgentPhase = "idle" | "routing" | "planning" | "executing" | "generating" | "done";
+
+/**
+ * 인용된 출처만 남기도록 toolResults 필터링
+ */
+function filterToolResultsByCitations(
+  toolResults: ToolResult[],
+  citations: CitationSource[]
+): ToolResult[] {
+  const citedPrecedentIds = new Set(
+    citations.filter((c) => c.type === "precedent").map((c) => c.id)
+  );
+  const citedLawIds = new Set(
+    citations.filter((c) => c.type === "law").map((c) => c.id)
+  );
+
+  return toolResults.map((tr) => {
+    const structured = tr.structured as { text?: string; data?: unknown } | null;
+    if (!structured?.data) return tr;
+
+    // rag_search 결과 필터링
+    if (tr.tool === "rag_search") {
+      const data = structured.data as {
+        precedents?: { case_number?: string }[];
+        laws?: { law_name?: string; article_number?: string }[];
+      };
+
+      const filteredPrecedents = data.precedents?.filter((p) =>
+        citedPrecedentIds.has(p.case_number || "")
+      );
+      const filteredLaws = data.laws?.filter((law) => {
+        const lawId = `${law.law_name || ""} 제${law.article_number || ""}조`;
+        return citedLawIds.has(lawId);
+      });
+
+      return {
+        ...tr,
+        structured: {
+          ...structured,
+          data: { precedents: filteredPrecedents || [], laws: filteredLaws || [] },
+        },
+      };
+    }
+
+    // search_precedents: 전체 결과를 보여줌 (필터링하지 않음)
+    // 사용자가 검색된 모든 판례를 확인할 수 있어야 함
+
+    // search_laws 결과 필터링
+    if (tr.tool === "search_laws") {
+      const data = structured.data as { law_name?: string; article_number?: string }[];
+      const filtered = data.filter((law) => {
+        const lawId = `${law.law_name || ""} 제${law.article_number || ""}조`;
+        return citedLawIds.has(lawId);
+      });
+      return {
+        ...tr,
+        structured: { ...structured, data: filtered },
+      };
+    }
+
+    return tr;
+  });
+}
+
+/**
+ * POST SSE 연결 훅 — 3채널 분리 상태 모델
+ *
+ * steps:         좌측 채팅 내 단계 표시용
+ * toolResults:   우측 패널 리치 렌더링용
+ * streamingText: generator 노드 토큰만
+ */
+export function useAgentSSE() {
+  const [steps, setSteps] = useState<StepEvent[]>([]);
+  const [toolResults, setToolResults] = useState<ToolResult[]>([]);
+  const [streamingText, setStreamingText] = useState("");
+  const [phase, setPhase] = useState<AgentPhase>("idle");
+  const [isStreaming, setIsStreaming] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [suggestions, setSuggestions] = useState<SuggestionItem[]>([]);
+  const [citations, setCitations] = useState<CitationSource[]>([]);
+  const abortRef = useRef<AbortController | null>(null);
+
+  const send = useCallback(async (message: string, threadId?: string) => {
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    // 상태 초기화
+    setSteps([]);
+    setToolResults([]);
+    setStreamingText("");
+    setPhase("idle");
+    setIsStreaming(true);
+    setError(null);
+    setSuggestions([]);
+    setCitations([]);
+
+    const token = localStorage.getItem("access_token");
+
+    try {
+      const response = await fetch("/api/v1/agent/chat", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ message, thread_id: threadId }),
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      const reader = response.body?.getReader();
+      if (!reader) throw new Error("ReadableStream not supported");
+
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+
+        const parts = buffer.split("\n\n");
+        buffer = parts.pop() || "";
+
+        for (const part of parts) {
+          const lines = part.split("\n");
+          let eventType = "";
+          const dataLines: string[] = [];
+
+          for (const line of lines) {
+            if (line.startsWith("event: ")) {
+              eventType = line.slice(7).trim();
+            } else if (line.startsWith("data: ")) {
+              dataLines.push(line.slice(6));
+            }
+          }
+
+          if (!eventType || dataLines.length === 0) continue;
+
+          try {
+            const data = JSON.parse(dataLines.join("\n"));
+            if (eventType !== "token") {
+              console.log(`[SSE] ${eventType}`, data);
+            }
+            handleEvent(eventType, data);
+          } catch (parseErr) {
+            console.error(`[SSE] JSON 파싱 실패 (${eventType}):`, dataLines.join("\n").slice(0, 200), parseErr);
+          }
+        }
+      }
+    } catch (err: unknown) {
+      if (err instanceof Error && err.name === "AbortError") return;
+      setError(err instanceof Error ? err.message : "연결 오류");
+    } finally {
+      setIsStreaming(false);
+    }
+  }, []);
+
+  function handleEvent(type: string, data: Record<string, unknown>) {
+    switch (type) {
+      case "status": {
+        const step = data.step as string;
+        const message = data.message as string;
+        setPhase(step as AgentPhase);
+        setSteps((prev) => {
+          // 이전 status 단계를 done으로 마킹
+          const updated = prev.map((s) =>
+            s.type === "status" && s.status === "active"
+              ? { ...s, status: "done" as const }
+              : s
+          );
+          return [
+            ...updated,
+            {
+              id: `status-${step}-${Date.now()}`,
+              type: "status",
+              message,
+              status: "active",
+            },
+          ];
+        });
+        break;
+      }
+
+      case "tool_start": {
+        const id = data.id as string;
+        const tool = data.tool as string;
+        const input = data.input as Record<string, unknown> | undefined;
+        const message = data.message as string;
+
+        // steps에 추가
+        setSteps((prev) => [
+          ...prev,
+          { id, type: "tool", tool, message, status: "active" },
+        ]);
+        // toolResults에 추가
+        setToolResults((prev) => [
+          ...prev,
+          { id, tool, input, status: "loading" },
+        ]);
+        break;
+      }
+
+      case "tool_end": {
+        const id = data.id as string;
+        const result = data.result as string | undefined;
+        const structured = data.structured as unknown;
+        const summary = data.summary as string | undefined;
+
+        // steps에서 완료 처리
+        setSteps((prev) =>
+          prev.map((s) =>
+            s.id === id
+              ? { ...s, status: "done" as const, summary: summary || s.message }
+              : s
+          )
+        );
+        // toolResults에서 업데이트
+        setToolResults((prev) =>
+          prev.map((tr) =>
+            tr.id === id
+              ? { ...tr, result, structured, summary, status: "done" as const }
+              : tr
+          )
+        );
+        break;
+      }
+
+      case "token":
+        setStreamingText((prev) => prev + (data.content as string));
+        break;
+
+      case "done":
+        setPhase("done");
+        // 남은 active steps를 done으로
+        setSteps((prev) =>
+          prev.map((s) => (s.status === "active" ? { ...s, status: "done" as const } : s))
+        );
+        // 남은 loading toolResults를 error로 전환 (tool_end 누락 방어)
+        setToolResults((prev) =>
+          prev.map((tr) =>
+            tr.status === "loading"
+              ? { ...tr, status: "error" as const, summary: "결과를 수신하지 못했습니다" }
+              : tr
+          )
+        );
+        break;
+
+      case "suggestions":
+        setSuggestions((data.items as SuggestionItem[]) || []);
+        break;
+
+      case "citations": {
+        const citedSources = (data.sources as CitationSource[]) || [];
+        setCitations(citedSources);
+
+        // 인용된 출처만 남기도록 toolResults 필터링
+        if (citedSources.length > 0) {
+          setToolResults((prev) => filterToolResultsByCitations(prev, citedSources));
+        }
+        break;
+      }
+
+      case "error":
+        setError(data.message as string);
+        break;
+    }
+  }
+
+  const abort = useCallback(() => {
+    abortRef.current?.abort();
+    setIsStreaming(false);
+  }, []);
+
+  const reset = useCallback(() => {
+    abortRef.current?.abort();
+    setSteps([]);
+    setToolResults([]);
+    setStreamingText("");
+    setPhase("idle");
+    setIsStreaming(false);
+    setError(null);
+    setSuggestions([]);
+    setCitations([]);
+  }, []);
+
+  return {
+    steps,
+    toolResults,
+    streamingText,
+    phase,
+    isStreaming,
+    error,
+    suggestions,
+    citations,
+    send,
+    abort,
+    reset,
+  };
+}

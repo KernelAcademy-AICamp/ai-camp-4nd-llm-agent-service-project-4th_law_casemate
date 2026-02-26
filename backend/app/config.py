@@ -3,21 +3,34 @@
 임베딩 모델, 컬렉션 설정 등을 한 곳에서 관리
 """
 
+import os
+
+
+class AgentConfig:
+    """홈 에이전트 LLM 설정 — 환경변수로 모델 교체 가능"""
+    ROUTER_MODEL = os.getenv("AGENT_ROUTER_MODEL", "gpt-4o-mini")
+    AGENT_MODEL = os.getenv("AGENT_TOOL_MODEL", "gpt-4o-mini")
+    GENERATOR_MODEL = os.getenv("AGENT_GENERATOR_MODEL", "gpt-4o")
+
 
 class EmbeddingConfig:
     """임베딩 모델 설정"""
 
     # ========== 판례 검색용 임베딩 모델 선택 ==========
-    # "openai" 또는 "kure" 중 선택
-    PRECEDENT_EMBEDDING = "openai"
+    # "openai", "kure_local", "kure_api" 중 선택
+    PRECEDENT_EMBEDDING = "kure_api"
 
     # OpenAI 모델 설정
     OPENAI_MODEL = "text-embedding-3-small"
     OPENAI_DIMENSION = 1536
 
-    # KURE 모델 설정
+    # KURE 모델 설정 (로컬 & API 공용)
     KURE_MODEL = "nlpai-lab/KURE-v1"
     KURE_DIMENSION = 1024
+    KURE_HF_API_URL = "https://router.huggingface.co/hf-inference/pipeline/feature-extraction/nlpai-lab/KURE-v1"
+
+    # 워밍업 핑 간격 (분)
+    WARMUP_INTERVAL_MINUTES = 10
 
     # 요약용 (유사 판례 검색에 사용) - OpenAI만 사용
     SUMMARY_MODEL = "text-embedding-3-large"
@@ -26,6 +39,13 @@ class EmbeddingConfig:
     # 레거시 호환성
     CHUNK_MODEL = OPENAI_MODEL
     CHUNK_DIMENSION = OPENAI_DIMENSION
+
+
+class QuantizationConfig:
+    """양자화 검색 설정"""
+    ENABLED = True  # 양자화 컬렉션 사용 여부
+    RESCORE = True  # 원본 벡터로 재계산
+    OVERSAMPLING = 20.0  # 후보 배수 (limit × 20 = 100개 후보)
 
 
 class CollectionConfig:
@@ -40,7 +60,7 @@ class CollectionConfig:
     @classmethod
     def get_precedents_collection(cls) -> str:
         """현재 설정에 맞는 판례 컬렉션 이름 반환"""
-        if EmbeddingConfig.PRECEDENT_EMBEDDING == "kure":
+        if EmbeddingConfig.PRECEDENT_EMBEDDING in ("kure_local", "kure_api"):
             return cls.PRECEDENTS_KURE
         return cls.PRECEDENTS_OPENAI
 
