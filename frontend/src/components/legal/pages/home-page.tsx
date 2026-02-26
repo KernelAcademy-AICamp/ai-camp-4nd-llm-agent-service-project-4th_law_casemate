@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useNavigate, useOutletContext } from "react-router-dom";
-import { Scale, ArrowUp, FolderOpen, MessageSquare, HelpCircle, PanelRightClose, PanelRightOpen, RotateCcw } from "lucide-react";
+import { Scale, ArrowUp, FileText, HelpCircle, PanelRightClose, PanelRightOpen, RotateCcw } from "lucide-react";
 import { TutorialOverlay, type TutorialStep } from "@/components/legal/tutorial-overlay";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
@@ -359,29 +359,29 @@ export function HomePage() {
               <TooltipTrigger asChild>
                 <button
                   type="button"
-                  onClick={() => navigate("/cases")}
+                  onClick={() => navigate("/new-case")}
                   className="flex items-center gap-2.5 px-4 py-3 rounded-xl text-xs font-medium transition-opacity hover:opacity-85"
                   style={{ background: "linear-gradient(135deg, #6D5EF5, #8B7AF7)", color: "#fff" }}
                 >
-                  <FolderOpen className="h-4 w-4" />
-                  최근 사건
+                  <Scale className="h-4 w-4" />
+                  새 사건 등록
                 </button>
               </TooltipTrigger>
-              <TooltipContent side="bottom" sideOffset={8}>최근 사건 바로가기</TooltipContent>
+              <TooltipContent side="bottom" sideOffset={8}>새 사건 등록하기</TooltipContent>
             </Tooltip>
             <Tooltip>
               <TooltipTrigger asChild>
                 <button
                   type="button"
-                  onClick={() => sendMessage("마지막 대화를 이어서 진행해줘")}
+                  onClick={() => navigate("/cases")}
                   className="flex items-center gap-2.5 px-4 py-3 rounded-xl text-xs font-medium transition-opacity hover:opacity-85"
                   style={{ background: "linear-gradient(135deg, #6D5EF5, #8B7AF7)", color: "#fff" }}
                 >
-                  <MessageSquare className="h-4 w-4" />
-                  지난 대화
+                  <FileText className="h-4 w-4" />
+                  사건 목록
                 </button>
               </TooltipTrigger>
-              <TooltipContent side="bottom" sideOffset={8}>이전 대화 이어가기</TooltipContent>
+              <TooltipContent side="bottom" sideOffset={8}>등록된 사건 목록 보기</TooltipContent>
             </Tooltip>
           </div>
         </div>

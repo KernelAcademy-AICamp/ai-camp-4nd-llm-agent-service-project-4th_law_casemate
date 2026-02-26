@@ -7,8 +7,6 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import {
   ArrowLeft,
-  Eye,
-  EyeOff,
   Sparkles,
   Loader2,
   FileText,
@@ -58,9 +56,13 @@ interface AnalysisData {
 
 export function EvidenceDetailPage() {
   const navigate = useNavigate();
-  const { id } = useParams<{ id: string }>();
+  const { id: urlId } = useParams<{ id: string }>();
   const [searchParams] = useSearchParams();
   const caseId = searchParams.get('caseId'); // URL에서 caseId 추출
+
+  // 현재 보고 있는 증거 ID (상태 기반 → 페이지 리로드 없이 전환)
+  const [activeId, setActiveId] = useState(urlId);
+  const [isInitialLoad, setIsInitialLoad] = useState(true);
 
   // 상태 관리
   const [evidence, setEvidence] = useState<Evidence | null>(null);
@@ -68,7 +70,6 @@ export function EvidenceDetailPage() {
   const [isLoadingEvidence, setIsLoadingEvidence] = useState(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  const [showInfo, setShowInfo] = useState(true);
 
   // 분석 상태 관리
   const [hasAnalysis, setHasAnalysis] = useState(false);
@@ -87,14 +88,14 @@ export function EvidenceDetailPage() {
 
   // 증거 정보 가져오기
   const fetchEvidence = async () => {
-    if (!id) {
+    if (!activeId) {
       setErrorMessage('인증이 필요합니다.');
       setIsLoadingEvidence(false);
       return;
     }
 
     // ID가 숫자인지 확인
-    const evidenceIdNum = parseInt(id);
+    const evidenceIdNum = parseInt(activeId);
     if (isNaN(evidenceIdNum)) {
       setErrorMessage('잘못된 증거 ID입니다.');
       setIsLoadingEvidence(false);
@@ -119,6 +120,7 @@ export function EvidenceDetailPage() {
 
       const data = await response.json();
       setEvidence(data);
+      setIsInitialLoad(false);
     } catch (error: any) {
       console.error('증거 정보 조회 실패:', error);
       setErrorMessage(error.message || '증거 정보를 불러오는데 실패했습니다.');
@@ -162,8 +164,8 @@ export function EvidenceDetailPage() {
         setEvidenceList(list);
 
         // 현재 증거의 인덱스 찾기
-        if (id) {
-          const evidenceIdNum = parseInt(id);
+        if (activeId) {
+          const evidenceIdNum = parseInt(activeId);
           const idx = list.findIndex((e: EvidenceListItem) => e.evidence_id === evidenceIdNum);
           setCurrentIndex(idx);
         }
@@ -181,14 +183,16 @@ export function EvidenceDetailPage() {
     if (newIndex < 0 || newIndex >= evidenceList.length) return;
 
     const targetEvidence = evidenceList[newIndex];
-    navigate(`/evidence/${targetEvidence.evidence_id}?caseId=${caseId}`);
+    setActiveId(String(targetEvidence.evidence_id));
+    setCurrentIndex(newIndex);
+    window.history.replaceState(null, '', `/evidence/${targetEvidence.evidence_id}?caseId=${caseId}`);
   };
 
   // 분석 정보 조회
   const fetchAnalysis = async () => {
-    if (!id) return;
+    if (!activeId) return;
 
-    const evidenceIdNum = parseInt(id);
+    const evidenceIdNum = parseInt(activeId);
     if (isNaN(evidenceIdNum)) return;
 
     setIsLoadingAnalysis(true);
@@ -226,13 +230,13 @@ export function EvidenceDetailPage() {
 
   // 분석 수행
   const handleAnalyze = async () => {
-    if (!id) {
+    if (!activeId) {
       setAnalysisMessage({ type: 'error', text: '로그인이 필요합니다.' });
       setTimeout(() => setAnalysisMessage(null), 3000);
       return;
     }
 
-    const evidenceIdNum = parseInt(id);
+    const evidenceIdNum = parseInt(activeId);
     if (isNaN(evidenceIdNum)) {
       setAnalysisMessage({ type: 'error', text: '잘못된 증거 ID입니다.' });
       setTimeout(() => setAnalysisMessage(null), 3000);
@@ -341,12 +345,17 @@ export function EvidenceDetailPage() {
     }
   };
 
-  // 초기 로드 시 데이터 가져오기
+  // URL에서 직접 진입 시 activeId 동기화
+  useEffect(() => {
+    if (urlId && urlId !== activeId) setActiveId(urlId);
+  }, [urlId]);
+
+  // activeId 변경 시 데이터 가져오기
   useEffect(() => {
     fetchEvidence();
     fetchCase();
     fetchEvidenceList();
-  }, [id, caseId]);
+  }, [activeId, caseId]);
 
   // 증거 정보가 로드되면 분석 정보 조회 및 파일 미리보기 URL 가져오기
   useEffect(() => {
@@ -357,7 +366,7 @@ export function EvidenceDetailPage() {
   }, [evidence?.evidence_id]);
 
   // 로딩 중
-  if (isLoadingEvidence) {
+  if (isInitialLoad && isLoadingEvidence) {
     return (
       <div className="flex items-center justify-center" style={{ height: 'calc(100vh - 120px)' }}>
         <div className="text-center">
@@ -420,49 +429,61 @@ export function EvidenceDetailPage() {
 
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div className="flex items-center gap-4">
-          <Button
-            variant="ghost"
-            className="h-9 px-3 -ml-3 text-muted-foreground hover:text-foreground w-fit"
-            onClick={() => navigate(-1)}
-          >
-            <ArrowLeft className="h-4 w-4 mr-2" />
-            돌아가기
-          </Button>
-          {caseData && (
-            <span className="text-sm text-muted-foreground">
-              사건: {caseData.title}
+      {/* Row 1: Breadcrumb */}
+      <div className="flex items-center gap-3">
+        <Button
+          variant="ghost"
+          className="h-9 px-3 -ml-3 text-muted-foreground hover:text-foreground w-fit"
+          onClick={() => navigate(caseId ? `/cases/${caseId}` : -1 as any)}
+        >
+          <ArrowLeft className="h-4 w-4 mr-2" />
+          사건 상세로
+        </Button>
+        {caseData && (
+          <>
+            <span className="text-border">|</span>
+            <span className="text-sm text-muted-foreground truncate max-w-[300px]">
+              {caseData.title}
             </span>
-          )}
+          </>
+        )}
+      </div>
+
+      {/* Row 2: Title + Actions */}
+      <div className="flex items-center justify-between gap-4">
+        <div className="min-w-0">
+          <h1 className="text-xl font-semibold tracking-tight truncate">{evidence.file_name}</h1>
+          <p className="text-sm text-muted-foreground">
+            {formatDate(evidence.created_at)} · {evidence.file_type}
+          </p>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
           {/* 이전/다음 증거 네비게이션 */}
           {evidenceList.length > 1 && currentIndex !== -1 && (
-            <div className="flex items-center gap-1 ml-2">
+            <div className="flex items-center border rounded-md">
               <Button
                 variant="ghost"
                 size="sm"
-                className="h-8 px-2"
+                className="h-8 w-8 p-0 rounded-r-none"
                 onClick={() => navigateEvidence('prev')}
                 disabled={currentIndex === 0}
               >
                 <ChevronLeft className="h-4 w-4" />
-                <span className="text-xs">이전</span>
               </Button>
+              <span className="text-xs text-muted-foreground px-2 border-x tabular-nums">
+                {currentIndex + 1} / {evidenceList.length}
+              </span>
               <Button
                 variant="ghost"
                 size="sm"
-                className="h-8 px-2"
+                className="h-8 w-8 p-0 rounded-l-none"
                 onClick={() => navigateEvidence('next')}
                 disabled={currentIndex === evidenceList.length - 1}
               >
-                <span className="text-xs">다음</span>
                 <ChevronRight className="h-4 w-4" />
               </Button>
             </div>
           )}
-        </div>
-        <div className="flex items-center gap-2">
           <Button
             variant="outline"
             size="sm"
@@ -472,39 +493,13 @@ export function EvidenceDetailPage() {
             <Download className="h-3.5 w-3.5 mr-2" />
             다운로드
           </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setShowInfo(!showInfo)}
-            className="h-8"
-          >
-            {showInfo ? (
-              <>
-                <EyeOff className="h-3.5 w-3.5 mr-2" />
-                정보 숨기기
-              </>
-            ) : (
-              <>
-                <Eye className="h-3.5 w-3.5 mr-2" />
-                정보 보기
-              </>
-            )}
-          </Button>
         </div>
-      </div>
-
-      {/* Title Section */}
-      <div className="space-y-1">
-        <h1 className="text-xl font-semibold tracking-tight">{evidence.file_name}</h1>
-        <p className="text-sm text-muted-foreground">
-          {formatDate(evidence.created_at)} · {evidence.file_type}
-        </p>
       </div>
 
       {/* Main Content */}
       <div className="flex gap-6">
         {/* Content Viewer */}
-        <div className={`flex-1 ${showInfo ? "w-2/3" : "w-full"}`}>
+        <div className="flex-1 w-2/3">
           <Card className="h-full border-border/60">
             <CardContent className="p-0">
               {isLoadingPreview ? (
@@ -614,8 +609,7 @@ export function EvidenceDetailPage() {
         </div>
 
         {/* Info Panel */}
-        {showInfo && (
-          <div className="w-1/3 space-y-4">
+        <div className="w-1/3 space-y-4">
             {/* Evidence Info */}
             <Card className="border-border/60">
               <CardHeader className="pb-3">
@@ -766,7 +760,6 @@ export function EvidenceDetailPage() {
               </CardContent>
             </Card>
           </div>
-        )}
       </div>
     </div>
   );
