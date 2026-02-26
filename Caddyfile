@@ -1,0 +1,23 @@
+# Caddyfile - Lightsail 배포용
+# 도메인을 실제 도메인으로 변경하세요
+
+# 옵션 1: 도메인이 있는 경우 (권장)
+# api.yourdomain.com {
+#     reverse_proxy backend:8000
+#
+#     # CORS 헤더 (Vercel 프론트엔드 허용)
+#     header {
+#         Access-Control-Allow-Origin "https://your-app.vercel.app"
+#         Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS"
+#         Access-Control-Allow-Headers "Content-Type, Authorization"
+#         Access-Control-Allow-Credentials "true"
+#     }
+# }
+
+# 옵션 2: 도메인 없이 IP로 테스트 (임시)
+:80 {
+    reverse_proxy backend:8000
+}
+
+# 도메인 설정 후 옵션 1로 변경하면
+# Caddy가 자동으로 HTTPS 인증서를 발급합니다

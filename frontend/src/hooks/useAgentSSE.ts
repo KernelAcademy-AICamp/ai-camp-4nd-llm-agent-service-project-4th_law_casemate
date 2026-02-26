@@ -1,4 +1,5 @@
 import { useState, useCallback, useRef } from "react";
+import { API_URL } from "@/lib/api";
 
 // ── Types ──
 
@@ -132,7 +133,7 @@ export function useAgentSSE() {
     const token = localStorage.getItem("access_token");
 
     try {
-      const response = await fetch("/api/v1/agent/chat", {
+      const response = await fetch(API_URL + "/api/v1/agent/chat", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
