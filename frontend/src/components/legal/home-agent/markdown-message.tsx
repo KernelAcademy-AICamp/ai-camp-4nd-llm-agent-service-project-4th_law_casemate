@@ -73,12 +73,15 @@ function processChildren(
         ? child
         : <>{parts}</>;
     }
-    if (React.isValidElement(child) && child.props?.children) {
-      return React.cloneElement(
-        child as React.ReactElement<{ children?: React.ReactNode }>,
-        {},
-        processChildren(child.props.children, onClick),
-      );
+    if (React.isValidElement(child)) {
+      const props = child.props as { children?: React.ReactNode };
+      if (props.children) {
+        return React.cloneElement(
+          child as React.ReactElement<{ children?: React.ReactNode }>,
+          {},
+          processChildren(props.children, onClick),
+        );
+      }
     }
     return child;
   });

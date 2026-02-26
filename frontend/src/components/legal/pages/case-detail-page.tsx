@@ -32,6 +32,12 @@ interface CaseApiResponse {
   description: string | null;
   analyzed_at: string | null;
   analysis_stale: boolean;
+  cached_analysis?: {
+    summary?: string;
+    facts?: string;
+    claims?: string;
+    crime_names?: string[];
+  };
 }
 
 // 유사 판례 API 응답 타입

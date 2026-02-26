@@ -107,9 +107,14 @@ export function AgentLoadingOverlay({
       : 0;
   const finalProgress = progress ?? autoProgress;
 
-  const activeIndex = displaySteps.findLastIndex(
-    (s) => s.status === "in_progress" || s.status === "done"
-  );
+  // findLastIndex polyfill for ES2022 and earlier
+  const activeIndex = (() => {
+    for (let i = displaySteps.length - 1; i >= 0; i--) {
+      const s = displaySteps[i];
+      if (s.status === "in_progress" || s.status === "done") return i;
+    }
+    return -1;
+  })();
 
   const startIdx = Math.max(0, activeIndex - visibleCount + 1);
   const visibleSteps = displaySteps.slice(startIdx, startIdx + visibleCount);
